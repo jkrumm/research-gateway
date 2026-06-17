@@ -11,9 +11,6 @@ export const app = new Elysia()
   .use(
     openapi({
       mapJsonSchema: { zod: z.toJSONSchema },
-      exclude: {
-        paths: ['/mcp'],
-      },
       documentation: {
         info: {
           title: 'research-gateway',

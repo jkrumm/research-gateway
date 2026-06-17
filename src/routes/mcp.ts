@@ -102,5 +102,5 @@ await mcpServer.connect(transport)
 // No Elysia body/response schemas here — this is JSON-RPC, not REST.
 // The route is excluded from the OpenAPI spec via the exclude.paths option in index.ts.
 export const mcpRoutes = new Elysia({ prefix: '/mcp' })
-  .post('/', ({ request }) => transport.handleRequest(request))
-  .get('/', ({ request }) => transport.handleRequest(request))
+  .post('/', ({ request }) => transport.handleRequest(request), { detail: { hide: true } })
+  .get('/', ({ request }) => transport.handleRequest(request), { detail: { hide: true } })

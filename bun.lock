@@ -6,6 +6,7 @@
       "name": "research-gateway",
       "dependencies": {
         "@ai-sdk/openai-compatible": "2.0.50",
+        "@cfworker/json-schema": "4.1.1",
         "@elysiajs/openapi": "1.4.15",
         "@modelcontextprotocol/server": "2.0.0-alpha.2",
         "@mozilla/readability": "0.6.0",
@@ -32,6 +33,8 @@
     "@ai-sdk/provider-utils": ["@ai-sdk/provider-utils@4.0.29", "", { "dependencies": { "@ai-sdk/provider": "3.0.10", "@standard-schema/spec": "^1.1.0", "eventsource-parser": "^3.0.8" }, "peerDependencies": { "zod": "^3.25.76 || ^4.1.8" } }, "sha512-uhukHaCBvqkwBHkT8C2PrnqKTCoLn3pdHXqtcR9I8ErH+flbzgW4o7VHSNIup9LRu+WBvZIZDQLsx6rwl2tiOA=="],
 
     "@borewit/text-codec": ["@borewit/text-codec@0.2.2", "", {}, "sha512-DDaRehssg1aNrH4+2hnj1B7vnUGEjU6OIlyRdkMd0aUdIUvKXrJfXsy8LVtXAy7DRvYVluWbMspsRhz2lcW0mQ=="],
+
+    "@cfworker/json-schema": ["@cfworker/json-schema@4.1.1", "", {}, "sha512-gAmrUZSGtKc3AiBL71iNWxDsyUC5uMaKKGdvzYsBoTW/xi42JQHl7eKV2OYzCUqvc+D2RCcf7EXY2iCyFIk6og=="],
 
     "@elysiajs/openapi": ["@elysiajs/openapi@1.4.15", "", { "peerDependencies": { "elysia": ">= 1.4.0" } }, "sha512-HDtGIrWfFJk6UJS7qbgRmjifbSqnnRGDM3CsU/GVJkxLbEVEkNuQDf+Quh9fGbytSrJ8g4+tX9eVjshYhCH29w=="],
 
