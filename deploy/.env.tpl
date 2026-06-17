@@ -1,7 +1,7 @@
 # Production secrets template for the VPS.
 # Materialized into a real (gitignored) `.env` on the VPS via `op inject` — see DEPLOY.md.
 # Place this file in the vps repo at apps/research-gateway/.env.tpl and re-run the env target
-# after rotating any secret. These op:// refs are INFERRED — confirm with `/secrets`.
+# after rotating any secret. These secret refs are INFERRED — confirm with `/secrets`.
 
 # Gateway's own bearer
 API_SECRET=op://vps/research-gateway/API_SECRET
