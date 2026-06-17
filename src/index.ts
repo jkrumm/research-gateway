@@ -5,11 +5,15 @@ import { env } from './env.js'
 import { authGuard } from './lib/auth-guard.js'
 import { healthRoute } from './routes/health.js'
 import { researchRoutes } from './routes/research.js'
+import { mcpRoutes } from './routes/mcp.js'
 
 export const app = new Elysia()
   .use(
     openapi({
       mapJsonSchema: { zod: z.toJSONSchema },
+      exclude: {
+        paths: ['/mcp'],
+      },
       documentation: {
         info: {
           title: 'research-gateway',
@@ -56,6 +60,11 @@ export const app = new Elysia()
         submit: 'POST /research',
         poll: 'GET /research/:jobId',
       },
+      mcp: {
+        endpoint: '/mcp',
+        transport: 'streamable-http',
+        tool: 'research',
+      },
     }),
     {
       response: z.object({
@@ -74,6 +83,11 @@ export const app = new Elysia()
           submit: z.string(),
           poll: z.string(),
         }),
+        mcp: z.object({
+          endpoint: z.string(),
+          transport: z.string(),
+          tool: z.string(),
+        }),
       }),
       detail: {
         tags: ['System'],
@@ -85,6 +99,7 @@ export const app = new Elysia()
   )
   .use(healthRoute)
   .use(authGuard)
+  .use(mcpRoutes)
   .use(researchRoutes)
   .listen({ port: env.PORT, idleTimeout: 255 })
 
