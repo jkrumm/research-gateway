@@ -18,7 +18,10 @@ TAVILY_API_KEY=op://vps/research-gateway/TAVILY_API_KEY
 CONTEXT7_API_KEY=op://vps/research-gateway/CONTEXT7_API_KEY
 
 # Telemetry → argo
-ARGO_USAGE_URL=https://argo.jkrumm.com/api/usage/records
+# Internal docker route on the VPS — argo is Tailscale-only (grey-cloud), so the
+# container posts to argo-api directly over the shared monitoring-net, not the public host.
+# (Local dev in .env.local.tpl keeps the public URL — the Mac can reach argo.)
+ARGO_USAGE_URL=http://argo-api:4000/usage/records
 ARGO_API_SECRET=op://common/api/SECRET
 
 RESEARCH_MAX_CONCURRENCY=3
