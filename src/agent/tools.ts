@@ -1,0 +1,206 @@
+import { tool } from 'ai'
+import type { Tool } from 'ai'
+import { z } from 'zod'
+import { tavily } from '@tavily/core'
+import { parseHTML } from 'linkedom'
+import { Readability } from '@mozilla/readability'
+import { env } from '../env.js'
+import { assertPublicHttpUrl } from '../lib/ssrf.js'
+import { log } from '../lib/log.js'
+
+const tvly = tavily({ apiKey: env.TAVILY_API_KEY })
+
+const TEXT_CAP = 8_000
+
+function capText(text: string): string {
+  return text.length > TEXT_CAP ? text.slice(0, TEXT_CAP) + '\n[truncated]' : text
+}
+
+async function safeFetch(startUrl: string, jobId = '-', maxHops = 3): Promise<Response> {
+  let current = startUrl
+  for (let hop = 0; ; hop++) {
+    await assertPublicHttpUrl(current) // re-validate EVERY hop (initial + each redirect target)
+    const res = await fetch(current, {
+      headers: { 'user-agent': 'research-gateway/0.1 (+research bot)' },
+      signal: AbortSignal.timeout(10_000),
+      redirect: 'manual',
+    })
+    if (res.status >= 300 && res.status < 400) {
+      const loc = res.headers.get('location')
+      if (!loc) return res
+      if (hop >= maxHops) throw new Error('too many redirects')
+      const next = new URL(loc, current).toString() // resolve relative redirects
+      log('tool.redirect', { jobId, from: current, to: next, status: res.status, hop: hop + 1 })
+      current = next
+      continue
+    }
+    return res
+  }
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type AnyTool = Tool<any, any>
+
+function buildSearchWebTool(onSource?: (url: string) => void, jobId = '-'): AnyTool {
+  return tool({
+    description:
+      'Search the web for information. Returns an answer summary and result snippets. Use basic depth by default; only use advanced when basic results are insufficient.',
+    inputSchema: z.object({
+      query: z.string().describe('The search query'),
+      searchDepth: z
+        .enum(['basic', 'advanced'])
+        .optional()
+        .describe('Search depth — basic (1 credit) or advanced (2 credits). Defaults to basic.'),
+    }),
+    execute: async ({ query, searchDepth }) => {
+      const r = await tvly.search(query, {
+        searchDepth: searchDepth ?? 'basic',
+        maxResults: 5,
+        includeAnswer: true,
+      })
+      log('tool.searchWeb', { jobId, query, searchDepth: searchDepth ?? 'basic', results: r.results.length })
+      return {
+        answer: r.answer ?? null,
+        results: r.results.map((x) => {
+          const c = x.content ?? ''
+          if (x.url) onSource?.(x.url)
+          return {
+            title: x.title,
+            url: x.url,
+            content: c.length > 1_000 ? c.slice(0, 1_000) + '...' : c,
+          }
+        }),
+      }
+    },
+  })
+}
+
+function buildFetchPageTool(onSource?: (url: string) => void, jobId = '-'): AnyTool {
+  // Per-run dedup: a URL fetched once is not fetched again. Re-fetching wastes network,
+  // readability/Tavily-extract work, and budget; the model already has the content above.
+  const fetched = new Set<string>()
+
+  return tool({
+    description:
+      'Fetch the main text content of a URL. Uses Mozilla Readability for clean article extraction; falls back to Tavily Extract if readability fails or returns thin content.',
+    inputSchema: z.object({
+      url: z.string().describe('The URL to fetch'),
+    }),
+    execute: async ({ url }) => {
+      if (fetched.has(url)) {
+        log('tool.fetchPage', { jobId, url, via: 'cache' })
+        return { url, text: 'Already fetched earlier in this conversation — reuse the previous result for this URL.' }
+      }
+
+      // SSRF guard — refuse any non-public URL before making any fetch
+      try {
+        await assertPublicHttpUrl(url)
+      } catch (err) {
+        log('tool.fetchPage', { jobId, url, via: 'refused' })
+        return { url, error: `refused: ${String(err)}` }
+      }
+
+      // Primary: fetch + linkedom + readability
+      let rdReason: 'thin' | 'threw' = 'thin'
+      let rdChars = 0
+      try {
+        const res = await safeFetch(url, jobId)
+        if (res.ok) {
+          const html = await res.text()
+          const { document } = parseHTML(html)
+          const article = new Readability(document as unknown as ConstructorParameters<typeof Readability>[0]).parse()
+          const text = article?.textContent?.trim()
+          rdChars = text?.length ?? 0
+          if (text && text.length >= 200) {
+            fetched.add(url)
+            onSource?.(url)
+            log('tool.fetchPage', { jobId, url, via: 'readability', chars: text.length })
+            return { url, text: capText(text) }
+          }
+        }
+      } catch {
+        // fetch or linkedom failed — fall through to Tavily Extract
+        rdReason = 'threw'
+      }
+
+      // Fallback: Tavily Extract
+      try {
+        const ex = await tvly.extract([url], { extractDepth: 'basic', format: 'markdown' })
+        const result = ex.results[0]
+        if (result) {
+          fetched.add(url)
+          onSource?.(url)
+          log('tool.fetchPage', { jobId, url, via: 'tavily-extract', chars: result.rawContent.length, rdReason, rdChars })
+          return { url, text: capText(result.rawContent) }
+        }
+        const failed = ex.failedResults[0]
+        log('tool.fetchPage', { jobId, url, via: 'error' })
+        return { url, error: failed?.error ?? 'Tavily extract returned no content' }
+      } catch (err) {
+        log('tool.fetchPage', { jobId, url, via: 'error' })
+        return { url, error: String(err) }
+      }
+    },
+  })
+}
+
+function buildLibraryDocsTool(jobId = '-'): AnyTool | null {
+  if (!env.CONTEXT7_API_KEY) return null
+
+  const apiKey = env.CONTEXT7_API_KEY
+
+  return tool({
+    description:
+      'Look up curated documentation for a specific library or framework. Use this first for any question about a library API, version, or usage pattern — it is the cheapest and most accurate source for library-specific questions.',
+    inputSchema: z.object({
+      library: z.string().describe('The library or framework name, e.g. "elysia" or "ai sdk"'),
+      topic: z
+        .string()
+        .describe('The specific topic or API to look up, e.g. "generateText stopWhen"'),
+    }),
+    execute: async ({ library, topic }) => {
+      try {
+        const { Context7 } = await import('@upstash/context7-sdk')
+        const c7 = new Context7({ apiKey })
+
+        // searchLibrary(query, libraryName) — resolve the library id
+        const libs = await c7.searchLibrary(topic, library)
+        const topLib = libs[0]
+        if (!topLib) {
+          log('tool.libraryDocs', { jobId, library, topic, ok: false })
+          return { error: `No library found matching "${library}"` }
+        }
+
+        // getContext(query, libraryId) — fetch relevant docs
+        const docs = await c7.getContext(topic, topLib.id)
+        if (!docs || docs.length === 0) {
+          log('tool.libraryDocs', { jobId, library, topic, ok: false })
+          return { error: `No documentation found for "${library}" on topic "${topic}"` }
+        }
+
+        const text = docs.map((d) => `## ${d.title}\n${d.content}`).join('\n\n')
+
+        log('tool.libraryDocs', { jobId, library, topic, ok: true })
+        return { library: topLib.name, libraryId: topLib.id, text: capText(text) }
+      } catch (err) {
+        log('tool.libraryDocs', { jobId, library, topic, ok: false })
+        return { error: String(err) }
+      }
+    },
+  }) as AnyTool
+}
+
+export function buildTools(onSource?: (url: string) => void, jobId?: string): Record<string, AnyTool> {
+  const jid = jobId ?? '-'
+  const tools: Record<string, AnyTool> = {
+    searchWeb: buildSearchWebTool(onSource, jid),
+    fetchPage: buildFetchPageTool(onSource, jid),
+  }
+
+  const libraryDocsTool = buildLibraryDocsTool(jid)
+  if (libraryDocsTool) {
+    tools['libraryDocs'] = libraryDocsTool
+  }
+
+  return tools
+}

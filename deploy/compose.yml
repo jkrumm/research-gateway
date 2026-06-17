@@ -1,0 +1,48 @@
+# Production compose for the VPS — TEMPLATE.
+# Place in the vps repo at apps/research-gateway/compose.yml. Mirrors apps/argo/compose.yml.
+# Ingress = Cloudflare Tunnel -> Traefik v3. Deploys are label-driven via rollhook (OIDC).
+# `${DOMAIN}` comes from the vps top-level .env; `.env` here is materialized by `op inject`.
+
+services:
+  research-gateway:
+    image: ${RESEARCH_GATEWAY_IMAGE:-${IMAGE_TAG:-rollhook.jkrumm.com/research-gateway:latest}}
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      PORT: 7780
+      NODE_ENV: production
+    mem_limit: 512m
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - proxy
+      - monitoring-net
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:7780/health"]
+      interval: 10s
+      timeout: 5s
+      start_period: 15s
+      retries: 5
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.research-gateway.rule=Host(`research.${DOMAIN}`)"
+      - "traefik.http.routers.research-gateway.entrypoints=websecure"
+      - "traefik.http.routers.research-gateway.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.research-gateway.middlewares=security-headers@file"
+      - "traefik.http.services.research-gateway.loadbalancer.server.port=7780"
+      - "traefik.http.services.research-gateway.loadbalancer.healthcheck.path=/health"
+      - "com.centurylinklabs.watchtower.enable=false"
+      # rollhook OIDC authorization — only this repo may deploy this container
+      - "rollhook.allowed_repos=jkrumm/research-gateway"
+
+networks:
+  proxy:
+    external: true
+  monitoring-net:
+    external: true
