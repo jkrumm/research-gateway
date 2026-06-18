@@ -1,7 +1,7 @@
 import { env } from '../env.js'
-import type { ResearchReport, Depth } from '../agent/schema.js'
+import type { ResearchReport, Depth, JobStatus } from '../agent/schema.js'
 
-export type JobStatus = 'queued' | 'running' | 'done' | 'error'
+export type { JobStatus }
 
 export interface Job {
   jobId: string

@@ -60,7 +60,7 @@ export const app = new Elysia()
       mcp: {
         endpoint: '/mcp',
         transport: 'streamable-http',
-        tool: 'research',
+        tools: ['research', 'job_wait', 'job_status'],
       },
     }),
     {
@@ -83,7 +83,7 @@ export const app = new Elysia()
         mcp: z.object({
           endpoint: z.string(),
           transport: z.string(),
-          tool: z.string(),
+          tools: z.array(z.string()),
         }),
       }),
       detail: {
