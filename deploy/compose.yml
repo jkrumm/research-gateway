@@ -1,6 +1,8 @@
 # Production compose for the VPS — TEMPLATE.
-# Place in the vps repo at apps/research-gateway/compose.yml. Mirrors apps/argo/compose.yml.
-# Ingress = Cloudflare Tunnel -> Traefik v3. Deploys are label-driven via rollhook (OIDC).
+# Place in the vps repo at apps/research-gateway/compose.yml. Mirrors apps/audio-gateway/compose.yml.
+# Tailscale-only: DNS-only (grey) A record research.${DOMAIN} -> VPS Tailscale IP; NOT behind the
+# cloudflared tunnel (same pattern as argo / audio-gateway). Traefik labels are identical to a
+# public service — tailnet-only is enforced at the DNS layer. Deploys are label-driven via rollhook (OIDC).
 # `${DOMAIN}` comes from the vps top-level .env; `.env` here is materialized by `op inject`.
 
 services:

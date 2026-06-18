@@ -1,7 +1,8 @@
 # research-gateway
 
-One research brain, hosted on the VPS, callable by every client (Claude Code, Hermes, any
-machine) over a typed HTTP contract. It is **not** a fixed pipeline — an agent runs a
+One research brain, hosted on the VPS, callable over a typed HTTP contract by every client on
+the tailnet (Claude Code, Hermes, any tailnet machine) — it is **Tailscale-only**, not exposed to
+the public internet. It is **not** a fixed pipeline — an agent runs a
 multi-step, tool-calling loop (Tavily search + page fetch + curated library docs), decides how
 deep to go, cross-verifies, and stops when confident, bounded by a hard budget ceiling.
 
@@ -69,8 +70,10 @@ Each run reports LLM spend directly to argo `POST /usage/records` as `source: "r
 
 ## Deploy
 
-VPS, behind Cloudflare Tunnel → Traefik, deployed via rollhook. See
-[`deploy/DEPLOY.md`](./deploy/DEPLOY.md) — **start with the gating IU-reachability pre-check.**
+VPS, **Tailscale-only** (grey-cloud DNS-only A record → VPS Tailscale IP, *not* behind the
+Cloudflare Tunnel; same pattern as `audio-gateway`) → Traefik, deployed via rollhook. The bearer
+token is defense-in-depth on top of the tailnet gate. See [`deploy/DEPLOY.md`](./deploy/DEPLOY.md)
+— **start with the gating IU-reachability pre-check.**
 
 ## Clients & migration order
 

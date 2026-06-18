@@ -1,9 +1,11 @@
 # Deploying research-gateway to the VPS
 
-Ingress is **Cloudflare Tunnel → Traefik v3**; deploys are **label-driven via rollhook** (OIDC,
-zero-downtime), exactly like `argo`. The app repo ships only the code, `Dockerfile`, and the
-`.github/workflows/deploy.yml` trigger. The compose file, the prod `.env`, and the Cloudflare
-hostname live in the **`vps`** repo + the Cloudflare dashboard.
+Ingress is **Tailscale-only** — a grey-cloud DNS-only A record (`research.<domain>` → the VPS
+Tailscale IP) routed to **Traefik v3**, *not* through the Cloudflare Tunnel (same pattern as `argo`
+and `audio-gateway`). Deploys are **label-driven via rollhook** (OIDC, zero-downtime). The app repo
+ships only the code, `Dockerfile`, and the `.github/workflows/deploy.yml` trigger. The compose
+file, the prod `.env`, and the Cloudflare DNS record live in the **`vps`** repo + the Cloudflare
+dashboard.
 
 > The `op://` refs in `deploy/.env.tpl` and `.env.local.tpl` are **inferred** from argo's
 > conventions. Confirm exact vault/item names with `/secrets` before first deploy — especially
@@ -57,15 +59,21 @@ research-gateway-env:
 
 Run `make research-gateway-env` to materialize the gitignored `.env`. Re-run after rotating any secret.
 
-## 3. Cloudflare hostname (public)
+## 3. Cloudflare DNS (Tailscale-only)
 
-The gateway is meant to be callable from any machine, so it is **public** (proxied), protected by
-the bearer token — not Tailscale-only. In the Cloudflare dashboard for the tunnel, add a public
-hostname:
+The gateway is **tailnet-only** — every consumer (Claude Code, Hermes) is on the tailnet, so it is
+*not* exposed to the public internet. Access is gated at the DNS layer (a grey-cloud A record to a
+CGNAT address is unreachable off-tailnet); the bearer token is defense-in-depth on top.
 
-- `research.<your-domain>` → `https://traefik:443` (same target as the other proxied apps).
+Add the DNS record exactly like `audio-gateway` / `argo` (via the `/cloudflare` skill or the
+dashboard):
 
-Add the DNS record (CNAME/A) for `research.<your-domain>` pointing at the tunnel (orange cloud / proxied).
+- `research.<your-domain>` → **A record, DNS-only (grey cloud, `proxied:false`)** → the VPS
+  Tailscale IP (`op://vps/config/VPS_TAILSCALE_IP`).
+
+**Do NOT** add it to the cloudflared tunnel ingress. Traefik's `:443` is already bound to the
+Tailscale interface and the wildcard `*.<domain>` DNS-01 cert already covers the hostname, so no
+per-host tunnel entry and no separate cert issuance are needed.
 
 ## 4. Bootstrap + first deploy
 
@@ -82,7 +90,7 @@ Add the DNS record (CNAME/A) for `research.<your-domain>` pointing at the tunnel
 TOKEN=$(op read "op://vps/research-gateway/API_SECRET" --account tkrumm)
 BASE=https://research.<your-domain>
 
-curl -sS "$BASE/health"                                   # {"status":"ok"} — public
+curl -sS "$BASE/health"                                   # {"status":"ok"} — tailnet-only
 
 JOB=$(curl -sS -X POST "$BASE/research" \
   -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
