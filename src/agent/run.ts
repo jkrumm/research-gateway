@@ -21,9 +21,6 @@ export interface UsageStats {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyTool = Tool<any, any>
 
-// Bounded budget for the final salvage synthesis call (one step over a large context).
-const SALVAGE_TIMEOUT_MS = 90_000
-
 // Pull a valid ResearchReport out of a result's tool calls, or null if absent/malformed.
 function extractReport(
   toolCalls: ReadonlyArray<{ toolName: string; input: unknown }>,
@@ -146,7 +143,7 @@ export async function runResearch(
         ],
         tools: { submit_report: submitReportTool },
         toolChoice: { type: 'tool', toolName: 'submit_report' },
-        abortSignal: AbortSignal.timeout(SALVAGE_TIMEOUT_MS),
+        abortSignal: AbortSignal.timeout(profile.salvageTimeoutMs),
       })
       inputTokens += salvage.totalUsage.inputTokens ?? 0
       outputTokens += salvage.totalUsage.outputTokens ?? 0
