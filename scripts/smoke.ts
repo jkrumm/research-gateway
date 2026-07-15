@@ -4,7 +4,7 @@
 //
 // Run (from repo root), Tavily key from the macOS keychain + IU from 1Password:
 //   TAVILY_API_KEY="$(security find-generic-password -s tavily-api-key -w)" \
-//   op run --account tkrumm --env-file=/tmp/rg-smoke.env -- bun run scripts/smoke.ts "<query>" <depth>
+//   secrets-run run --env-file=/tmp/rg-smoke.env -- bun run scripts/smoke.ts "<query>" <depth>
 //
 // /tmp/rg-smoke.env must define API_SECRET (any dummy), IU_BASE_URL, IU_API_KEY, IU_MODEL.
 

@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "start": "bun run src/index.ts",
-    "dev": "op run --account tkrumm --env-file=.env.local.tpl -- bun run --hot src/index.ts",
+    "dev": "secrets-run run --env-file=.env.local.tpl -- bun run --hot src/index.ts",
     "typecheck": "tsc --noEmit",
     "test": "bun test"
   },

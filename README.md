@@ -40,7 +40,7 @@ Runs are **async**: submit returns a `jobId` immediately; poll `GET /research/:j
 
 ```bash
 bun install
-bun run dev        # wraps `op run` to inject secrets from .env.local.tpl, then bun --hot
+bun run dev        # wraps `secrets-run` (drop-in op shim) to inject secrets from .env.local.tpl, then bun --hot
 ```
 
 `bun run dev` needs the 1Password CLI (`op`, account `tkrumm`). Fill in / verify the `op://`

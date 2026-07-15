@@ -1,5 +1,6 @@
-# Local dev secrets template — consumed via `op run` (see package.json `dev` script).
-# `op run` substitutes only bare op:// refs. Verify exact vault/item paths with `/secrets`.
+# Local dev secrets template — consumed via `secrets-run` (drop-in op shim; see the
+# package.json `dev` script). Substitutes only bare op:// refs, mirroring `op run`.
+# Verify exact vault/item paths with `/secrets`.
 # These op:// refs are INFERRED from the argo conventions — confirm before first run.
 
 PORT=7780
