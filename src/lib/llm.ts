@@ -7,4 +7,5 @@ export const iu = createOpenAICompatible({
   apiKey: env.IU_API_KEY,
 })
 
-export const loopModel = iu(env.IU_MODEL)
+export const leadModel = iu(env.IU_LEAD_MODEL)
+export const workerModel = iu(env.IU_WORKER_MODEL)

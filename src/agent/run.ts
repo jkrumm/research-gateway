@@ -1,39 +1,101 @@
-import { generateText, tool, stepCountIs, hasToolCall } from 'ai'
-import type { Tool, StopCondition, ToolSet } from 'ai'
-import { loopModel } from '../lib/llm.js'
-import { buildTools } from './tools.js'
 import { profiles } from './depth.js'
-import { systemPrompt } from './prompt.js'
+import { planResearch } from './plan.js'
+import { runWorker } from './worker.js'
+import { synthesize } from './synthesize.js'
+import { assembleReport, nextRoundQuestions } from './assemble.js'
 import { ResearchReport } from './schema.js'
-import type { Depth } from './schema.js'
+import type { Depth, SubQuestion, WorkerDigest } from './schema.js'
 import { log } from '../lib/log.js'
-import { computeCost } from '../lib/usage.js'
+import { computeCost, emptyUsage, addUsage } from '../lib/usage.js'
+import type { UsageStats } from '../lib/usage.js'
 import { env } from '../env.js'
 
-export interface UsageStats {
-  inputTokens: number
-  outputTokens: number
-  totalTokens: number
-  reasoningTokens: number
-  durationMs: number
+// Re-exported for compatibility and direct unit-testing — the implementation lives in
+// `assemble.ts` because it has no `env.js` import chain (schema.js only), so it can be
+// tested without booting the env-parsing/llm.ts chain that `run.ts` itself drags in.
+export { assembleReport, nextRoundQuestions } from './assemble.js'
+
+// Combined job usage handed to onUsage: the flat total plus the per-model split, since
+// the lead model (plan + synthesis) and worker model (fan-out) are billed separately.
+export interface JobUsage extends UsageStats {
+  lead: UsageStats
+  worker: UsageStats
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-type AnyTool = Tool<any, any>
+// Tiny local concurrency gate — bounds how many workers run at once within one job.
+// No dependency added; Promise.allSettled still drives the actual parallel dispatch.
+class Semaphore {
+  private active = 0
+  private readonly queue: Array<() => void> = []
 
-// Pull a valid ResearchReport out of a result's tool calls, or null if absent/malformed.
-function extractReport(
-  toolCalls: ReadonlyArray<{ toolName: string; input: unknown }>,
-): ResearchReport | null {
-  const submitCall = toolCalls.find((c) => c.toolName === 'submit_report')
-  if (!submitCall) return null
-  const parsed = ResearchReport.safeParse(submitCall.input)
-  return parsed.success ? parsed.data : null
+  constructor(private readonly max: number) {}
+
+  async acquire(): Promise<void> {
+    if (this.active < this.max) {
+      this.active++
+      return
+    }
+    await new Promise<void>((resolve) => this.queue.push(resolve))
+    this.active++
+  }
+
+  release(): void {
+    this.active--
+    this.queue.shift()?.()
+  }
+}
+
+async function withLimit<T>(sem: Semaphore, fn: () => Promise<T>): Promise<T> {
+  await sem.acquire()
+  try {
+    return await fn()
+  } finally {
+    sem.release()
+  }
+}
+
+interface RoundResult {
+  digests: WorkerDigest[]
+  usage: UsageStats
+  sourcesSeen: Set<string>
+}
+
+// Runs one round's sub-questions as workers in parallel, bounded by WORKER_MAX_CONCURRENCY.
+// A worker that throws is caught inside runWorker itself; Promise.allSettled here is a
+// second, defensive layer so an unexpected throw can never abort the round.
+async function dispatchRound(
+  subQuestions: SubQuestion[],
+  depth: Depth,
+  jobId: string,
+  round: number,
+  researchDeadlineAt: number,
+): Promise<RoundResult> {
+  const sem = new Semaphore(env.WORKER_MAX_CONCURRENCY)
+  const settled = await Promise.allSettled(
+    subQuestions.map((sq) =>
+      withLimit(sem, () =>
+        runWorker({ subQuestion: sq.question, depth, jobId, round, researchDeadlineAt }),
+      ),
+    ),
+  )
+
+  let usage = emptyUsage()
+  const digests: WorkerDigest[] = []
+  const sourcesSeen = new Set<string>()
+
+  for (const outcome of settled) {
+    if (outcome.status !== 'fulfilled') continue
+    usage = addUsage(usage, outcome.value.usage)
+    for (const url of outcome.value.sourcesRead) sourcesSeen.add(url)
+    if (outcome.value.digest) digests.push(outcome.value.digest)
+  }
+
+  return { digests, usage, sourcesSeen }
 }
 
 export async function runResearch(
   input: { query: string; depth?: Depth; jobId?: string },
-  onUsage?: (stats: UsageStats) => void,
+  onUsage?: (stats: JobUsage) => void,
 ): Promise<ResearchReport> {
   const depth = input.depth ?? 'standard'
   const jobId = input.jobId ?? '-'
@@ -42,158 +104,137 @@ export async function runResearch(
 
   log('research.start', { jobId, depth, queryPreview: input.query.slice(0, 200) })
 
-  const sources = new Set<string>()
-  const researchTools = buildTools((u) => sources.add(u), jobId)
+  let leadUsage = emptyUsage()
+  let workerUsage = emptyUsage()
+  const allDigests: WorkerDigest[] = []
+  const askedLower = new Set<string>()
+  const sourcesSeen = new Set<string>()
+  let workersDispatchedTotal = 0
 
-  // The done tool — no `execute` means the loop halts when the model calls it.
-  // Its input IS the final structured report.
-  // Cast as AnyTool to satisfy ToolSet's index signature under exactOptionalPropertyTypes.
-  const submitReportTool: AnyTool = tool({
-    description:
-      'Submit the final research report. Call this when you have gathered sufficient evidence and are ready to deliver your answer. This is the ONLY way to deliver the answer — do not write plain text.',
-    inputSchema: ResearchReport,
-  }) as AnyTool
+  const { plan, usage: planUsage } = await planResearch({ query: input.query, depth, jobId })
+  leadUsage = addUsage(leadUsage, planUsage)
+  log('research.plan', { jobId, subQuestions: plan.subQuestions.length })
 
-  const allTools: ToolSet = {
-    ...researchTools,
-    submit_report: submitReportTool,
-  }
+  // Synthesis MUST always retain its full budget — the research phase (plan + worker
+  // rounds) is only ever allowed to eat the remainder. Threaded into each worker so a
+  // worker running past this point BANKS its digest (forced submit_digest) instead of
+  // being aborted — an abort here would lose the whole digest, reintroducing the exact
+  // failure class (missing try/catch on searchWeb killing 60% of workers) already fixed.
+  const researchDeadlineAt = start + (profile.totalTimeoutMs - profile.synthesisTimeoutMs)
 
-  // Custom budget stop condition: halts if token budget or wall-clock is exceeded.
-  // StopCondition receives only `{ steps }` — confirmed from ai@6.0.205 types.
-  const budgetStop: StopCondition<ToolSet> = ({ steps }) => {
-    const elapsed = Date.now() - start
-    if (elapsed > profile.timeoutMs) return true
+  let currentQuestions: SubQuestion[] = plan.subQuestions
+  let round = 1
+  while (currentQuestions.length > 0) {
+    for (const sq of currentQuestions) askedLower.add(sq.question.trim().toLowerCase())
 
-    let totalTokens = 0
-    for (const step of steps) {
-      const u = step.usage
-      if (u.totalTokens !== undefined) {
-        totalTokens += u.totalTokens
-      } else {
-        totalTokens += (u.inputTokens ?? 0) + (u.outputTokens ?? 0)
-      }
-    }
-    return totalTokens > profile.maxTokens
-  }
+    const { digests, usage, sourcesSeen: roundSources } = await dispatchRound(
+      currentQuestions,
+      depth,
+      jobId,
+      round,
+      researchDeadlineAt,
+    )
+    workerUsage = addUsage(workerUsage, usage)
+    allDigests.push(...digests)
+    workersDispatchedTotal += currentQuestions.length
+    for (const url of roundSources) sourcesSeen.add(url)
 
-  const signal = AbortSignal.timeout(profile.timeoutMs)
-
-  let result: Awaited<ReturnType<typeof generateText>>
-  try {
-    result = await generateText({
-      model: loopModel,
-      system: systemPrompt(depth),
-      prompt: input.query,
-      tools: allTools,
-      stopWhen: [stepCountIs(profile.maxSteps), hasToolCall('submit_report'), budgetStop],
-      abortSignal: signal,
-      onStepFinish: (step) => {
-        log('research.step', {
-          jobId,
-          tools: step.toolCalls.map((c) => c.toolName),
-          finishReason: step.finishReason,
-        })
-      },
+    log('research.round', {
+      jobId,
+      round,
+      workersDispatched: currentQuestions.length,
+      digestsReturned: digests.length,
     })
-  } catch (err) {
-    // Wall-clock ceiling fired → degrade gracefully. Any other error → surface it.
-    if (signal.aborted) {
-      const wallMs = Date.now() - start
-      log('research.aborted', { jobId, wallMs, sources: sources.size })
-      return {
-        report: 'Research halted at the wall-clock ceiling before a final report could be produced.',
-        citations: [],
-        sources: [...sources],
-      }
-    }
-    log('research.error', { jobId, error: String(err) })
-    throw err
+
+    if (round >= profile.rounds) break
+
+    const elapsed = Date.now() - start
+    if (elapsed + profile.synthesisTimeoutMs >= profile.totalTimeoutMs) break
+
+    const gapQuestions = nextRoundQuestions(digests, askedLower, profile.gapWorkers)
+    if (gapQuestions.length === 0) break
+
+    currentQuestions = gapQuestions
+    round += 1
   }
 
-  // Usage accumulators — extended below if a salvage call runs.
-  let inputTokens = result.totalUsage.inputTokens ?? 0
-  let outputTokens = result.totalUsage.outputTokens ?? 0
-  let totalTokens = result.totalUsage.totalTokens ?? 0
-  let reasoningTokens =
-    result.totalUsage.outputTokenDetails?.reasoningTokens ?? result.totalUsage.reasoningTokens ?? 0
+  let report: ResearchReport | null = null
+  let reason: 'submit_report' | 'assembled' | 'empty' = 'empty'
 
-  // Happy path: the loop terminated by calling submit_report with a valid payload.
-  let report = extractReport(result.toolCalls)
-  let reason: 'submit_report' | 'salvaged' | 'fallback' = report ? 'submit_report' : 'fallback'
+  if (allDigests.length > 0) {
+    const { report: synthesized, usage: synthesisUsage } = await synthesize({
+      query: input.query,
+      digests: allDigests,
+      depth,
+      jobId,
+    })
+    leadUsage = addUsage(leadUsage, synthesisUsage)
 
-  // Salvage: the loop halted at a budget/step ceiling (or with malformed input) WITHOUT a
-  // valid report. Rather than discard all gathered evidence, force ONE final synthesis call
-  // that must call submit_report — turning wasted spend into a cited answer. The first user
-  // turn + the loop's generated messages are replayed so the model has the full evidence;
-  // only submit_report is offered (no more researching) and a short timeout bounds the cost.
-  if (!report) {
-    try {
-      const salvage = await generateText({
-        model: loopModel,
-        system: systemPrompt(depth),
-        messages: [
-          { role: 'user', content: input.query },
-          ...result.response.messages,
-          {
-            role: 'user',
-            content:
-              'You have reached the research budget ceiling — stop researching now and call submit_report immediately, synthesizing from the evidence already gathered above. Requirements: (1) `report` is the COMPLETE markdown answer for the user — write the answer directly, with NO preamble or commentary about your process or what you did/didn’t gather; (2) `citations` must tie each key claim to a source URL seen above; (3) `sources` must list every URL you consulted above.',
-          },
-        ],
-        tools: { submit_report: submitReportTool },
-        toolChoice: { type: 'tool', toolName: 'submit_report' },
-        abortSignal: AbortSignal.timeout(profile.salvageTimeoutMs),
-      })
-      inputTokens += salvage.totalUsage.inputTokens ?? 0
-      outputTokens += salvage.totalUsage.outputTokens ?? 0
-      totalTokens += salvage.totalUsage.totalTokens ?? 0
-      reasoningTokens +=
-        salvage.totalUsage.outputTokenDetails?.reasoningTokens ?? salvage.totalUsage.reasoningTokens ?? 0
-      const salvaged = extractReport(salvage.toolCalls)
-      if (salvaged) {
-        report = salvaged
-        reason = 'salvaged'
-      }
-    } catch (err) {
-      log('research.salvageFailed', { jobId, error: String(err) })
+    if (synthesized) {
+      report = synthesized
+      reason = 'submit_report'
+    } else {
+      // Deterministic fallback — assembled in code, no LLM call. See assemble.ts.
+      report = assembleReport(allDigests)
+      reason = 'assembled'
     }
+  }
+
+  // Last-resort degraded stub: no digest was ever produced (every worker failed/timed out).
+  if (!report) {
+    report = {
+      report: 'Research could not gather any evidence for this query before the budget was exhausted.',
+      citations: [],
+      sources: [...sourcesSeen],
+    }
+    reason = 'empty'
+  }
+
+  // Sources floor: never drop URLs actually read. If the report's sources came back empty,
+  // backfill from the union of everything the digests recorded as read.
+  if (report.sources.length === 0) {
+    const digestSources = new Set(allDigests.flatMap((d) => d.sourcesRead))
+    if (digestSources.size > 0) report.sources = [...digestSources]
   }
 
   const wallMs = Date.now() - start
+  const combined = addUsage(leadUsage, workerUsage)
+  const jobUsage: JobUsage = { ...combined, durationMs: wallMs, lead: leadUsage, worker: workerUsage }
 
-  if (onUsage) {
-    onUsage({ inputTokens, outputTokens, totalTokens, reasoningTokens, durationMs: wallMs })
-  }
+  if (onUsage) onUsage(jobUsage)
 
-  // Last-resort degraded stub: even the forced salvage produced no valid report.
-  if (!report) {
-    report = {
-      report: result.text || 'Research halted at the budget ceiling before producing a final report.',
-      citations: [],
-      sources: [...sources],
-    }
-  }
+  const leadCost = computeCost(env.IU_LEAD_MODEL, {
+    inputTokens: leadUsage.inputTokens,
+    cachedInputTokens: leadUsage.cachedInputTokens,
+    outputTokens: leadUsage.outputTokens,
+  })
+  const workerCost = computeCost(env.IU_WORKER_MODEL, {
+    inputTokens: workerUsage.inputTokens,
+    cachedInputTokens: workerUsage.cachedInputTokens,
+    outputTokens: workerUsage.outputTokens,
+  })
+  const costUsd =
+    leadCost.costUsd === null && workerCost.costUsd === null
+      ? null
+      : (leadCost.costUsd ?? 0) + (workerCost.costUsd ?? 0)
 
-  // Sources floor: never drop the URLs we actually touched. If the model returned an empty
-  // sources list (common under a forced salvage call), backfill from the accumulator.
-  if (report.sources.length === 0 && sources.size > 0) {
-    report.sources = [...sources]
-  }
-
-  const { costUsd } = computeCost(env.IU_MODEL, inputTokens, outputTokens)
   log('research.done', {
     jobId,
     reason,
+    depth,
+    rounds: round,
+    workers: workersDispatchedTotal,
+    digests: allDigests.length,
     citations: report.citations.length,
     sources: report.sources.length,
-    inputTokens,
-    outputTokens,
-    totalTokens,
-    reasoningTokens,
+    inputTokens: combined.inputTokens,
+    cachedInputTokens: combined.cachedInputTokens,
+    outputTokens: combined.outputTokens,
+    totalTokens: combined.totalTokens,
+    reasoningTokens: combined.reasoningTokens,
     costUsd,
-    steps: result.steps.length,
     wallMs,
   })
+
   return report
 }

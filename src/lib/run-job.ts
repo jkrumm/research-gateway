@@ -16,7 +16,8 @@ export function startResearchJob(job: Job): void {
       const result = await runResearch(
         { query: job.query, depth: job.depth, jobId: job.jobId },
         (stats) => {
-          void reportUsage({ jobId: job.jobId, model: env.IU_MODEL, ...stats })
+          void reportUsage({ jobId: job.jobId, model: env.IU_LEAD_MODEL, subTool: 'lead', ...stats.lead })
+          void reportUsage({ jobId: job.jobId, model: env.IU_WORKER_MODEL, subTool: 'worker', ...stats.worker })
         },
       )
       updateJob(job.jobId, { status: 'done', result, finishedAt: Date.now() })

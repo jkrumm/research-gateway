@@ -10,7 +10,7 @@ import { log } from '../lib/log.js'
 
 const tvly = tavily({ apiKey: env.TAVILY_API_KEY })
 
-const TEXT_CAP = 8_000
+const TEXT_CAP = 24_000
 
 function capText(text: string): string {
   return text.length > TEXT_CAP ? text.slice(0, TEXT_CAP) + '\n[truncated]' : text
@@ -41,35 +41,61 @@ async function safeFetch(startUrl: string, jobId = '-', maxHops = 3): Promise<Re
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyTool = Tool<any, any>
 
-function buildSearchWebTool(onSource?: (url: string) => void, jobId = '-'): AnyTool {
+function buildSearchWebTool(defaultSearchDepth: 'basic' | 'advanced', jobId = '-'): AnyTool {
+  // Per-run search dedup, mirroring fetchPage's. Tavily credits are a hard-limited resource
+  // (exceeding the key's cap fails the search outright), and a re-issued identical query
+  // returns identical results — so it burns credit for nothing.
+  const searched = new Map<string, unknown>()
+
   return tool({
     description:
-      'Search the web for information. Returns an answer summary and result snippets. Use basic depth by default; only use advanced when basic results are insufficient.',
+      'Search the web to find candidate sources. Returns an answer summary and result snippets.',
     inputSchema: z.object({
       query: z.string().describe('The search query'),
-      searchDepth: z
-        .enum(['basic', 'advanced'])
-        .optional()
-        .describe('Search depth — basic (1 credit) or advanced (2 credits). Defaults to basic.'),
     }),
-    execute: async ({ query, searchDepth }) => {
-      const r = await tvly.search(query, {
-        searchDepth: searchDepth ?? 'basic',
-        maxResults: 5,
-        includeAnswer: true,
-      })
-      log('tool.searchWeb', { jobId, query, searchDepth: searchDepth ?? 'basic', results: r.results.length })
-      return {
-        answer: r.answer ?? null,
-        results: r.results.map((x) => {
-          const c = x.content ?? ''
-          if (x.url) onSource?.(x.url)
-          return {
-            title: x.title,
-            url: x.url,
-            content: c.length > 1_000 ? c.slice(0, 1_000) + '...' : c,
-          }
-        }),
+    // Search depth is set by the job's research depth, not chosen per-call: a `deep` job
+    // must search deeply. Exposing it let the model silently downgrade to basic and halve
+    // the sources a deep pass found.
+    execute: async ({ query }) => {
+      const depth = defaultSearchDepth
+      const cacheKey = `${depth}:${query.trim().toLowerCase()}`
+      const cached = searched.get(cacheKey)
+      if (cached !== undefined) {
+        log('tool.searchWeb', { jobId, query, searchDepth: depth, via: 'cache' })
+        return cached
+      }
+
+      // A search failure must degrade to a tool-visible error, never throw: an uncaught
+      // throw here propagates out of the agent loop and kills the whole worker, losing
+      // every digest it had gathered. fetchPage/libraryDocs already follow this pattern.
+      // `timeout` is SECONDS in @tavily/core (default 60) — not milliseconds.
+      try {
+        const r = await tvly.search(query, {
+          searchDepth: depth,
+          maxResults: 5,
+          includeAnswer: true,
+          timeout: 30,
+        })
+        log('tool.searchWeb', { jobId, query, searchDepth: depth, results: r.results.length })
+        const out = {
+          answer: r.answer ?? null,
+          // NOTE: onSource intentionally NOT called here — a search result is a candidate,
+          // not a consulted source. Only pages actually read (fetchPage/libraryDocs) count.
+          results: r.results.map((x) => {
+            const c = x.content ?? ''
+            return {
+              title: x.title,
+              url: x.url,
+              content: c.length > 1_000 ? c.slice(0, 1_000) + '...' : c,
+            }
+          }),
+        }
+        // Only successes are cached — a transient failure must not permanently poison a query.
+        searched.set(cacheKey, out)
+        return out
+      } catch (err) {
+        log('tool.searchWeb', { jobId, query, searchDepth: depth, error: String(err) })
+        return { error: `search failed: ${String(err)}`, results: [] }
       }
     },
   })
@@ -125,7 +151,7 @@ function buildFetchPageTool(onSource?: (url: string) => void, jobId = '-'): AnyT
 
       // Fallback: Tavily Extract
       try {
-        const ex = await tvly.extract([url], { extractDepth: 'basic', format: 'markdown' })
+        const ex = await tvly.extract([url], { extractDepth: 'basic', format: 'markdown', timeout: 30 })
         const result = ex.results[0]
         if (result) {
           fetched.add(url)
@@ -144,14 +170,14 @@ function buildFetchPageTool(onSource?: (url: string) => void, jobId = '-'): AnyT
   })
 }
 
-function buildLibraryDocsTool(jobId = '-'): AnyTool | null {
+function buildLibraryDocsTool(onSource: ((url: string) => void) | undefined, jobId = '-'): AnyTool | null {
   if (!env.CONTEXT7_API_KEY) return null
 
   const apiKey = env.CONTEXT7_API_KEY
 
   return tool({
     description:
-      'Look up curated documentation for a specific library or framework. Use this first for any question about a library API, version, or usage pattern — it is the cheapest and most accurate source for library-specific questions.',
+      'Look up curated documentation for a specific library or framework. Use this first for any question about a library API, version, or usage pattern — it is the most accurate source for library-specific questions.',
     inputSchema: z.object({
       library: z.string().describe('The library or framework name, e.g. "elysia" or "ai sdk"'),
       topic: z
@@ -179,6 +205,11 @@ function buildLibraryDocsTool(jobId = '-'): AnyTool | null {
         }
 
         const text = docs.map((d) => `## ${d.title}\n${d.content}`).join('\n\n')
+        // Context7's `source` is a URL *or* an opaque snippet identifier. Only real URLs
+        // belong in the report's sources — the rest would be uncheckable by a reader.
+        for (const d of docs) {
+          if (d.source?.startsWith('http')) onSource?.(d.source)
+        }
 
         log('tool.libraryDocs', { jobId, library, topic, ok: true })
         return { library: topLib.name, libraryId: topLib.id, text: capText(text) }
@@ -190,14 +221,18 @@ function buildLibraryDocsTool(jobId = '-'): AnyTool | null {
   }) as AnyTool
 }
 
-export function buildTools(onSource?: (url: string) => void, jobId?: string): Record<string, AnyTool> {
+export function buildTools(
+  onSource: ((url: string) => void) | undefined,
+  jobId: string | undefined,
+  searchDepth: 'basic' | 'advanced' = 'basic',
+): Record<string, AnyTool> {
   const jid = jobId ?? '-'
   const tools: Record<string, AnyTool> = {
-    searchWeb: buildSearchWebTool(onSource, jid),
+    searchWeb: buildSearchWebTool(searchDepth, jid),
     fetchPage: buildFetchPageTool(onSource, jid),
   }
 
-  const libraryDocsTool = buildLibraryDocsTool(jid)
+  const libraryDocsTool = buildLibraryDocsTool(onSource, jid)
   if (libraryDocsTool) {
     tools['libraryDocs'] = libraryDocsTool
   }

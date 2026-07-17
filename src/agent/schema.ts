@@ -18,6 +18,41 @@ export const ResearchReport = z.object({
 })
 export type ResearchReport = z.infer<typeof ResearchReport>
 
+// ── Plan → parallel fan-out → synthesize contracts (internal, not part of the public API) ──
+
+export const SubQuestion = z.object({
+  id: z.string(),
+  question: z.string(),
+  rationale: z.string().optional(),
+})
+export type SubQuestion = z.infer<typeof SubQuestion>
+
+export const ResearchPlan = z.object({ subQuestions: z.array(SubQuestion).min(1) })
+export type ResearchPlan = z.infer<typeof ResearchPlan>
+
+export const Finding = z.object({
+  claim: z.string(),
+  url: z.string(),
+  confidence: z.enum(['high', 'medium', 'low']),
+})
+export type Finding = z.infer<typeof Finding>
+
+export const WorkerDigest = z.object({
+  subQuestion: z.string(),
+  summary: z.string().describe('Distilled markdown answer to this sub-question, <= ~400 words'),
+  findings: z.array(Finding),
+  sourcesRead: z.array(z.string()),
+  // Fed back as the next gap round's sub-questions, so these MUST be researchable
+  // questions. Free-text notes ("could not fetch X, paywall") spawn workers chasing
+  // things that are unresearchable by definition; they flail until they time out.
+  openGaps: z
+    .array(z.string())
+    .describe(
+      'Unresolved, self-contained research QUESTIONS that a different worker could answer from scratch, phrased as questions. NOT notes about what went wrong. Do NOT include anything blocked by an inaccessible source (paywall, dead link, video) — re-researching those is futile. Empty array if nothing substantive remains.',
+    ),
+})
+export type WorkerDigest = z.infer<typeof WorkerDigest>
+
 // ── Async job contract (REST + MCP share this vocabulary) ────────────────────
 
 export const JobStatus = z.enum(['queued', 'running', 'done', 'error'])
