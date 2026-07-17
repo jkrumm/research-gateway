@@ -7,9 +7,8 @@ ships only the code, `Dockerfile`, and the `.github/workflows/deploy.yml` trigge
 file, the prod `.env`, and the Cloudflare DNS record live in the **`vps`** repo + the Cloudflare
 dashboard.
 
-> The `op://` refs in `deploy/.env.tpl` and `.env.local.tpl` are **inferred** from argo's
-> conventions. Confirm exact vault/item names with `/secrets` before first deploy — especially
-> the IU endpoint item and the Tavily key.
+> The `op://` refs were confirmed against the live vault and the vps `.env.tpl` on 2026-07-17.
+> Note the Tavily key lives on the **shared** item, not a gateway-specific one.
 
 ## 0. Gating pre-check — IU reachability from the VPS (do this FIRST)
 
@@ -35,7 +34,7 @@ before building further.
 Create the gateway-specific secrets (account `tkrumm`):
 
 - `op://vps/research-gateway/API_SECRET` — generate a strong random bearer (the gateway's token).
-- `op://vps/research-gateway/TAVILY_API_KEY` — the Tavily key (or repoint the ref at the existing Tavily item).
+- `op://common/tavily/API_KEY` — the Tavily key. Shared item; there is no gateway-specific one.
 - `op://vps/research-gateway/CONTEXT7_API_KEY` — optional; a `ctx7sk_` key. Omit to run without the `libraryDocs` tool.
 
 `IU_*` and `ARGO_API_SECRET` reuse existing shared items (`op://common/anthropic/*`, `op://common/api/SECRET`).
