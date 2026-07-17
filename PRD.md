@@ -35,15 +35,20 @@ different number of calls and depths.
   Mastra: 4 deps vs 29, thin and stateless-agent-shaped, no workflow/memory/RAG batteries
   we don't need. (Researched, high confidence — Mastra is built on AI SDK anyway and can
   be introduced later if multi-agent/stateful needs appear.)
-- **Loop:** AI SDK `ToolLoopAgent` with a `stopWhen` budget (step count + token + wall-clock
-  ceiling) and the **"done tool" pattern** (a terminal tool with no `execute`) so the model
-  signals completion *and* emits the final structured report in one shape.
+- **Loop:** ~~AI SDK `ToolLoopAgent` with a `stopWhen` budget (step count + token + wall-clock
+  ceiling)~~ — **superseded 2026-07-17.** `generateText` (not `ToolLoopAgent`), and the single
+  loop became **plan → parallel worker fan-out → synthesize**. The **"done tool" pattern** (a
+  terminal tool with no `execute`) survives and is used at every stage. The *token* budget was
+  removed: it summed each step's usage, but every step re-sends the conversation, so the sum grew
+  quadratically and measured billed throughput rather than context size — it fired long before
+  `maxSteps`, capping deep at ~13 steps of a configured 28. See `research-gateway-fanout-redesign`.
 - **LLM: IU unified endpoint, called directly from the VPS** via
   `createOpenAICompatible({ baseURL, apiKey })`. The Mac-local LiteLLM bridge is
   unreachable from the VPS, so the gateway holds its own `IU_API_KEY` and talks to the IU
-  gateway directly. Loop-driver model: **DeepSeek-V4-Pro** (tool-calling quality matters
-  more than Flash's cost saving for an agentic loop). Flash to be re-evaluated as a cost
-  optimization once real tool-use quality is measured.
+  gateway directly. **Resolved 2026-07-17:** both models are used — **DeepSeek-V4-Pro** leads
+  (plan + synthesis), **DeepSeek-V4-Flash** runs the worker fan-out. Flash's tool-calling proved
+  sufficient for the bounded extract-and-distill work a worker does, and it is faster; Pro's
+  judgment is reserved for decomposition and synthesis.
 
 ## Tools (what the agent can call)
 
@@ -72,11 +77,17 @@ different number of calls and depths.
 
 ## Depth & budget (hybrid)
 
-- `depth` is an **optional hint** from the caller (e.g. `quick | standard | deep`).
-- The agent **self-determines** actual depth — stops early when confident, escalates when
-  unknowns surface — but is always bounded by a **hard ceiling**: max steps + token budget +
-  wall-clock timeout. The hint scales the ceiling; the agent works within it.
-- A global **concurrency cap** protects the single IU backend from stampede.
+- `depth` is an **optional hint** from the caller (`quick | standard | deep`). It scales the whole
+  profile: worker count, gap-filling rounds, steps, context guard, search depth, and timeouts.
+- The agent self-determines depth **within** a profile, bounded by max steps, a **context-size**
+  guard (the last step's real input size — not a cumulative sum), and wall-clock. **Ceilings no
+  longer cut a run off empty-handed:** `prepareStep` forces the done-tool *before* any ceiling, so
+  a run banks its result. Timeouts are deliberately generous safety nets — hitting one costs a
+  whole job, and the endpoint's throughput varies ~2.5x run to run.
+- **Search depth is profile-driven, not model-chosen.** When exposed as a tool parameter the model
+  downgraded to `basic` and halved the sources a `deep` pass found.
+- Two concurrency caps: `RESEARCH_MAX_CONCURRENCY` (jobs) and `WORKER_MAX_CONCURRENCY` (workers
+  within a job) protect the single IU backend from stampede.
 
 ## Stack & deploy
 
