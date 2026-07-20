@@ -11,8 +11,11 @@ import type { ResearchReport, SubQuestion, WorkerDigest } from './schema.js'
 export function assembleReport(digests: WorkerDigest[]): ResearchReport {
   return {
     report: digests.map((d) => `## ${d.subQuestion}\n\n${d.summary}`).join('\n\n'),
-    citations: digests.flatMap((d) => d.findings.map((f) => ({ claim: f.claim, url: f.url }))),
+    citations: digests.flatMap((d) =>
+      d.findings.map((f) => ({ claim: f.claim, url: f.url, confidence: f.confidence })),
+    ),
     sources: [...new Set(digests.flatMap((d) => d.sourcesRead))],
+    unverified: digests.flatMap((d) => d.blockedSources),
   }
 }
 

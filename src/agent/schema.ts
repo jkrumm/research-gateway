@@ -12,9 +12,23 @@ export type ResearchInput = z.infer<typeof ResearchInput>
 export const ResearchReport = z.object({
   report: z.string().describe('Narrative, cited answer in markdown'),
   citations: z
-    .array(z.object({ claim: z.string(), url: z.string() }))
+    .array(
+      z.object({
+        claim: z.string(),
+        url: z.string(),
+        confidence: z
+          .enum(['high', 'medium', 'low'])
+          .describe("The worker's confidence in this specific claim, carried through from the source digest."),
+      }),
+    )
     .describe('Each key claim tied to a source URL'),
   sources: z.array(z.string()).describe('Deduplicated list of all source URLs consulted'),
+  unverified: z
+    .array(z.object({ topic: z.string(), url: z.string().nullable(), reason: z.string() }))
+    .default([])
+    .describe(
+      'Claims or topics the report could NOT verify against a source, aggregated from the digests\' blockedSources. A transparency channel to the caller — distinct from citations, which are claims that WERE verified.',
+    ),
 })
 export type ResearchReport = z.infer<typeof ResearchReport>
 
@@ -49,6 +63,12 @@ export const WorkerDigest = z.object({
     .array(z.string())
     .describe(
       'Unresolved, self-contained research QUESTIONS that a different worker could answer from scratch, phrased as questions. NOT notes about what went wrong. Do NOT include anything blocked by an inaccessible source (paywall, dead link, video) — re-researching those is futile. Empty array if nothing substantive remains.',
+    ),
+  blockedSources: z
+    .array(z.object({ topic: z.string(), url: z.string().nullable(), reason: z.string() }))
+    .default([])
+    .describe(
+      'Things you could NOT verify because a source was unreachable, truncated, paywalled, or otherwise unusable. Contrast with openGaps: openGaps feeds a re-research loop and must only contain genuinely researchable questions, so inaccessible-source problems must NEVER go there. blockedSources does NOT feed re-research — it is a transparency channel straight through to the caller, so it is the correct place for "could not verify X because the source was unreachable" notes. Empty array if nothing was blocked.',
     ),
 })
 export type WorkerDigest = z.infer<typeof WorkerDigest>

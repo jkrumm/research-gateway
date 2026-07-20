@@ -13,6 +13,7 @@ function digest(overrides: Partial<WorkerDigest> = {}): WorkerDigest {
     findings: [],
     sourcesRead: [],
     openGaps: [],
+    blockedSources: [],
     ...overrides,
   }
 }
@@ -33,7 +34,7 @@ describe('assembleReport', () => {
     expect(report.report).toBe('## Q1\n\nA1\n\n## Q2\n\nA2')
   })
 
-  it('flattens every digest finding into a { claim, url } citation', () => {
+  it('flattens every digest finding into a { claim, url, confidence } citation', () => {
     const report = assembleReport([
       digest({
         findings: [
@@ -44,10 +45,33 @@ describe('assembleReport', () => {
       digest({ findings: [{ claim: 'C', url: 'https://c.example', confidence: 'low' }] }),
     ])
     expect(report.citations).toEqual([
-      { claim: 'A', url: 'https://a.example' },
-      { claim: 'B', url: 'https://b.example' },
-      { claim: 'C', url: 'https://c.example' },
+      { claim: 'A', url: 'https://a.example', confidence: 'high' },
+      { claim: 'B', url: 'https://b.example', confidence: 'medium' },
+      { claim: 'C', url: 'https://c.example', confidence: 'low' },
     ])
+  })
+
+  it('preserves confidence on every citation, including low without upgrading it', () => {
+    const report = assembleReport([
+      digest({ findings: [{ claim: 'heuristic claim', url: 'https://x.example', confidence: 'low' }] }),
+    ])
+    expect(report.citations).toEqual([{ claim: 'heuristic claim', url: 'https://x.example', confidence: 'low' }])
+  })
+
+  it('aggregates blockedSources from multiple digests into unverified', () => {
+    const report = assembleReport([
+      digest({ blockedSources: [{ topic: 'MariaDB release cadence', url: 'https://dead.example', reason: 'paywalled' }] }),
+      digest({ blockedSources: [{ topic: 'LTS support window', url: null, reason: 'source unreachable' }] }),
+    ])
+    expect(report.unverified).toEqual([
+      { topic: 'MariaDB release cadence', url: 'https://dead.example', reason: 'paywalled' },
+      { topic: 'LTS support window', url: null, reason: 'source unreachable' },
+    ])
+  })
+
+  it('[] input returns an empty unverified array without throwing', () => {
+    const report = assembleReport([])
+    expect(report.unverified).toEqual([])
   })
 
   it('dedupes sourcesRead across digests into a single union', () => {

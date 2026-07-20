@@ -57,7 +57,8 @@ When you have gathered sufficient evidence for your sub-question (or have reache
 - \`summary\`: a distilled markdown answer to this sub-question (roughly 400 words or less)
 - \`findings\`: an array of \`{ claim, url, confidence }\` — tie each key claim to a source URL
 - \`sourcesRead\`: deduplicated list of every URL you actually read
-- \`openGaps\`: unresolved, self-contained research QUESTIONS another worker could answer from scratch — phrased as questions, not as notes about what went wrong. A gap blocked by an inaccessible source (paywall, dead link, video) is NOT a gap: leave it out, and instead note the limitation in \`summary\`. Return an empty array unless something substantive genuinely remains.
+- \`openGaps\`: unresolved, self-contained research QUESTIONS another worker could answer from scratch — phrased as questions, not as notes about what went wrong. A gap blocked by an inaccessible source (paywall, dead link, video) is NOT a gap: leave it out, and instead note the limitation in \`summary\` AND \`blockedSources\`. Return an empty array unless something substantive genuinely remains.
+- \`blockedSources\`: an array of \`{ topic, url, reason }\` — things you could NOT verify because a source was unreachable, truncated, paywalled, or otherwise unusable. This is the structured counterpart to the \`openGaps\` exclusion above: \`openGaps\` is ONLY for genuinely researchable questions and must feed a re-research loop, so it must never carry inaccessible-source problems; \`blockedSources\` is where those problems go instead — it does NOT feed re-research, it is a transparency channel straight through to the caller. Return an empty array unless something was actually blocked.
 
 **The ONLY way to deliver your answer is the \`submit_digest\` tool. Do NOT write a plain-text answer.**
 
@@ -76,6 +77,8 @@ export function synthesisPrompt(depth: Depth): string {
 - Tie each key claim to a source URL drawn from the digests.
 - Do not invent facts that are not present in the digests — synthesize only from what they contain.
 - If digests disagree or leave gaps, state that explicitly in the report.
+- Carry each finding's \`confidence\` through to the matching citation — do not drop it, upgrade it, or default it. A claim that rests on a \`low\`-confidence finding MUST be worded in the report prose as provisional (e.g. "appears to be", "one source suggests") and MUST NOT be asserted as an established fact.
+- Aggregate every digest's \`blockedSources\` into the report's \`unverified\` field, carrying \`topic\`, \`url\`, and \`reason\` through unchanged. This is how the caller learns what could not be verified — do not paraphrase it away into prose only.
 
 ${ANTI_HALLUCINATION_RULES}
 
@@ -83,8 +86,9 @@ ${ANTI_HALLUCINATION_RULES}
 
 You MUST finish by calling \`submit_report\` with:
 - \`report\`: the complete narrative markdown answer for the user
-- \`citations\`: an array of \`{ claim, url }\` — tie each key claim to its source URL
+- \`citations\`: an array of \`{ claim, url, confidence }\` — tie each key claim to its source URL and carry through the confidence from the originating finding
 - \`sources\`: deduplicated list of every URL referenced across the digests
+- \`unverified\`: an array of \`{ topic, url, reason }\` aggregated from the digests' \`blockedSources\` — claims or topics that could NOT be verified against a source
 
 **The ONLY way to deliver your answer is the \`submit_report\` tool. Do NOT write a plain-text answer.**
 

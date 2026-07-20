@@ -23,7 +23,10 @@ function renderDigests(query: string, digests: WorkerDigest[]): string {
   const sections = digests.map((d) => {
     const findings = d.findings.map((f) => `- ${f.claim} — ${f.url} (${f.confidence})`).join('\n')
     const sourcesRead = d.sourcesRead.join(', ')
-    return `### ${d.subQuestion}\n\n${d.summary}\n\n**Findings:**\n${findings || '(none)'}\n\n**Sources read:** ${sourcesRead || '(none)'}`
+    const blockedSources = d.blockedSources
+      .map((b) => `- ${b.topic} — ${b.url ?? '(no url)'} (${b.reason})`)
+      .join('\n')
+    return `### ${d.subQuestion}\n\n${d.summary}\n\n**Findings:**\n${findings || '(none)'}\n\n**Sources read:** ${sourcesRead || '(none)'}\n\n**Blocked sources:**\n${blockedSources || '(none)'}`
   })
   return `## Original query\n\n${query}\n\n## Researched sub-questions\n\n${sections.join('\n\n')}`
 }

@@ -186,6 +186,7 @@ export async function runResearch(
       report: 'Research could not gather any evidence for this query before the budget was exhausted.',
       citations: [],
       sources: [...sourcesSeen],
+      unverified: [],
     }
     reason = 'empty'
   }
