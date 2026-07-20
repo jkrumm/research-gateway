@@ -7,14 +7,14 @@ import { Readability } from '@mozilla/readability'
 import { env } from '../env.js'
 import { assertPublicHttpUrl } from '../lib/ssrf.js'
 import { log } from '../lib/log.js'
+import { normalizeText, capText } from './extract.js'
 
 const tvly = tavily({ apiKey: env.TAVILY_API_KEY })
 
-const TEXT_CAP = 24_000
-
-function capText(text: string): string {
-  return text.length > TEXT_CAP ? text.slice(0, TEXT_CAP) + '\n[truncated]' : text
-}
+// Normalized pages land ~46k chars / ~11.5k tokens (measured); worker maxContextTokens
+// budgets are 40k-80k (see depth.ts), so 80k chars (~20k tokens) is affordable worst-case
+// and covers whole pages instead of severing them mid-answer.
+const TEXT_CAP = 80_000
 
 async function safeFetch(startUrl: string, jobId = '-', maxHops = 3): Promise<Response> {
   let current = startUrl
@@ -135,13 +135,14 @@ function buildFetchPageTool(onSource?: (url: string) => void, jobId = '-'): AnyT
           const html = await res.text()
           const { document } = parseHTML(html)
           const article = new Readability(document as unknown as ConstructorParameters<typeof Readability>[0]).parse()
-          const text = article?.textContent?.trim()
+          const raw = article?.textContent?.trim()
+          const text = raw ? normalizeText(raw) : raw
           rdChars = text?.length ?? 0
           if (text && text.length >= 200) {
             fetched.add(url)
             onSource?.(url)
             log('tool.fetchPage', { jobId, url, via: 'readability', chars: text.length })
-            return { url, text: capText(text) }
+            return { url, text: capText(text, TEXT_CAP) }
           }
         }
       } catch {
@@ -156,8 +157,9 @@ function buildFetchPageTool(onSource?: (url: string) => void, jobId = '-'): AnyT
         if (result) {
           fetched.add(url)
           onSource?.(url)
-          log('tool.fetchPage', { jobId, url, via: 'tavily-extract', chars: result.rawContent.length, rdReason, rdChars })
-          return { url, text: capText(result.rawContent) }
+          const text = normalizeText(result.rawContent)
+          log('tool.fetchPage', { jobId, url, via: 'tavily-extract', chars: text.length, rdReason, rdChars })
+          return { url, text: capText(text, TEXT_CAP) }
         }
         const failed = ex.failedResults[0]
         log('tool.fetchPage', { jobId, url, via: 'error' })
@@ -212,7 +214,7 @@ function buildLibraryDocsTool(onSource: ((url: string) => void) | undefined, job
         }
 
         log('tool.libraryDocs', { jobId, library, topic, ok: true })
-        return { library: topLib.name, libraryId: topLib.id, text: capText(text) }
+        return { library: topLib.name, libraryId: topLib.id, text: capText(text, TEXT_CAP) }
       } catch (err) {
         log('tool.libraryDocs', { jobId, library, topic, ok: false })
         return { error: String(err) }
