@@ -82,8 +82,13 @@ export async function reportUsage(args: {
       ingested_at: now,
       model: args.model,
       model_norm: modelNorm,
-      project: null,
-      workspace: null,
+      // argo derives `workspace` from `project` only for path-driven sources
+      // (claude-code, litellm) and leaves it NULL otherwise — and its dashboard
+      // filters workspace with an `IN (...)` list, which never matches NULL. Left
+      // unset, this service vanished from every chart the moment the Private/Work
+      // filter was touched, despite being the second-largest cost source.
+      project: 'research-gateway',
+      workspace: 'private',
       sub_tool: args.subTool,
       machine: 'vps',
       billing: 'iu',
@@ -99,7 +104,7 @@ export async function reportUsage(args: {
       raw: null,
     }
 
-    await fetch(env.ARGO_USAGE_URL, {
+    const res = await fetch(env.ARGO_USAGE_URL, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -107,6 +112,12 @@ export async function reportUsage(args: {
       },
       body: JSON.stringify({ records: [record] }),
     })
+
+    // fetch only rejects on network failure, so an auth or schema rejection from
+    // argo would otherwise drop the record in total silence.
+    if (!res.ok) {
+      console.warn(`[usage] argo push rejected: ${res.status} ${res.statusText}`)
+    }
   } catch (err) {
     // Telemetry failure must never fail a research job
     console.warn('[usage] failed to report usage:', err)
