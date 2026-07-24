@@ -139,6 +139,19 @@ export async function runResearch(
     workersDispatchedTotal += currentQuestions.length
     for (const url of roundSources) sourcesSeen.add(url)
 
+    // Emit a cumulative snapshot per round, not just once at the end. argo upserts
+    // on (source, source_id, machine), so each snapshot overwrites the last rather
+    // than double-counting — and a job that dies mid-flight still leaves the tokens
+    // it had already burned behind instead of reporting nothing at all.
+    if (onUsage) {
+      onUsage({
+        ...addUsage(leadUsage, workerUsage),
+        durationMs: Date.now() - start,
+        lead: leadUsage,
+        worker: workerUsage,
+      })
+    }
+
     log('research.round', {
       jobId,
       round,

@@ -60,6 +60,13 @@ export async function reportUsage(args: {
   reasoningTokens: number
   cachedInputTokens: number
   durationMs: number
+  /**
+   * Defaults to 'ok'. Reporting only successes leaves `outcome` permanently 'ok',
+   * which reads as a service that has never failed rather than one that isn't
+   * measured. A failed job re-reports its last snapshot as 'error' — same
+   * source_id, so argo's upsert flips the existing row instead of adding one.
+   */
+  outcome?: 'ok' | 'error'
 }): Promise<void> {
   if (!env.ARGO_USAGE_URL || !env.ARGO_API_SECRET) return
 
@@ -92,7 +99,7 @@ export async function reportUsage(args: {
       sub_tool: args.subTool,
       machine: 'vps',
       billing: 'iu',
-      outcome: 'ok',
+      outcome: args.outcome ?? 'ok',
       input_tokens: args.inputTokens,
       output_tokens: args.outputTokens,
       cache_read_tokens: args.cachedInputTokens,
