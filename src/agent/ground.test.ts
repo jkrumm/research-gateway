@@ -318,3 +318,64 @@ describe('groundReport — the job boundary', () => {
     expect(report.unverified).toHaveLength(1)
   })
 })
+
+// ── Regression for the live 2026-07-31 npm run ───────────────────────────────
+// One worker obtained the npm package page through `packageInfo`; another's `fetchPage` on
+// the SAME url was rate-limited and dutifully logged it as blocked. The model's bookkeeping
+// then deleted three correct, fully-grounded citations. A failed ATTEMPT is not a failure to
+// obtain the content.
+describe('groundReport — ledger evidence outranks the model\'s own bookkeeping', () => {
+  const ledgerWithRetrieved = () => {
+    const ledger = createLedger()
+    ledger.recordRetrieved('https://www.npmjs.com/package/@modelcontextprotocol/server')
+    return ledger
+  }
+
+  const run = () =>
+    groundReport(
+      submitted({
+        report: 'The current stable version is 2.0.0.',
+        citations: [
+          { claim: 'latest is 2.0.0', url: 'https://www.npmjs.com/package/@modelcontextprotocol/server', confidence: 'high' },
+        ],
+        unverified: [
+          {
+            topic: 'npm package page',
+            url: 'https://www.npmjs.com/package/@modelcontextprotocol/server',
+            reason: "Fetch failed with 'request exceeds the pay-as-you-go limit'",
+          },
+        ],
+      }),
+      ledgerWithRetrieved(),
+    )
+
+  it('keeps a citation to a page the ledger says was retrieved, despite the model listing it as blocked', () => {
+    const report = run()
+    expect(report.citations).toHaveLength(1)
+    expect(report.grounding.citationsDropped).toBe(0)
+    expect(report.status).toBe('ok')
+  })
+
+  it('still holds the invariant: the vindicated URL is detached from its unverified entry', () => {
+    const report = run()
+    const unverifiedUrls = new Set(report.unverified.map((u) => u.url))
+    for (const citation of report.citations) expect(unverifiedUrls.has(citation.url)).toBe(false)
+    // The note survives — only its url is cleared, so no transparency is lost.
+    expect(report.unverified).toHaveLength(1)
+    expect(report.unverified[0]?.url).toBeNull()
+    expect(report.unverified[0]?.reason).toContain('WAS retrieved elsewhere')
+  })
+
+  it('does NOT let the model talk a never-retrieved page into being citable', () => {
+    const ledger = createLedger()
+    ledger.recordFailed('https://blocked.example', 'rate limited')
+    const report = groundReport(
+      submitted({
+        citations: [{ claim: 'x', url: 'https://blocked.example', confidence: 'high' }],
+        unverified: [{ topic: 't', url: 'https://blocked.example', reason: 'rate limited' }],
+      }),
+      ledger,
+    )
+    expect(report.citations).toEqual([])
+  })
+})
