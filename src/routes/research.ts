@@ -11,7 +11,7 @@ export const researchRoutes = new Elysia({ prefix: '/research' })
     ({ body, status }) => {
       if (atCapacity()) {
         log('job.rejected', { reason: 'at_capacity' })
-        return status(429, 'Research queue is full, retry shortly')
+        return status(429, { error: 'Research queue is full, retry shortly' })
       }
       const depth = body.depth ?? 'standard'
       const job = createJob({ query: body.query, depth })
@@ -29,7 +29,7 @@ export const researchRoutes = new Elysia({ prefix: '/research' })
           jobId: z.string(),
           status: z.string(),
         }),
-        429: z.string(),
+        429: z.object({ error: z.string() }),
       },
       detail: {
         tags: ['Research'],
@@ -45,7 +45,13 @@ export const researchRoutes = new Elysia({ prefix: '/research' })
     ({ params, status }) => {
       const job = getJob(params.jobId)
       if (!job) {
-        return status(404, 'Job not found')
+        // JSON, not a bare string: a poller parses every response of this endpoint as
+        // JSON, so a plain-text body turns an expected 404 into a parse crash in the
+        // client. Jobs live in memory, so a service restart loses them as surely as the
+        // TTL does — say both, or the caller reads "expired" and waits pointlessly.
+        return status(404, {
+          error: `Job not found: ${params.jobId}. It has either passed its retention window or was lost when the service restarted — jobs are held in memory. Submit a new research job.`,
+        })
       }
       return {
         status: job.status,
@@ -60,7 +66,7 @@ export const researchRoutes = new Elysia({ prefix: '/research' })
           result: ResearchReport.optional(),
           error: z.string().optional(),
         }),
-        404: z.string(),
+        404: z.object({ error: z.string() }),
       },
       detail: {
         tags: ['Research'],

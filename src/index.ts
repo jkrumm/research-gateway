@@ -6,6 +6,40 @@ import { authGuard } from './lib/auth-guard.js'
 import { healthRoute } from './routes/health.js'
 import { researchRoutes } from './routes/research.js'
 import { mcpRoutes } from './routes/mcp.js'
+import { log } from './lib/log.js'
+
+// ── Process-level diagnostics ────────────────────────────────────────────────
+// On 2026-07-31 the container exited with code 0, mid-flight, during a deep job,
+// leaving NO log line. `RestartCount=1`, `OOMKilled=false`, peak memory 254M of a
+// 512M limit, no host event, no other container affected — and every application
+// path was already guarded (reportUsage cannot reject, withSlot is safe,
+// startResearchJob catches everything). The exit is still unexplained, and the job
+// store is in-memory, so a silent restart takes every in-flight job with it.
+//
+// Rather than guess at a cause, make the next occurrence self-describing.
+process.on('exit', (code) => {
+  log('process.exit', { code })
+})
+for (const signal of ['SIGTERM', 'SIGINT'] as const) {
+  process.on(signal, () => {
+    // A deploy or `docker stop` lands here — that must be distinguishable from a
+    // mystery exit, which is exactly what could not be told apart on 2026-07-31.
+    log('process.signal', { signal })
+    process.exit(0)
+  })
+}
+process.on('uncaughtException', (err) => {
+  // Fail LOUD and non-zero: an unknown-state process serving research is worse than
+  // a restart, and exit code 1 distinguishes this from a clean shutdown.
+  log('process.uncaughtException', { error: String(err), stack: err.stack?.slice(0, 2_000) })
+  process.exit(1)
+})
+process.on('unhandledRejection', (reason) => {
+  // Deliberately NOT fatal. These originate in fire-and-forget background jobs whose
+  // own try/catch already contains the damage; killing the server would discard every
+  // OTHER in-flight job to punish one. Logged loudly so it cannot hide.
+  log('process.unhandledRejection', { reason: String(reason) })
+})
 
 export const app = new Elysia()
   .use(
