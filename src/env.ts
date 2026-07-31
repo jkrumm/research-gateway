@@ -6,7 +6,13 @@ const Env = z.object({
   IU_BASE_URL: z.url(),
   IU_API_KEY: z.string().min(1),
   IU_MODEL: z.string().default('DeepSeek-V4-Pro'),
-  IU_LEAD_MODEL: z.string().default('DeepSeek-V4-Pro'),
+  // Flash leads as well as works. Measured live against the IU endpoint, Flash decodes
+  // ~2x faster than Pro and matches it on multi-step tool-calling (3/3 tools, args valid,
+  // 7.8s vs 14.1s — modelpick's 2026-07 bake-off). The lead's two jobs, planning and
+  // synthesis, are both tool-calls, and synthesis is the wall-clock long pole of every
+  // job — so the faster model cuts both latency and cost where it matters most. Revert
+  // to DeepSeek-V4-Pro here if report quality regresses; nothing else depends on it.
+  IU_LEAD_MODEL: z.string().default('DeepSeek-V4-Flash'),
   IU_WORKER_MODEL: z.string().default('DeepSeek-V4-Flash'),
   WORKER_MAX_CONCURRENCY: z.coerce.number().default(8),
   TAVILY_API_KEY: z.string().min(1),

@@ -18,6 +18,11 @@ export interface DepthProfile {
 // ~40 tok/s, V4-Flash ~80 tok/s — roughly half the figures in modelpick's benchmark.
 // Synthesis is the long pole: a report of N output tokens needs N/40 seconds on the
 // lead, so shrinking these re-introduces the truncated-report failure they replaced.
+//
+// The lead now runs Flash too (see env.ts), which roughly halves the tokens-per-second
+// cost of synthesis and so leaves MORE headroom inside these same ceilings. That is why
+// tuning for wall-clock cuts a gap round rather than a timeout: rounds are work we chose
+// to do, timeouts are the margin that keeps a long report from being truncated mid-write.
 export const profiles: Record<Depth, DepthProfile> = {
   quick: {
     workers: 1,
@@ -50,9 +55,12 @@ export const profiles: Record<Depth, DepthProfile> = {
   deep: {
     workers: 8,
     // Gap rounds are sequential wall-clock: round 1 carries the substance, later rounds
-    // chase footnotes. Keep them lean so 3 rounds stay affordable in wall time.
+    // chase footnotes. Two rounds, not three — a measured deep run took 17-28 minutes,
+    // and the third round is the least valuable slice of that (it chases what two rounds
+    // of eight-then-three workers already missed) while costing a full sequential round
+    // of worker timeout plus its Tavily credits. Raise it back if coverage visibly suffers.
     gapWorkers: 3,
-    rounds: 3,
+    rounds: 2,
     workerMaxSteps: 9,
     maxContextTokens: 80_000,
     planTimeoutMs: 180_000,
