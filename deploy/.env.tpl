@@ -17,10 +17,12 @@ TAVILY_API_KEY=op://vps/research-gateway/TAVILY_API_KEY
 # Context7 (optional)
 CONTEXT7_API_KEY=op://vps/research-gateway/CONTEXT7_API_KEY
 
-# GitHub (OPTIONAL — githubFile/githubRepo/findPackages work without it, but anonymous
-# GitHub is 60 req/h PER IP shared by every worker of every job. A no-scope classic PAT
-# (public read only) raises it to 5000/h. Comment out until the item field exists.
-# GITHUB_TOKEN=op://vps/research-gateway/GITHUB_TOKEN
+# GitHub (githubFile / githubRepo / findPackages). These tools work unauthenticated, but
+# anonymous GitHub is 60 req/h PER IP shared by every worker of every concurrent job; a
+# fine-grained PAT with NO permissions (public read only) raises it to 5000/h.
+# The field may be left EMPTY in 1Password — the gateway treats empty as unset and falls
+# back to anonymous, so this line is safe to keep enabled before a token is pasted in.
+GITHUB_TOKEN=op://vps/research-gateway/GITHUB_TOKEN
 
 # Telemetry → argo
 # Internal docker route on the VPS — argo is Tailscale-only (grey-cloud), so the

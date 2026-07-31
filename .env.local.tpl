@@ -22,9 +22,10 @@ TAVILY_API_KEY=op://common/tavily/API_KEY
 # Context7 (OPTIONAL — libraryDocs tool registers only when set; ctx7sk_ key)
 CONTEXT7_API_KEY=op://vps/research-gateway/CONTEXT7_API_KEY
 
-# GitHub (OPTIONAL — githubFile/githubRepo/findPackages work without it, but anonymous
-# GitHub is 60 req/h PER IP shared by every worker of every job. A no-scope classic PAT
-# (public read only) raises it to 5000/h. Comment out until the item field exists.
+# GitHub (OPTIONAL — githubFile/githubRepo/findPackages fall back to anonymous, 60 req/h).
+# Left commented for local dev: resolving this ref on the mini needs an entry in
+# dotfiles-private/headless.refs plus a `make secrets-seed` from the MacBook. Uncomment
+# only after seeding, or `bun run dev` fails on a cache miss.
 # GITHUB_TOKEN=op://vps/research-gateway/GITHUB_TOKEN
 
 # Telemetry → argo POST /usage/records (ARGO_API_SECRET = argo's shared bearer)

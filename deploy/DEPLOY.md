@@ -36,6 +36,15 @@ Create the gateway-specific secrets (account `tkrumm`):
 - `op://vps/research-gateway/API_SECRET` — generate a strong random bearer (the gateway's token).
 - `op://common/tavily/API_KEY` — the Tavily key. Shared item; there is no gateway-specific one.
 - `op://vps/research-gateway/CONTEXT7_API_KEY` — optional; a `ctx7sk_` key. Omit to run without the `libraryDocs` tool.
+- `op://vps/research-gateway/GITHUB_TOKEN` — a fine-grained PAT with **no** permissions
+  (public read only). Raises the `githubFile`/`githubRepo`/`findPackages` budget from
+  anonymous 60 req/h *per IP, shared across every concurrent job* to 5000 req/h. The field
+  may be left **empty**: the gateway treats an empty value as unset and falls back to
+  anonymous, so `.env.tpl` can reference it before a token exists.
+
+> **The VPS 1Password service account is read-only** (`op item create` → `(101) You do not
+> have permission`). Items and fields must be created from the MacBook with the interactive,
+> biometric `op`; the VPS only ever reads them.
 
 `IU_*` and `ARGO_API_SECRET` reuse existing shared items (`op://common/anthropic/*`, `op://common/api/SECRET`).
 

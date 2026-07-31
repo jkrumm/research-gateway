@@ -15,7 +15,16 @@ const Env = z.object({
   // req/hour PER IP — shared across every worker of every concurrent job — so a busy
   // hour degrades them to "rate limited". A token raises it to 5000/hour. Needs no
   // scopes: public read only.
-  GITHUB_TOKEN: z.string().optional(),
+  //
+  // Empty-as-unset is deliberate: `op inject` renders an empty 1Password field as
+  // `GITHUB_TOKEN=`, and sending `Authorization: Bearer ` is worse than sending nothing
+  // (GitHub 401s the request instead of serving it anonymously). This makes the field
+  // safe to exist before a real token has been pasted into it.
+  GITHUB_TOKEN: z
+    .string()
+    .trim()
+    .optional()
+    .transform((v) => (v ? v : undefined)),
   ARGO_USAGE_URL: z.url().optional(),
   ARGO_API_SECRET: z.string().optional(),
   RESEARCH_MAX_CONCURRENCY: z.coerce.number().default(3),
