@@ -30,3 +30,69 @@ export function computeCost(
     1_000_000
   return { costUsd, costSource: 'computed' }
 }
+
+// Shape of an argo `usage_record` row, built here (not usage.ts) for the same reason as
+// computeCost: no env.js import, so the builder is unit-testable with zero env vars.
+export interface TavilyCreditUsageRecord {
+  source: string
+  source_id: string
+  grain: string
+  model: string | null
+  model_norm: string | null
+  project: string
+  workspace: string
+  sub_tool: string
+  machine: string
+  billing: string
+  outcome: 'ok' | 'error'
+  input_tokens: number
+  output_tokens: number
+  cache_read_tokens: number
+  cache_write_tokens: number
+  reasoning_tokens: number
+  duration_ms: number | null
+  cost_usd: number | null
+  cost_source: 'computed' | 'none'
+  raw: { tavilyCredits: number }
+}
+
+// Tavily bills by API credit, not by token — jamming a credit count into `input_tokens`/
+// `output_tokens` would misrepresent it as LLM usage on argo's token dashboards. This
+// builds a deliberately separate, non-token record instead: `model`/`model_norm` stay
+// null (a Tavily call isn't a model call), and the credit count travels in `raw` — the
+// one field argo's schema reserves for source-specific data it doesn't otherwise model.
+//
+// `cost_usd` is left unset rather than guessed: unlike the DeepSeek token RATES above
+// (matched against argo's own ai-usage.ts table), no verified USD-per-credit rate for
+// Tavily exists anywhere in this repo, and Tavily's per-credit price varies by plan tier.
+// Inventing one would misrepresent spend on argo's cost dashboards.
+export function buildTavilyCreditRecord(args: {
+  jobId: string
+  credits: number
+  outcome?: 'ok' | 'error'
+}): TavilyCreditUsageRecord {
+  return {
+    source: 'research-gateway',
+    // argo upserts on (source, source_id, machine); scoped so this never collides with
+    // the same job's `:lead`/`:worker` rows.
+    source_id: `${args.jobId}:tavily`,
+    grain: 'session',
+    model: null,
+    model_norm: null,
+    project: 'research-gateway',
+    workspace: 'private',
+    sub_tool: 'tavily',
+    machine: 'vps',
+    billing: 'iu',
+    outcome: args.outcome ?? 'ok',
+    input_tokens: 0,
+    output_tokens: 0,
+    cache_read_tokens: 0,
+    cache_write_tokens: 0,
+    reasoning_tokens: 0,
+    duration_ms: null,
+    cost_usd: null,
+    cost_source: 'none',
+    raw: { tavilyCredits: args.credits },
+  }
+}

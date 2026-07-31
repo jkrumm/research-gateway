@@ -1,11 +1,38 @@
 import type { LanguageModelUsage } from 'ai'
 import { env } from '../env.js'
-import { computeCost, normalizeModel } from './cost.js'
+import { computeCost, normalizeModel, buildTavilyCreditRecord } from './cost.js'
 
 // Re-exported for compatibility — callers importing `computeCost` from `usage.ts` keep
 // working; the implementation lives in `cost.ts` because it has no `env.js` import and
 // so can be unit-tested without booting the env-parsing chain.
 export { computeCost } from './cost.js'
+
+// Shared POST, used by both reportUsage (LLM/token records) and reportTavilyUsage
+// (credit records) — same endpoint, same idempotent upsert, same "never throw" contract.
+// No-ops when telemetry isn't configured, same as the individual reporters used to.
+async function postUsageRecord(record: Record<string, unknown>): Promise<void> {
+  if (!env.ARGO_USAGE_URL || !env.ARGO_API_SECRET) return
+
+  try {
+    const res = await fetch(env.ARGO_USAGE_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${env.ARGO_API_SECRET}`,
+      },
+      body: JSON.stringify({ records: [record] }),
+    })
+
+    // fetch only rejects on network failure, so an auth or schema rejection from
+    // argo would otherwise drop the record in total silence.
+    if (!res.ok) {
+      console.warn(`[usage] argo push rejected: ${res.status} ${res.statusText}`)
+    }
+  } catch (err) {
+    // Telemetry failure must never fail a research job
+    console.warn('[usage] failed to report usage:', err)
+  }
+}
 
 // Flat token/timing accumulator shared by plan/worker/synthesis calls and the job total.
 export interface UsageStats {
@@ -68,65 +95,65 @@ export async function reportUsage(args: {
    */
   outcome?: 'ok' | 'error'
 }): Promise<void> {
-  if (!env.ARGO_USAGE_URL || !env.ARGO_API_SECRET) return
+  const modelNorm = normalizeModel(args.model)
+  const { costUsd, costSource } = computeCost(args.model, {
+    inputTokens: args.inputTokens,
+    cachedInputTokens: args.cachedInputTokens,
+    outputTokens: args.outputTokens,
+  })
+  const now = new Date().toISOString()
 
-  try {
-    const modelNorm = normalizeModel(args.model)
-    const { costUsd, costSource } = computeCost(args.model, {
-      inputTokens: args.inputTokens,
-      cachedInputTokens: args.cachedInputTokens,
-      outputTokens: args.outputTokens,
-    })
-    const now = new Date().toISOString()
-
-    const record = {
-      source: 'research-gateway',
-      // argo upserts on (source, source_id, machine). A job emits one record per model
-      // bucket, so source_id must be scoped or the second would overwrite the first.
-      source_id: `${args.jobId}:${args.subTool}`,
-      grain: 'session',
-      ts: now,
-      ingested_at: now,
-      model: args.model,
-      model_norm: modelNorm,
-      // argo derives `workspace` from `project` only for path-driven sources
-      // (claude-code, litellm) and leaves it NULL otherwise — and its dashboard
-      // filters workspace with an `IN (...)` list, which never matches NULL. Left
-      // unset, this service vanished from every chart the moment the Private/Work
-      // filter was touched, despite being the second-largest cost source.
-      project: 'research-gateway',
-      workspace: 'private',
-      sub_tool: args.subTool,
-      machine: 'vps',
-      billing: 'iu',
-      outcome: args.outcome ?? 'ok',
-      input_tokens: args.inputTokens,
-      output_tokens: args.outputTokens,
-      cache_read_tokens: args.cachedInputTokens,
-      cache_write_tokens: 0,
-      reasoning_tokens: args.reasoningTokens ?? 0,
-      duration_ms: args.durationMs,
-      cost_usd: costUsd,
-      cost_source: costSource,
-      raw: null,
-    }
-
-    const res = await fetch(env.ARGO_USAGE_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${env.ARGO_API_SECRET}`,
-      },
-      body: JSON.stringify({ records: [record] }),
-    })
-
-    // fetch only rejects on network failure, so an auth or schema rejection from
-    // argo would otherwise drop the record in total silence.
-    if (!res.ok) {
-      console.warn(`[usage] argo push rejected: ${res.status} ${res.statusText}`)
-    }
-  } catch (err) {
-    // Telemetry failure must never fail a research job
-    console.warn('[usage] failed to report usage:', err)
+  const record = {
+    source: 'research-gateway',
+    // argo upserts on (source, source_id, machine). A job emits one record per model
+    // bucket, so source_id must be scoped or the second would overwrite the first.
+    source_id: `${args.jobId}:${args.subTool}`,
+    grain: 'session',
+    ts: now,
+    ingested_at: now,
+    model: args.model,
+    model_norm: modelNorm,
+    // argo derives `workspace` from `project` only for path-driven sources
+    // (claude-code, litellm) and leaves it NULL otherwise — and its dashboard
+    // filters workspace with an `IN (...)` list, which never matches NULL. Left
+    // unset, this service vanished from every chart the moment the Private/Work
+    // filter was touched, despite being the second-largest cost source.
+    project: 'research-gateway',
+    workspace: 'private',
+    sub_tool: args.subTool,
+    machine: 'vps',
+    billing: 'iu',
+    outcome: args.outcome ?? 'ok',
+    input_tokens: args.inputTokens,
+    output_tokens: args.outputTokens,
+    cache_read_tokens: args.cachedInputTokens,
+    cache_write_tokens: 0,
+    reasoning_tokens: args.reasoningTokens ?? 0,
+    duration_ms: args.durationMs,
+    cost_usd: costUsd,
+    cost_source: costSource,
+    raw: null,
   }
+
+  await postUsageRecord(record)
+}
+
+// Third per-job telemetry record, alongside the `lead`/`worker` LLM records above — a
+// deep job burns ~120 Tavily search/extract credits, previously invisible to argo. The
+// record shape is built in cost.ts (buildTavilyCreditRecord), not here, so it stays
+// unit-testable without booting this file's env.js import.
+//
+// Called from src/agent/tools.ts, where the Tavily calls are actually made and the
+// per-job credit total is accumulated — NOT from run-job.ts, which only threads the
+// lead/worker records today. `credits` is the job's cumulative total so far (mirroring
+// how run.ts's onUsage reports a cumulative lead/worker snapshot per round); argo's
+// upsert on (source, source_id, machine) means each call just overwrites the last one.
+export async function reportTavilyUsage(args: {
+  jobId: string
+  credits: number
+  outcome?: 'ok' | 'error'
+}): Promise<void> {
+  const now = new Date().toISOString()
+  const record = { ...buildTavilyCreditRecord(args), ts: now, ingested_at: now }
+  await postUsageRecord(record)
 }

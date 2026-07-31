@@ -112,13 +112,16 @@ bun test           # pure-function tests; needs no secrets
 
 ## Telemetry
 
-Each job reports LLM spend to argo `POST /usage/records` as `source: "research-gateway"`,
-`billing: "iu"` — **two records per job**, one per model bucket (`sub_tool: lead | worker`), since
-the two run on different models. argo upserts on `(source, source_id, machine)`, so `source_id` is
-scoped `${jobId}:lead` / `${jobId}:worker` or the second would overwrite the first. `cost_usd` is
-cache-aware: the endpoint bills a cache-read ~30x below a miss, and the fan-out sustains a ~60%
-hit rate, so billing all input at the miss rate overstates cost several-fold. Telemetry failure
-never fails a job.
+Each job reports spend to argo `POST /usage/records` as `source: "research-gateway"`,
+`billing: "iu"` — **three records per job**: two LLM records, one per model bucket
+(`sub_tool: lead | worker`), since the two run on different models, plus one Tavily credit
+record (`sub_tool: tavily`). argo upserts on `(source, source_id, machine)`, so `source_id` is
+scoped `${jobId}:lead` / `${jobId}:worker` / `${jobId}:tavily` or a later record would overwrite
+an earlier one. `cost_usd` is cache-aware for the LLM records: the endpoint bills a cache-read
+~30x below a miss, and the fan-out sustains a ~60% hit rate, so billing all input at the miss
+rate overstates cost several-fold. The Tavily record carries its credit count in `raw` rather
+than `cost_usd` — no verified USD-per-credit rate exists to convert it honestly, so `cost_usd`
+stays null there. Telemetry failure never fails a job.
 
 ## Deploy
 

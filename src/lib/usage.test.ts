@@ -3,7 +3,7 @@ import { describe, it, expect } from 'bun:test'
 // `reportUsage`'s ARGO_* gate), which parses `process.env` at import time and throws
 // without secrets. `cost.ts` has no such chain, so `computeCost` is testable with zero
 // env vars. `usage.ts` re-exports the same `computeCost` binding for compatibility.
-import { computeCost } from './cost.js'
+import { computeCost, buildTavilyCreditRecord } from './cost.js'
 
 describe('computeCost', () => {
   it('bills uncached input at the miss rate and cached input at the cache-read rate (deepseek-v4-pro)', () => {
@@ -76,5 +76,42 @@ describe('computeCost', () => {
     })
     expect(prefixed.costUsd).toBeCloseTo(bare.costUsd as number, 9)
     expect(dated.costUsd).toBeCloseTo(bare.costUsd as number, 9)
+  })
+})
+
+describe('buildTavilyCreditRecord', () => {
+  it('scopes source_id as `${jobId}:tavily` so it never collides with the lead/worker rows', () => {
+    const record = buildTavilyCreditRecord({ jobId: 'job-123', credits: 42 })
+    expect(record.source_id).toBe('job-123:tavily')
+    expect(record.sub_tool).toBe('tavily')
+  })
+
+  it('carries the credit count in `raw`, never in a token field', () => {
+    const record = buildTavilyCreditRecord({ jobId: 'job-123', credits: 42 })
+    expect(record.raw).toEqual({ tavilyCredits: 42 })
+    expect(record.input_tokens).toBe(0)
+    expect(record.output_tokens).toBe(0)
+    expect(record.cache_read_tokens).toBe(0)
+    expect(record.cache_write_tokens).toBe(0)
+    expect(record.reasoning_tokens).toBe(0)
+  })
+
+  it('leaves cost_usd unset — no verified USD-per-credit rate exists to compute it honestly', () => {
+    const record = buildTavilyCreditRecord({ jobId: 'job-123', credits: 42 })
+    expect(record.cost_usd).toBeNull()
+    expect(record.cost_source).toBe('none')
+  })
+
+  it('leaves model/model_norm unset — a Tavily call is not a model call', () => {
+    const record = buildTavilyCreditRecord({ jobId: 'job-123', credits: 42 })
+    expect(record.model).toBeNull()
+    expect(record.model_norm).toBeNull()
+  })
+
+  it('defaults outcome to "ok" and honors an explicit "error"', () => {
+    expect(buildTavilyCreditRecord({ jobId: 'job-123', credits: 0 }).outcome).toBe('ok')
+    expect(buildTavilyCreditRecord({ jobId: 'job-123', credits: 0, outcome: 'error' }).outcome).toBe(
+      'error',
+    )
   })
 })

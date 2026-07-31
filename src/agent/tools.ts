@@ -7,11 +7,81 @@ import { Readability } from '@mozilla/readability'
 import { env } from '../env.js'
 import { assertPublicHttpUrl } from '../lib/ssrf.js'
 import { log } from '../lib/log.js'
+import { reportTavilyUsage } from '../lib/usage.js'
 import { normalizeText, capText, TEXT_CAP } from './extract.js'
 import { buildDirectSourceTools } from './direct-sources.js'
 import type { RetrievalLedger } from './ledger.js'
 
 const tvly = tavily({ apiKey: env.TAVILY_API_KEY })
+
+// Per-job Tavily credit accumulator. `buildTools` is called once per WORKER (see
+// worker.ts), and a job fans out many workers in parallel (run.ts's dispatchRound), so
+// this state can't live in a tool-local closure the way the searched/fetched dedup maps
+// do — it has to be keyed by jobId at module scope, shared across every worker of every
+// concurrent job the process is running. Nothing in this file is ever told a job has
+// finished (run.ts/run-job.ts own that lifecycle and are out of scope for this change),
+// so entries are pruned opportunistically by age instead of on job completion.
+interface JobCreditState {
+  credits: number
+  lastSeenAt: number
+  flushTimer: ReturnType<typeof setTimeout> | null
+}
+const jobCredits = new Map<string, JobCreditState>()
+
+// Pruning is safe even though a deep job now runs ~28min (HANDOVER.md, re-measured
+// post-fan-out-rewrite): `lastSeenAt` is refreshed on every credit added, so an active
+// job's entry keeps sliding forward and is never pruned mid-flight. This bound only
+// catches entries that have genuinely gone quiet — reusing JOB_TTL_MINUTES ties it to
+// the same "definitely abandoned" horizon job-store.ts already uses for jobs themselves,
+// rather than a fresh magic number.
+const STALE_JOB_MS = env.JOB_TTL_MINUTES * 60_000
+
+// A deep run fetches 200+ pages, each a Tavily-Extract fallback call plus however many
+// searches — firing an argo POST per call would be 100-200+ POSTs/job, all upserting the
+// SAME row (source_id is per-job, not per-call), across up to RESEARCH_MAX_CONCURRENCY
+// jobs at once. Only the trailing (i.e. final, cumulative) value carries information, so
+// the POST is debounced behind this per-job timer instead: every new credit resets it,
+// and it fires once the job's Tavily calls actually stop — reporting the running total
+// at that point, which becomes the job's true final total once no further calls arrive.
+const CREDIT_FLUSH_DEBOUNCE_MS = 3_000
+
+function pruneStaleJobCredits(now: number): void {
+  for (const [id, entry] of jobCredits) {
+    if (now - entry.lastSeenAt > STALE_JOB_MS) {
+      if (entry.flushTimer) clearTimeout(entry.flushTimer)
+      jobCredits.delete(id)
+    }
+  }
+}
+
+// Records credits a Tavily call actually billed (ground truth from the response's
+// `usage.credits` — see buildSearchWebTool/buildFetchPageTool below) and schedules a
+// debounced report of the job's cumulative total (see CREDIT_FLUSH_DEBOUNCE_MS above).
+// argo upserts on source_id, so each flush just overwrites the last one rather than
+// double-counting.
+function addTavilyCredits(jobId: string, credits: number): void {
+  if (credits <= 0) return
+  const now = Date.now()
+  pruneStaleJobCredits(now)
+
+  const existing = jobCredits.get(jobId)
+  if (existing?.flushTimer) clearTimeout(existing.flushTimer)
+
+  const entry: JobCreditState = {
+    credits: (existing?.credits ?? 0) + credits,
+    lastSeenAt: now,
+    flushTimer: null,
+  }
+  entry.flushTimer = setTimeout(() => {
+    entry.flushTimer = null
+    void reportTavilyUsage({ jobId, credits: entry.credits })
+  }, CREDIT_FLUSH_DEBOUNCE_MS)
+  // .unref() so a pending flush can never hold the process open — same pattern as
+  // job-store.ts's _sweepTimer.
+  if (typeof entry.flushTimer.unref === 'function') entry.flushTimer.unref()
+
+  jobCredits.set(jobId, entry)
+}
 
 async function safeFetch(startUrl: string, jobId = '-', maxHops = 3): Promise<Response> {
   let current = startUrl
@@ -76,7 +146,16 @@ function buildSearchWebTool(
           maxResults: 5,
           includeAnswer: true,
           timeout: 30,
+          // Ground truth for billing: Tavily's own credit cost for THIS call, which
+          // varies by searchDepth (basic vs advanced). Reading it beats hardcoding a
+          // rate table that would drift the moment Tavily repriced a tier.
+          includeUsage: true,
         })
+        // A response that resolved is a call that was billed — count it even if the
+        // search itself came back empty. A call that throws below (never resolves)
+        // is NOT counted: whether Tavily billed a request it never answered is
+        // unknown, and undercounting is the safer direction for a cost figure.
+        addTavilyCredits(jobId, r.usage?.credits ?? 0)
         log('tool.searchWeb', { jobId, query, searchDepth: depth, results: r.results.length })
         const out = {
           answer: r.answer ?? null,
@@ -157,7 +236,17 @@ function buildFetchPageTool(ledger: RetrievalLedger, jobId = '-'): AnyTool {
 
       // Fallback: Tavily Extract
       try {
-        const ex = await tvly.extract([url], { extractDepth: 'basic', format: 'markdown', timeout: 30 })
+        const ex = await tvly.extract([url], {
+          extractDepth: 'basic',
+          format: 'markdown',
+          timeout: 30,
+          includeUsage: true,
+        })
+        // The call resolved — Tavily billed it — regardless of whether this URL ends
+        // up in `results` or `failedResults` below. This is what makes the 49
+        // failed-fetch case in a recent deep run count correctly: a failed *extraction*
+        // still billed the *call* that attempted it.
+        addTavilyCredits(jobId, ex.usage?.credits ?? 0)
         const result = ex.results[0]
         if (result) {
           fetched.add(url)
