@@ -30,6 +30,10 @@ const Env = z.object({
   RESEARCH_MAX_CONCURRENCY: z.coerce.number().default(3),
   RESEARCH_MAX_QUEUE: z.coerce.number().default(50),
   JOB_TTL_MINUTES: z.coerce.number().default(30),
+  // bun:sqlite job store (status-only durability — see lib/job-db.ts). Relative default
+  // resolves against the process CWD: the repo root in local dev, /app (the Dockerfile
+  // WORKDIR) in the container, where deploy/compose.yml mounts a named volume at /app/data.
+  JOB_DB_PATH: z.string().default('./data/jobs.sqlite'),
 })
 
 export const env = Env.parse(process.env)

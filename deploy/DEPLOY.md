@@ -56,6 +56,11 @@ cp deploy/compose.yml  ~/SourceRoot/vps/apps/research-gateway/compose.yml
 cp deploy/.env.tpl     ~/SourceRoot/vps/apps/research-gateway/.env.tpl
 ```
 
+> **`compose.yml` is a template — the vps repo holds its own copy, not a symlink.** Any edit
+> made here (e.g. the `research-gateway-data` named volume, added for the job-store durability
+> change) must be re-applied by hand to `~/SourceRoot/vps/apps/research-gateway/compose.yml` —
+> `cp`-ing over it blindly would also clobber any vps-repo-local drift, so diff before copying.
+
 Add Makefile targets in the vps repo mirroring the `argo-*` ones (`research-gateway-up`,
 `-down`, `-env`, `-redeploy`, `-bootstrap-image`). The env target is:
 
@@ -110,9 +115,27 @@ curl -sS "$BASE/research/$JOB" -H "Authorization: Bearer $TOKEN" | jq   # poll u
 
 ## Notes / caveats
 
-- **In-memory job store (v1).** rollhook's brief 2-replica overlap during a rolling deploy means
-  an in-flight job's poll could land on the wrong replica and 404. Acceptable for v1; revisit with
-  a shared store (Redis/Postgres) only if it bites.
+- **Job store persists to SQLite (status-only, heartbeat-reaped).** Job records (status,
+  query/depth, and — once terminal — the full result or error) live in `bun:sqlite` at
+  `/app/data/jobs.sqlite`, backed by the `research-gateway-data` named volume, so a `done` job
+  stays retrievable with its result across a redeploy. This does **not** resume the agent's own
+  in-flight work (tool calls, retrieval ledger) — checkpoint/resume is a separate, later change.
+  A `queued`/`running` job only becomes a terminal `error` once its liveness **heartbeat** goes
+  stale (>90s with no touch, or was never set) — see `lib/job-store.ts`'s `startHeartbeat` —
+  never as a blanket "this process booted, so everything queued/running must be dead". That
+  distinction is load-bearing: rollhook's brief 2-replica overlap has **both** containers
+  mounting the SAME volume and reading/writing the SAME sqlite file, so at the moment the new
+  replica boots, the old one may still be genuinely alive and actively working (or holding) a
+  job it owns. A blanket reap would kill that job out from under the old replica and hand a
+  caller a false "lost, resubmit" on a run that was never actually interrupted — the reap logic
+  exists specifically to avoid this. The heartbeat covers a job's **entire** lifetime, not just
+  `running`: it starts the instant a job is created, before the concurrency-slot wait, so a
+  merely-`queued` job counts too. That matters in practice — `RESEARCH_MAX_CONCURRENCY=3` and a
+  deep run takes ~28 minutes, so under load a 4th job can sit legitimately `queued` for well
+  over half an hour, and any deploy landing in that window must not treat the whole backlog as
+  lost. Correctness across the overlap rests on heartbeat staleness detection, not on a
+  distributed lock or leader election — two processes never coordinate directly, they only each
+  observe the same timestamps in the same file.
 - **Page fetching** uses `fetch()` + `linkedom` + Readability (`jsdom`'s `fromURL` fetcher is
   broken under Bun; linkedom parses fine). Because the gateway fetches pages itself, the SSRF
   guard (`src/lib/ssrf.ts`) is active and load-bearing; the readability→Tavily-Extract fallback

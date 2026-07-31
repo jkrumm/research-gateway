@@ -4,6 +4,7 @@ import { ResearchInput, ResearchReport } from '../agent/schema.js'
 import { atCapacity, createJob, getJob } from '../lib/job-store.js'
 import { startResearchJob } from '../lib/run-job.js'
 import { log } from '../lib/log.js'
+import { env } from '../env.js'
 
 export const researchRoutes = new Elysia({ prefix: '/research' })
   .post(
@@ -47,10 +48,12 @@ export const researchRoutes = new Elysia({ prefix: '/research' })
       if (!job) {
         // JSON, not a bare string: a poller parses every response of this endpoint as
         // JSON, so a plain-text body turns an expected 404 into a parse crash in the
-        // client. Jobs live in memory, so a service restart loses them as surely as the
-        // TTL does — say both, or the caller reads "expired" and waits pointlessly.
+        // client. Job records now persist across a restart (see lib/job-db.ts) — a job that
+        // was queued/running when the process died comes back as a terminal 'error', not a
+        // 404 — so a 404 here means the id never existed or has passed its TTL retention
+        // window after completion.
         return status(404, {
-          error: `Job not found: ${params.jobId}. It has either passed its retention window or was lost when the service restarted — jobs are held in memory. Submit a new research job.`,
+          error: `Job not found: ${params.jobId}. It never existed, or has passed its ${env.JOB_TTL_MINUTES}-minute retention window after completion. Submit a new research job.`,
         })
       }
       return {

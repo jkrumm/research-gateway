@@ -15,7 +15,8 @@ FROM oven/bun:1.3-alpine AS runner
 WORKDIR /app
 
 RUN apk add --no-cache curl ca-certificates \
-  && addgroup -S app && adduser -S app -G app
+  && addgroup -S app && adduser -S app -G app \
+  && mkdir -p /app/data && chown app:app /app/data
 
 COPY --from=builder --chown=app:app /app/node_modules /app/node_modules
 COPY --from=builder --chown=app:app /app/src /app/src

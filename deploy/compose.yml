@@ -4,6 +4,8 @@
 # cloudflared tunnel (same pattern as argo / audio-gateway). Traefik labels are identical to a
 # public service — tailnet-only is enforced at the DNS layer. Deploys are label-driven via rollhook (OIDC).
 # `${DOMAIN}` comes from the vps top-level .env; `.env` here is materialized by `op inject`.
+# `research-gateway-data` holds the bun:sqlite job store (lib/job-db.ts) at /app/data — status-
+# only durability so a done job's result and an in-flight job's status survive a redeploy.
 
 services:
   research-gateway:
@@ -17,6 +19,8 @@ services:
     mem_limit: 512m
     security_opt:
       - no-new-privileges:true
+    volumes:
+      - research-gateway-data:/app/data
     networks:
       - proxy
       - monitoring-net
@@ -48,3 +52,6 @@ networks:
     external: true
   monitoring-net:
     external: true
+
+volumes:
+  research-gateway-data:

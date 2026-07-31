@@ -13,10 +13,14 @@ import { log } from './lib/log.js'
 // leaving NO log line. `RestartCount=1`, `OOMKilled=false`, peak memory 254M of a
 // 512M limit, no host event, no other container affected — and every application
 // path was already guarded (reportUsage cannot reject, withSlot is safe,
-// startResearchJob catches everything). The exit is still unexplained, and the job
-// store is in-memory, so a silent restart takes every in-flight job with it.
+// startResearchJob catches everything). The exit is still unexplained. At the time,
+// the job store was in-memory, so that restart took every in-flight job with it —
+// the job store now persists to sqlite (lib/job-db.ts) with heartbeat-based reaping
+// (lib/job-store.ts), so a restart like this one no longer silently drops a job: a
+// `done` job's result survives, and one caught mid-run comes back as a terminal
+// `error` once its heartbeat goes stale, not a vanished 404.
 //
-// Rather than guess at a cause, make the next occurrence self-describing.
+// Rather than guess at the exit's cause, make the next occurrence self-describing.
 process.on('exit', (code) => {
   log('process.exit', { code })
 })
