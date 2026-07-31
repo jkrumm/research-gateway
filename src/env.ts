@@ -11,6 +11,11 @@ const Env = z.object({
   WORKER_MAX_CONCURRENCY: z.coerce.number().default(8),
   TAVILY_API_KEY: z.string().min(1),
   CONTEXT7_API_KEY: z.string().optional(),
+  // Optional. The GitHub tools work unauthenticated, but the anonymous budget is 60
+  // req/hour PER IP — shared across every worker of every concurrent job — so a busy
+  // hour degrades them to "rate limited". A token raises it to 5000/hour. Needs no
+  // scopes: public read only.
+  GITHUB_TOKEN: z.string().optional(),
   ARGO_USAGE_URL: z.url().optional(),
   ARGO_API_SECRET: z.string().optional(),
   RESEARCH_MAX_CONCURRENCY: z.coerce.number().default(3),

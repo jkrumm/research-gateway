@@ -7,15 +7,11 @@ import { Readability } from '@mozilla/readability'
 import { env } from '../env.js'
 import { assertPublicHttpUrl } from '../lib/ssrf.js'
 import { log } from '../lib/log.js'
-import { normalizeText, capText } from './extract.js'
+import { normalizeText, capText, TEXT_CAP } from './extract.js'
+import { buildDirectSourceTools } from './direct-sources.js'
 import type { RetrievalLedger } from './ledger.js'
 
 const tvly = tavily({ apiKey: env.TAVILY_API_KEY })
-
-// Normalized pages land ~46k chars / ~11.5k tokens (measured); worker maxContextTokens
-// budgets are 40k-80k (see depth.ts), so 80k chars (~20k tokens) is affordable worst-case
-// and covers whole pages instead of severing them mid-answer.
-const TEXT_CAP = 80_000
 
 async function safeFetch(startUrl: string, jobId = '-', maxHops = 3): Promise<Response> {
   let current = startUrl
@@ -246,6 +242,9 @@ export function buildTools(
   const tools: Record<string, AnyTool> = {
     searchWeb: buildSearchWebTool(searchDepth, ledger, jid),
     fetchPage: buildFetchPageTool(ledger, jid),
+    // Deterministic source-of-truth lookups (registries, GitHub). Registered before the
+    // optional libraryDocs tool so tools/list order stays stable across configurations.
+    ...buildDirectSourceTools(ledger, jid),
   }
 
   const libraryDocsTool = buildLibraryDocsTool(ledger, jid)

@@ -6,6 +6,11 @@
 // table cells) without destroying document structure. This exact sequence was measured
 // against a real failing page (mariadb.org/about/) to give a 54% size reduction while
 // keeping table headers/values legible as readable runs.
+// Normalized pages land ~46k chars / ~11.5k tokens (measured); worker maxContextTokens
+// budgets are 40k-80k (see depth.ts), so 80k chars (~20k tokens) is affordable worst-case
+// and covers whole pages instead of severing them mid-answer.
+export const TEXT_CAP = 80_000
+
 export function normalizeText(text: string): string {
   return text
     .replace(/[ \t]+/g, ' ')

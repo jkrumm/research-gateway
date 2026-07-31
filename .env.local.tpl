@@ -22,6 +22,11 @@ TAVILY_API_KEY=op://common/tavily/API_KEY
 # Context7 (OPTIONAL — libraryDocs tool registers only when set; ctx7sk_ key)
 CONTEXT7_API_KEY=op://vps/research-gateway/CONTEXT7_API_KEY
 
+# GitHub (OPTIONAL — githubFile/githubRepo/findPackages work without it, but anonymous
+# GitHub is 60 req/h PER IP shared by every worker of every job. A no-scope classic PAT
+# (public read only) raises it to 5000/h. Comment out until the item field exists.
+# GITHUB_TOKEN=op://vps/research-gateway/GITHUB_TOKEN
+
 # Telemetry → argo POST /usage/records (ARGO_API_SECRET = argo's shared bearer)
 ARGO_USAGE_URL=https://argo.jkrumm.com/api/usage/records
 ARGO_API_SECRET=op://common/api/SECRET

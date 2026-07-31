@@ -17,6 +17,11 @@ TAVILY_API_KEY=op://vps/research-gateway/TAVILY_API_KEY
 # Context7 (optional)
 CONTEXT7_API_KEY=op://vps/research-gateway/CONTEXT7_API_KEY
 
+# GitHub (OPTIONAL — githubFile/githubRepo/findPackages work without it, but anonymous
+# GitHub is 60 req/h PER IP shared by every worker of every job. A no-scope classic PAT
+# (public read only) raises it to 5000/h. Comment out until the item field exists.
+# GITHUB_TOKEN=op://vps/research-gateway/GITHUB_TOKEN
+
 # Telemetry → argo
 # Internal docker route on the VPS — argo is Tailscale-only (grey-cloud), so the
 # container posts to argo-api directly over the shared monitoring-net, not the public host.

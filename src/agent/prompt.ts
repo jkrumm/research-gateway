@@ -37,9 +37,26 @@ export function workerPrompt(depth: Depth): string {
 
 ## Research pattern
 
-1. **Library/framework API or version questions:** call \`libraryDocs\` first when available — it is the most accurate source for "what is the current API of X" questions.
-2. **Web search:** use \`searchWeb\` to find candidate sources. You are researching ONE sub-question — 1-3 searches should be enough to locate good sources. Re-searching with reworded queries is the least effective thing you can do; if results are thin, read a promising page instead, and follow links from it.
-3. **Page fetching:** spend the bulk of your steps on \`fetchPage\`, reading the most relevant pages in full. Depth comes from reading sources properly, not from issuing more searches.
+**Go to the source of truth before you go searching.** Search results and docs pages are
+second-hand accounts; a registry, a repository file and an API response are the thing
+itself. For any question one of these answers, using search instead is how wrong answers
+get in:
+
+| Question | Tool | Not this |
+|-|-|-|
+| Current version / dist-tags / deps / deprecation of a package | \`packageInfo\` | a blog post or your memory |
+| What is in a repo file — compose file, package.json, config, source, changelog | \`githubFile\` | a docs page paraphrasing it |
+| Is a project alive, what is its latest release, is it archived | \`githubRepo\` | star counts from an article |
+| Which library should be used for X / what is popular | \`findPackages\` | a listicle |
+| Current API surface of a library | \`libraryDocs\` (when available) | search snippets |
+
+Then, for everything those cannot answer:
+
+1. **Web search:** use \`searchWeb\` to find candidate sources. You are researching ONE sub-question — 1-3 searches should be enough to locate good sources. Re-searching with reworded queries is the least effective thing you can do; if results are thin, read a promising page instead, and follow links from it.
+2. **Page fetching:** spend the bulk of your remaining steps on \`fetchPage\`, reading the most relevant pages in full. Depth comes from reading sources properly, not from issuing more searches.
+
+When a docs page and a repository file disagree, the repository file wins — say so
+explicitly rather than silently picking one.
 
 Searching is rate-limited and can fail. If \`searchWeb\` returns an \`error\`, do NOT retry it in a
 loop — work with the sources you already have and report what you could not resolve in \`openGaps\`.

@@ -18,8 +18,18 @@ server-side. See [`PRD.md`](./PRD.md) for the full rationale and decisions.
   ceiling is hit, so a run always banks its result instead of being cut off empty-handed.
 - **LLM:** IU unified endpoint via `@ai-sdk/openai-compatible`. Lead (plan + synthesis):
   DeepSeek-V4-Pro. Workers (fan-out): DeepSeek-V4-Flash.
-- **Tools:** Tavily search, fetch + `@mozilla/readability` (→ Tavily Extract fallback on thin
-  content), Context7 curated docs (optional — only when `CONTEXT7_API_KEY` is set).
+- **Tools:** two kinds, and the split is the point.
+  - *Source-of-truth lookups* — `packageInfo` (npm/PyPI registry: exact version, dist-tags,
+    deps, deprecation), `githubFile` (a repo file verbatim), `githubRepo` (release, archived,
+    last push), `findPackages` (discovery ranked by npm score / stars), `libraryDocs`
+    (Context7, when `CONTEXT7_API_KEY` is set). These answer a question exactly instead of
+    approximately, and workers are told to reach for them first.
+  - *Open-web research* — Tavily search, fetch + `@mozilla/readability` (→ Tavily Extract
+    fallback on thin content), for everything the lookups cannot answer.
+- **Grounding:** a retrieval ledger records what each tool actually returned — `retrieved`
+  (full text), `snippet` (search result only), `failed` (fetch attempted and lost). Findings
+  and citations are gated against it in code at both the worker and job boundary, so a page
+  the run could not fetch can never back a claim. See [Grounding](#grounding).
 
 ## Contract
 
@@ -30,12 +40,45 @@ server-side. See [`PRD.md`](./PRD.md) for the full rationale and decisions.
 | `POST /research` | bearer | `{ query, depth? }` (`depth`: `quick \| standard \| deep`) | `{ jobId, status }` (async) |
 | `GET /research/:jobId` | bearer | — | `{ status, result?, error? }` |
 
-`result` shape: `{ report, citations: [{ claim, url }], sources: string[] }` — `report` is the
-narrative cited answer, `citations` ties claims to URLs, `sources` is the deduped URL list.
+`result` shape: `{ report, citations: [{ claim, url, confidence }], sources, unverified,
+status, warnings, grounding }` — `report` is the narrative cited answer, `citations` ties
+claims to URLs, `sources` is the pages actually read, `unverified` is what could not be
+checked, and `status` / `grounding` are the code-counted evidence accounting.
 
 Runs are **async**: submit returns a `jobId` immediately; poll `GET /research/:jobId` until
 `status` is `done` (agentic runs take tens of seconds to minutes). A global concurrency cap
 (`RESEARCH_MAX_CONCURRENCY`) protects the single IU backend.
+
+## Grounding
+
+A model must never be able to assert that its own output was verified. It isn't asked to:
+`SubmittedReport` (what the synthesis model fills in) and `ResearchReport` (what the caller
+gets) are different types, and everything in the gap is counted in code.
+
+The retrieval ledger (`src/agent/ledger.ts`) records what each tool actually returned:
+
+| Tier | Meaning | Can back a citation? |
+|-|-|-|
+| `retrieved` | full page/file/registry response was obtained | yes, up to `high` confidence |
+| `snippet` | URL appeared in a search result with content, never read | yes, capped at `medium` |
+| `failed` | a fetch was attempted and lost (rate limit, error, refusal) | **no** |
+| `unseen` | no tool in this run ever returned this URL | **no** |
+
+Retrieval sets the confidence **ceiling**; the model sets the value beneath it (a `low` on a
+fully-read page is information and is kept). Gating runs at two boundaries:
+
+- **worker** — a finding citing a page that worker never retrieved is stripped before the
+  digest reaches the synthesis prompt, so the invented claim never reaches the report *prose*
+  either. A digest that loses every finding gets its summary marked unverified.
+- **job** — the merged ledger gates the synthesized citations, `sources` becomes the pages
+  genuinely read, and dropped claims are restated in `unverified`.
+
+A URL in `unverified` is structurally ineligible as a `citations[].url`, so the two can never
+contradict each other. When evidence was lost the report comes back `status: "partial"` with a
+banner prepended to the markdown — text-only MCP clients read the prose and nothing else.
+
+Regression-tested in `src/agent/ground.test.ts` against the run that motivated it
+([#1](https://github.com/jkrumm/research-gateway/issues/1)).
 
 ## Local development
 
@@ -62,6 +105,7 @@ bun test           # pure-function tests; needs no secrets
 | `IU_WORKER_MODEL` | no (`DeepSeek-V4-Flash`) | the parallel fan-out |
 | `TAVILY_API_KEY` | yes | search + extract. Credits are hard-limited — a deep job costs ~120 |
 | `CONTEXT7_API_KEY` | no | enables the `libraryDocs` tool when set. Free, and the best source for library questions |
+| `GITHUB_TOKEN` | no | the `githubFile`/`githubRepo`/`findPackages` tools work without it, but anonymous GitHub is **60 req/h per IP** shared across all jobs; a no-scope token raises it to 5000/h |
 | `ARGO_USAGE_URL` / `ARGO_API_SECRET` | no | telemetry → argo `POST /usage/records`; no-op if unset |
 | `RESEARCH_MAX_CONCURRENCY` | no (3) | concurrent *jobs* |
 | `WORKER_MAX_CONCURRENCY` | no (8) | concurrent *workers within one job* |
