@@ -1,4 +1,4 @@
-import { generateText, tool, stepCountIs, hasToolCall } from 'ai'
+import { generateText, tool, isStepCount, hasToolCall } from 'ai'
 import type { Tool, StopCondition, ToolSet } from 'ai'
 import { workerModel } from '../lib/llm.js'
 import { buildTools } from './tools.js'
@@ -65,10 +65,10 @@ export async function runWorker(args: {
   try {
     const result = await generateText({
       model: workerModel,
-      system: workerPrompt(depth),
+      instructions: workerPrompt(depth),
       prompt: subQuestion,
       tools: allTools,
-      stopWhen: [stepCountIs(profile.workerMaxSteps), hasToolCall('submit_digest'), contextGuard],
+      stopWhen: [isStepCount(profile.workerMaxSteps), hasToolCall('submit_digest'), contextGuard],
       // Force the digest in-loop before any ceiling is hit — step, context, worker
       // wall-clock, OR the job's research deadline. A worker that runs out of time dies
       // with all its evidence; one that submits early banks a digest instead. The
@@ -91,12 +91,12 @@ export async function runWorker(args: {
       timeout: { totalMs: profile.workerTimeoutMs },
       maxRetries: 2,
       abortSignal: AbortSignal.timeout(profile.workerTimeoutMs + 30_000),
-      onStepFinish: (step) => {
+      onStepEnd: (step) => {
         log('worker.step', { jobId, round, tools: step.toolCalls.map((c) => c.toolName) })
       },
     })
 
-    const usage = toUsageStats(result.totalUsage, Date.now() - start)
+    const usage = toUsageStats(result.usage, Date.now() - start)
     const raw = extractDigest(result.toolCalls)
 
     // Ground BEFORE the digest leaves the worker: a finding citing a page this worker

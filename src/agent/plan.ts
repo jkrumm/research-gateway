@@ -47,7 +47,7 @@ export async function planResearch(args: {
   try {
     const result = await generateText({
       model: leadModel,
-      system: planPrompt(depth),
+      instructions: planPrompt(depth),
       prompt: query,
       tools: { submit_plan: submitPlanTool },
       toolChoice: { type: 'tool', toolName: 'submit_plan' },
@@ -57,7 +57,7 @@ export async function planResearch(args: {
       abortSignal: AbortSignal.timeout(profile.planTimeoutMs + 30_000),
     })
 
-    const usage = toUsageStats(result.totalUsage, Date.now() - start)
+    const usage = toUsageStats(result.usage, Date.now() - start)
     const plan = extractPlan(result.toolCalls)
     if (!plan) {
       log('plan.fallback', { jobId, reason: 'no valid submit_plan call' })

@@ -61,7 +61,7 @@ export async function synthesize(args: {
   try {
     const result = await generateText({
       model: leadModel,
-      system: synthesisPrompt(depth),
+      instructions: synthesisPrompt(depth),
       prompt: renderDigests(query, digests),
       tools: { submit_report: submitReportTool },
       toolChoice: { type: 'tool', toolName: 'submit_report' },
@@ -73,7 +73,7 @@ export async function synthesize(args: {
       abortSignal: AbortSignal.timeout(profile.synthesisTimeoutMs + 30_000),
     })
 
-    const usage = toUsageStats(result.totalUsage, Date.now() - start)
+    const usage = toUsageStats(result.usage, Date.now() - start)
     log('synthesis.done', {
       jobId,
       ms: Date.now() - start,
