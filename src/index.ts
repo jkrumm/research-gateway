@@ -45,6 +45,27 @@ process.on('unhandledRejection', (reason) => {
   log('process.unhandledRejection', { reason: String(reason) })
 })
 
+// Elysia's error `code` is either a named framework error ('VALIDATION' | 'NOT_FOUND' |
+// 'PARSE' | 'INVALID_COOKIE_SIGNATURE' | 'INVALID_FILE_TYPE' | 'INTERNAL_SERVER_ERROR' |
+// 'UNKNOWN') or, for a handler-thrown `status(code, body)` (e.g. the 401 in auth-guard.ts),
+// the numeric HTTP status itself. Maps both to a status number in [400, 500) — an expected
+// client error — or null for anything that should still log loudly.
+function clientErrorStatus(code: unknown): number | null {
+  if (typeof code === 'number') return code >= 400 && code < 500 ? code : null
+  switch (code) {
+    case 'VALIDATION':
+    case 'INVALID_FILE_TYPE':
+      return 422
+    case 'NOT_FOUND':
+      return 404
+    case 'PARSE':
+    case 'INVALID_COOKIE_SIGNATURE':
+      return 400
+    default:
+      return null // 'UNKNOWN' | 'INTERNAL_SERVER_ERROR' — genuine server-side failure
+  }
+}
+
 export const app = new Elysia()
   .use(
     openapi({
@@ -74,7 +95,15 @@ export const app = new Elysia()
       },
     }),
   )
-  .onError(({ error }) => {
+  .onError(({ code, error }) => {
+    const clientStatus = clientErrorStatus(code)
+    if (clientStatus !== null) {
+      // Expected client error (e.g. every unauthenticated probe of this internet-facing,
+      // tailnet-gated service throws a 401 here) — quiet structured log, not `console.error`,
+      // so probe noise doesn't drown a genuine 5xx.
+      log('request.client_error', { status: clientStatus, code })
+      return
+    }
     console.error('[error]', error)
   })
   .get(
