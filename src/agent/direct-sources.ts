@@ -252,9 +252,16 @@ function buildGithubFileTool(ledger: RetrievalLedger, jobId: string): AnyTool {
           signal: AbortSignal.timeout(TIMEOUT_MS),
         })
         if (!res.ok) {
+          // A 404 is nearly always a guessed tag, not a missing file. Observed live: five
+          // wasted steps guessing `v1.4.29`/`v1.0.0` for a repo that tags `1.4.29`. Say so
+          // instead of leaving the model to brute-force prefixes.
+          const refHint =
+            ref === undefined
+              ? ' The default branch was used, so the path is the likely problem.'
+              : ` Tag naming is per-repo — "${ref}" may need its "v" prefix added or removed. Call githubRepo({ owner: "${owner}", repo: "${repo}" }) for the exact latestRelease.tag rather than guessing, or omit ref to read the default branch.`
           const reason =
             res.status === 404
-              ? `not found — no file at "${path}" on ref "${effectiveRef}" (check the path and ref)`
+              ? `not found — no file at "${path}" on ref "${effectiveRef}".${refHint}`
               : `HTTP ${res.status} ${res.statusText}`
           ledger.recordFailed(blobUrl, reason)
           log('tool.githubFile', { jobId, owner, repo, path, ref: effectiveRef, ok: false, status: res.status })
