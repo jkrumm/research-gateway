@@ -3,6 +3,7 @@ import type { Tool } from 'ai'
 import { leadModel } from '../lib/llm.js'
 import { profiles } from './depth.js'
 import { synthesisPrompt } from './prompt.js'
+import { resolveSynthesisReport } from './extract.js'
 import { SubmittedReport, WorkerDigest } from './schema.js'
 import type { Depth } from './schema.js'
 import { log } from '../lib/log.js'
@@ -29,17 +30,6 @@ function renderDigests(query: string, digests: WorkerDigest[]): string {
     return `### ${d.subQuestion}\n\n${d.summary}\n\n**Findings:**\n${findings || '(none)'}\n\n**Sources read:** ${sourcesRead || '(none)'}\n\n**Blocked sources:**\n${blockedSources || '(none)'}`
   })
   return `## Original query\n\n${query}\n\n## Researched sub-questions\n\n${sections.join('\n\n')}`
-}
-
-// A forced toolChoice on DeepSeek sometimes emits the schema literally instead of filling
-// it in. Reject anything that looks like a schema echo rather than a real report.
-export function isValidReport(report: SubmittedReport, digests: WorkerDigest[]): boolean {
-  const text = report.report.trim()
-  if (text.length < 200) return false
-  if (text.toLowerCase() === 'string') return false
-  const hasFindings = digests.some((d) => d.findings.length > 0)
-  if (report.citations.length === 0 && hasFindings) return false
-  return true
 }
 
 export async function synthesize(args: {
@@ -85,11 +75,22 @@ export async function synthesize(args: {
       log('synthesis.rejected', { jobId, reason: 'no valid submit_report call' })
       return { report: null, usage }
     }
-    if (!isValidReport(report, digests)) {
+
+    const resolved = resolveSynthesisReport(report, digests)
+    if (resolved.salvaged) {
+      // Loud and distinct on purpose: how often this fires is the signal for whether the
+      // prompt or the forced-toolChoice arm needs work — see extract.ts for the failure
+      // mode this is salvaging.
+      log('synthesis.salvaged', {
+        jobId,
+        reason: 'report.report was double-encoded JSON of the whole submission; unwrapped inner markdown',
+      })
+    }
+    if (!resolved.report) {
       log('synthesis.rejected', { jobId, reason: 'schema-echo or empty-citations guard' })
       return { report: null, usage }
     }
-    return { report, usage }
+    return { report: resolved.report, usage }
   } catch (err) {
     log('synthesis.failed', { jobId, error: String(err) })
     return { report: null, usage: { ...emptyUsage(), durationMs: Date.now() - start } }
