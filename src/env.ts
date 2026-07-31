@@ -5,7 +5,11 @@ const Env = z.object({
   API_SECRET: z.string().min(1),
   IU_BASE_URL: z.url(),
   IU_API_KEY: z.string().min(1),
-  IU_MODEL: z.string().default('DeepSeek-V4-Pro'),
+  // Both roles run Flash. These two defaults are the real configuration — production sets
+  // neither, so what is written here is what runs. (A dead IU_MODEL var used to sit here
+  // and was still set to DeepSeek-V4-Pro in the deployed .env, which read as if the lead
+  // were Pro long after it was not. Nothing consumed it; removed rather than corrected.)
+  //
   // Flash leads as well as works. Measured live against the IU endpoint, Flash decodes
   // ~2x faster than Pro and matches it on multi-step tool-calling (3/3 tools, args valid,
   // 7.8s vs 14.1s — modelpick's 2026-07 bake-off). The lead's two jobs, planning and
