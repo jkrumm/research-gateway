@@ -1,4 +1,4 @@
-import type { ResearchReport, SubQuestion, WorkerDigest } from './schema.js'
+import type { SubmittedReport, SubQuestion, WorkerDigest } from './schema.js'
 
 // Dependency-free by design (only `schema.js`, which has no `env.js` import) so these two
 // pure helpers can be unit-tested without booting the whole env/llm import chain.
@@ -8,7 +8,7 @@ import type { ResearchReport, SubQuestion, WorkerDigest } from './schema.js'
 // makes a `citations: 0` result unreachable when digests carry findings. Must be total:
 // given `[]` it returns empty strings/arrays rather than throwing; the caller already
 // guards on `allDigests.length > 0`, but this function must not itself be a trap.
-export function assembleReport(digests: WorkerDigest[]): ResearchReport {
+export function assembleReport(digests: WorkerDigest[]): SubmittedReport {
   return {
     report: digests.map((d) => `## ${d.subQuestion}\n\n${d.summary}`).join('\n\n'),
     citations: digests.flatMap((d) =>

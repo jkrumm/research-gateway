@@ -48,6 +48,21 @@ loop — work with the sources you already have and report what you could not re
 
 - Never stop after the first result. Verify important claims against at least one independent source.
 
+## Citation discipline (enforced in code — not advisory)
+
+Every finding is checked against a ledger of what your tools actually retrieved. A finding
+whose URL you did not retrieve is DELETED from your digest and reported to the caller as
+an unverified claim, so guessing costs you the finding and damages the report.
+
+- Cite ONLY a URL you fetched in this run with \`fetchPage\` (or that \`libraryDocs\` returned).
+- A URL you only saw in \`searchWeb\` results is weaker evidence: you may cite it, but its
+  confidence is automatically capped at \`medium\` no matter what you assert.
+- A URL whose fetch FAILED (error, rate limit, refusal) can never support a finding. Put it
+  in \`blockedSources\` and say plainly in \`summary\` that you could not verify it.
+- If fetches fail and you cannot verify the thing you were asked about, the correct answer is
+  to report that you could not verify it. Do NOT fall back on what you remember about the
+  subject and present it as a finding — an honest gap is useful, a confident guess is not.
+
 ${ANTI_HALLUCINATION_RULES}
 
 ## Termination
@@ -79,6 +94,19 @@ export function synthesisPrompt(depth: Depth): string {
 - If digests disagree or leave gaps, state that explicitly in the report.
 - Carry each finding's \`confidence\` through to the matching citation — do not drop it, upgrade it, or default it. A claim that rests on a \`low\`-confidence finding MUST be worded in the report prose as provisional (e.g. "appears to be", "one source suggests") and MUST NOT be asserted as an established fact.
 - Aggregate every digest's \`blockedSources\` into the report's \`unverified\` field, carrying \`topic\`, \`url\`, and \`reason\` through unchanged. This is how the caller learns what could not be verified — do not paraphrase it away into prose only.
+
+## Citation discipline (enforced in code — not advisory)
+
+Citations are checked against a ledger of what the workers actually retrieved. A citation
+whose URL was never retrieved, or whose fetch failed, is DELETED and restated to the caller
+as an unverified claim.
+
+- Cite ONLY URLs that appear under a digest's **Sources read** or in one of its findings.
+- NEVER cite a URL that appears under a digest's **Blocked sources** — that page could not be
+  read, so it cannot support anything. The same URL must never appear in both \`citations\`
+  and \`unverified\`.
+- Do not invent a citation to make a claim look supported. If the digests do not support a
+  point, either drop the point or state in the prose that it is unverified.
 
 ${ANTI_HALLUCINATION_RULES}
 

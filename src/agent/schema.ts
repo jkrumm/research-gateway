@@ -9,7 +9,10 @@ export const ResearchInput = z.object({
 })
 export type ResearchInput = z.infer<typeof ResearchInput>
 
-export const ResearchReport = z.object({
+// What the SYNTHESIS MODEL submits. Deliberately does NOT carry `status`, `warnings` or
+// `grounding` — those are derived in code from the retrieval ledger (see ground.ts). A
+// model must never be able to assert that its own output was verified.
+export const SubmittedReport = z.object({
   report: z.string().describe('Narrative, cited answer in markdown'),
   citations: z
     .array(
@@ -29,6 +32,38 @@ export const ResearchReport = z.object({
     .describe(
       'Claims or topics the report could NOT verify against a source, aggregated from the digests\' blockedSources. A transparency channel to the caller — distinct from citations, which are claims that WERE verified.',
     ),
+})
+export type SubmittedReport = z.infer<typeof SubmittedReport>
+
+// Machine-checked evidence accounting for the run. Every number here is counted in code
+// from what the fetch tools actually returned, so a caller can weigh the report without
+// trusting the model's own account of its work.
+export const Grounding = z.object({
+  pagesRetrieved: z.number().describe('Pages whose full text was actually retrieved this run.'),
+  pagesFailed: z.number().describe('Pages a fetch was attempted on and failed (rate limit, error, refusal).'),
+  citationsKept: z.number().describe('Citations backed by a page this run actually retrieved or saw as a search snippet.'),
+  citationsDropped: z
+    .number()
+    .describe('Citations removed because the URL was never retrieved, or its fetch failed. Each is restated in `unverified`.'),
+  confidenceCapped: z
+    .number()
+    .describe('Citations whose asserted confidence was lowered to match what was actually retrieved.'),
+})
+export type Grounding = z.infer<typeof Grounding>
+
+// The PUBLIC report: the model's submission after code-side grounding.
+export const ResearchReport = SubmittedReport.extend({
+  status: z
+    .enum(['ok', 'partial'])
+    .default('ok')
+    .describe(
+      "'partial' means evidence was lost this run — citations were dropped for lack of a retrieved source, or nothing could be retrieved at all. Treat prose in a 'partial' report as unconfirmed unless a citation backs it.",
+    ),
+  warnings: z
+    .array(z.string())
+    .default([])
+    .describe('Human-readable notes about degraded evidence for this run. Empty on a clean run.'),
+  grounding: Grounding.describe('Machine-checked evidence accounting — counted in code, not asserted by the model.'),
 })
 export type ResearchReport = z.infer<typeof ResearchReport>
 

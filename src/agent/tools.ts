@@ -8,6 +8,7 @@ import { env } from '../env.js'
 import { assertPublicHttpUrl } from '../lib/ssrf.js'
 import { log } from '../lib/log.js'
 import { normalizeText, capText } from './extract.js'
+import type { RetrievalLedger } from './ledger.js'
 
 const tvly = tavily({ apiKey: env.TAVILY_API_KEY })
 
@@ -41,7 +42,11 @@ async function safeFetch(startUrl: string, jobId = '-', maxHops = 3): Promise<Re
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyTool = Tool<any, any>
 
-function buildSearchWebTool(defaultSearchDepth: 'basic' | 'advanced', jobId = '-'): AnyTool {
+function buildSearchWebTool(
+  defaultSearchDepth: 'basic' | 'advanced',
+  ledger: RetrievalLedger,
+  jobId = '-',
+): AnyTool {
   // Per-run search dedup, mirroring fetchPage's. Tavily credits are a hard-limited resource
   // (exceeding the key's cap fails the search outright), and a re-issued identical query
   // returns identical results — so it burns credit for nothing.
@@ -79,10 +84,13 @@ function buildSearchWebTool(defaultSearchDepth: 'basic' | 'advanced', jobId = '-
         log('tool.searchWeb', { jobId, query, searchDepth: depth, results: r.results.length })
         const out = {
           answer: r.answer ?? null,
-          // NOTE: onSource intentionally NOT called here — a search result is a candidate,
-          // not a consulted source. Only pages actually read (fetchPage/libraryDocs) count.
+          // A search result is a candidate, not a consulted source: it is recorded on the
+          // ledger as `snippet`, NOT `retrieved`. That distinction is load-bearing — a
+          // claim resting on a snippet is capped at `medium` confidence (see ground.ts),
+          // while only a page actually read can carry `high`.
           results: r.results.map((x) => {
             const c = x.content ?? ''
+            if (c.length > 0) ledger.recordSnippet(x.url)
             return {
               title: x.title,
               url: x.url,
@@ -101,7 +109,7 @@ function buildSearchWebTool(defaultSearchDepth: 'basic' | 'advanced', jobId = '-
   })
 }
 
-function buildFetchPageTool(onSource?: (url: string) => void, jobId = '-'): AnyTool {
+function buildFetchPageTool(ledger: RetrievalLedger, jobId = '-'): AnyTool {
   // Per-run dedup: a URL fetched once is not fetched again. Re-fetching wastes network,
   // readability/Tavily-extract work, and budget; the model already has the content above.
   const fetched = new Set<string>()
@@ -122,6 +130,7 @@ function buildFetchPageTool(onSource?: (url: string) => void, jobId = '-'): AnyT
       try {
         await assertPublicHttpUrl(url)
       } catch (err) {
+        ledger.recordFailed(url, `refused: ${String(err)}`)
         log('tool.fetchPage', { jobId, url, via: 'refused' })
         return { url, error: `refused: ${String(err)}` }
       }
@@ -140,7 +149,7 @@ function buildFetchPageTool(onSource?: (url: string) => void, jobId = '-'): AnyT
           rdChars = text?.length ?? 0
           if (text && text.length >= 200) {
             fetched.add(url)
-            onSource?.(url)
+            ledger.recordRetrieved(url)
             log('tool.fetchPage', { jobId, url, via: 'readability', chars: text.length })
             return { url, text: capText(text, TEXT_CAP) }
           }
@@ -156,15 +165,20 @@ function buildFetchPageTool(onSource?: (url: string) => void, jobId = '-'): AnyT
         const result = ex.results[0]
         if (result) {
           fetched.add(url)
-          onSource?.(url)
+          ledger.recordRetrieved(url)
           const text = normalizeText(result.rawContent)
           log('tool.fetchPage', { jobId, url, via: 'tavily-extract', chars: text.length, rdReason, rdChars })
           return { url, text: capText(text, TEXT_CAP) }
         }
         const failed = ex.failedResults[0]
+        const reason = failed?.error ?? 'Tavily extract returned no content'
+        // Both fetch paths are now exhausted — this URL is unverifiable for this run, and
+        // the ledger is what makes it structurally ineligible as a citation source.
+        ledger.recordFailed(url, reason)
         log('tool.fetchPage', { jobId, url, via: 'error' })
-        return { url, error: failed?.error ?? 'Tavily extract returned no content' }
+        return { url, error: reason }
       } catch (err) {
+        ledger.recordFailed(url, String(err))
         log('tool.fetchPage', { jobId, url, via: 'error' })
         return { url, error: String(err) }
       }
@@ -172,7 +186,7 @@ function buildFetchPageTool(onSource?: (url: string) => void, jobId = '-'): AnyT
   })
 }
 
-function buildLibraryDocsTool(onSource: ((url: string) => void) | undefined, jobId = '-'): AnyTool | null {
+function buildLibraryDocsTool(ledger: RetrievalLedger, jobId = '-'): AnyTool | null {
   if (!env.CONTEXT7_API_KEY) return null
 
   const apiKey = env.CONTEXT7_API_KEY
@@ -210,7 +224,7 @@ function buildLibraryDocsTool(onSource: ((url: string) => void) | undefined, job
         // Context7's `source` is a URL *or* an opaque snippet identifier. Only real URLs
         // belong in the report's sources — the rest would be uncheckable by a reader.
         for (const d of docs) {
-          if (d.source?.startsWith('http')) onSource?.(d.source)
+          if (d.source?.startsWith('http')) ledger.recordRetrieved(d.source)
         }
 
         log('tool.libraryDocs', { jobId, library, topic, ok: true })
@@ -224,17 +238,17 @@ function buildLibraryDocsTool(onSource: ((url: string) => void) | undefined, job
 }
 
 export function buildTools(
-  onSource: ((url: string) => void) | undefined,
+  ledger: RetrievalLedger,
   jobId: string | undefined,
   searchDepth: 'basic' | 'advanced' = 'basic',
 ): Record<string, AnyTool> {
   const jid = jobId ?? '-'
   const tools: Record<string, AnyTool> = {
-    searchWeb: buildSearchWebTool(searchDepth, jid),
-    fetchPage: buildFetchPageTool(onSource, jid),
+    searchWeb: buildSearchWebTool(searchDepth, ledger, jid),
+    fetchPage: buildFetchPageTool(ledger, jid),
   }
 
-  const libraryDocsTool = buildLibraryDocsTool(onSource, jid)
+  const libraryDocsTool = buildLibraryDocsTool(ledger, jid)
   if (libraryDocsTool) {
     tools['libraryDocs'] = libraryDocsTool
   }

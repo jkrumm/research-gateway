@@ -25,16 +25,24 @@ const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout
 // Inline the report + citations + sources so text-only MCP clients get the full
 // picture even if they ignore structuredContent.
 function reportText(report: ResearchReport): string {
+  // Confidence is rendered per citation, and `unverified` is rendered at all, because a
+  // text-only client sees ONLY this string — omitting them here reproduced issue #1's
+  // shape from the client's side: every claim looked equally established.
   const citationLines =
     report.citations.length > 0
       ? '\n\n## Citations\n' +
-        report.citations.map((c, i) => `${i + 1}. ${c.claim} — <${c.url}>`).join('\n')
+        report.citations.map((c, i) => `${i + 1}. [${c.confidence}] ${c.claim} — <${c.url}>`).join('\n')
+      : ''
+  const unverifiedLines =
+    report.unverified.length > 0
+      ? '\n\n## Unverified — could NOT be checked against a source\n' +
+        report.unverified.map((u) => `- ${u.topic}${u.url ? ` (<${u.url}>)` : ''} — ${u.reason}`).join('\n')
       : ''
   const sourcesLines =
     report.sources.length > 0
-      ? '\n\n## Sources\n' + report.sources.map((s) => `- ${s}`).join('\n')
+      ? '\n\n## Sources read\n' + report.sources.map((s) => `- ${s}`).join('\n')
       : ''
-  return report.report + citationLines + sourcesLines
+  return report.report + citationLines + unverifiedLines + sourcesLines
 }
 
 function toState(job: Job): z.infer<typeof JobState> {
@@ -110,7 +118,7 @@ mcpServer.registerTool(
   {
     title: 'Wait for Research Job',
     description:
-      "Wait for a research job to finish, then return its state. The normal way to consume `research`: submit → job_wait → use result. Polls internally with progress heartbeats, so it is safe for long jobs and won't trip the MCP timeout. Waits up to ~50s per call; if the job is still running when the window elapses it returns with stillRunning:true — simply call job_wait again with the same jobId (loop until stillRunning is false). When status is 'done', `result` holds the cited ResearchReport; when 'error', `error` explains why.",
+      "Wait for a research job to finish, then return its state. The normal way to consume `research`: submit → job_wait → use result. Polls internally with progress heartbeats, so it is safe for long jobs and won't trip the MCP timeout. Waits up to ~50s per call; if the job is still running when the window elapses it returns with stillRunning:true — simply call job_wait again with the same jobId (loop until stillRunning is false). When status is 'done', `result` holds the cited ResearchReport; when 'error', `error` explains why. The report carries `status` ('ok' | 'partial') and a code-counted `grounding` block: on 'partial' the run lost evidence, so treat any prose not backed by a `citations` entry as unconfirmed and read `unverified` for what could not be checked. Every citation carries a `confidence` derived from what was actually retrieved.",
     inputSchema: z.object({
       jobId: z.string().describe('The job id returned by research.'),
       maxWaitMs: z
@@ -165,7 +173,7 @@ mcpServer.registerTool(
   {
     title: 'Research Job Status (one-shot)',
     description:
-      "Return the current state of a research job by id, without waiting. Prefer job_wait when you actually want the report — this is a quick non-blocking peek (e.g. checking on a long job while doing other work). When status is 'done', `result` holds the cited ResearchReport; when 'error', `error` explains why.",
+      "Return the current state of a research job by id, without waiting. Prefer job_wait when you actually want the report — this is a quick non-blocking peek (e.g. checking on a long job while doing other work). When status is 'done', `result` holds the cited ResearchReport; when 'error', `error` explains why. The report carries `status` ('ok' | 'partial') and a code-counted `grounding` block: on 'partial' the run lost evidence, so treat any prose not backed by a `citations` entry as unconfirmed and read `unverified` for what could not be checked. Every citation carries a `confidence` derived from what was actually retrieved.",
     inputSchema: z.object({
       jobId: z.string().describe('The job id returned by research.'),
     }),

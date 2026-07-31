@@ -3,8 +3,9 @@ import { planResearch } from './plan.js'
 import { runWorker } from './worker.js'
 import { synthesize } from './synthesize.js'
 import { assembleReport, nextRoundQuestions } from './assemble.js'
-import { ResearchReport } from './schema.js'
-import type { Depth, SubQuestion, WorkerDigest } from './schema.js'
+import { mergeLedgers, type LedgerSnapshot } from './ledger.js'
+import { groundReport } from './ground.js'
+import type { Depth, ResearchReport, SubmittedReport, SubQuestion, WorkerDigest } from './schema.js'
 import { log } from '../lib/log.js'
 import { computeCost, emptyUsage, addUsage } from '../lib/usage.js'
 import type { UsageStats } from '../lib/usage.js'
@@ -57,7 +58,7 @@ async function withLimit<T>(sem: Semaphore, fn: () => Promise<T>): Promise<T> {
 interface RoundResult {
   digests: WorkerDigest[]
   usage: UsageStats
-  sourcesSeen: Set<string>
+  ledgers: LedgerSnapshot[]
 }
 
 // Runs one round's sub-questions as workers in parallel, bounded by WORKER_MAX_CONCURRENCY.
@@ -81,16 +82,16 @@ async function dispatchRound(
 
   let usage = emptyUsage()
   const digests: WorkerDigest[] = []
-  const sourcesSeen = new Set<string>()
+  const ledgers: LedgerSnapshot[] = []
 
   for (const outcome of settled) {
     if (outcome.status !== 'fulfilled') continue
     usage = addUsage(usage, outcome.value.usage)
-    for (const url of outcome.value.sourcesRead) sourcesSeen.add(url)
+    ledgers.push(outcome.value.ledger)
     if (outcome.value.digest) digests.push(outcome.value.digest)
   }
 
-  return { digests, usage, sourcesSeen }
+  return { digests, usage, ledgers }
 }
 
 export async function runResearch(
@@ -108,7 +109,7 @@ export async function runResearch(
   let workerUsage = emptyUsage()
   const allDigests: WorkerDigest[] = []
   const askedLower = new Set<string>()
-  const sourcesSeen = new Set<string>()
+  const allLedgers: LedgerSnapshot[] = []
   let workersDispatchedTotal = 0
 
   const { plan, usage: planUsage } = await planResearch({ query: input.query, depth, jobId })
@@ -127,7 +128,7 @@ export async function runResearch(
   while (currentQuestions.length > 0) {
     for (const sq of currentQuestions) askedLower.add(sq.question.trim().toLowerCase())
 
-    const { digests, usage, sourcesSeen: roundSources } = await dispatchRound(
+    const { digests, usage, ledgers } = await dispatchRound(
       currentQuestions,
       depth,
       jobId,
@@ -137,7 +138,7 @@ export async function runResearch(
     workerUsage = addUsage(workerUsage, usage)
     allDigests.push(...digests)
     workersDispatchedTotal += currentQuestions.length
-    for (const url of roundSources) sourcesSeen.add(url)
+    allLedgers.push(...ledgers)
 
     // Emit a cumulative snapshot per round, not just once at the end. argo upserts
     // on (source, source_id, machine), so each snapshot overwrites the last rather
@@ -171,7 +172,7 @@ export async function runResearch(
     round += 1
   }
 
-  let report: ResearchReport | null = null
+  let submitted: SubmittedReport | null = null
   let reason: 'submit_report' | 'assembled' | 'empty' = 'empty'
 
   if (allDigests.length > 0) {
@@ -184,32 +185,32 @@ export async function runResearch(
     leadUsage = addUsage(leadUsage, synthesisUsage)
 
     if (synthesized) {
-      report = synthesized
+      submitted = synthesized
       reason = 'submit_report'
     } else {
       // Deterministic fallback — assembled in code, no LLM call. See assemble.ts.
-      report = assembleReport(allDigests)
+      submitted = assembleReport(allDigests)
       reason = 'assembled'
     }
   }
 
   // Last-resort degraded stub: no digest was ever produced (every worker failed/timed out).
-  if (!report) {
-    report = {
+  if (!submitted) {
+    submitted = {
       report: 'Research could not gather any evidence for this query before the budget was exhausted.',
       citations: [],
-      sources: [...sourcesSeen],
+      sources: [],
       unverified: [],
     }
     reason = 'empty'
   }
 
-  // Sources floor: never drop URLs actually read. If the report's sources came back empty,
-  // backfill from the union of everything the digests recorded as read.
-  if (report.sources.length === 0) {
-    const digestSources = new Set(allDigests.flatMap((d) => d.sourcesRead))
-    if (digestSources.size > 0) report.sources = [...digestSources]
-  }
+  // The job-level gate. Every citation the synthesis model asserted is checked against the
+  // union of what the workers' tools actually retrieved, `sources` is replaced by the pages
+  // genuinely read, and `status`/`grounding` are counted in code. This is the invariant
+  // from issue #1: a URL this run could not fetch can never back a citation.
+  const jobLedger = mergeLedgers(allLedgers)
+  const report: ResearchReport = groundReport(submitted, jobLedger)
 
   const wallMs = Date.now() - start
   const combined = addUsage(leadUsage, workerUsage)
@@ -241,6 +242,11 @@ export async function runResearch(
     digests: allDigests.length,
     citations: report.citations.length,
     sources: report.sources.length,
+    status: report.status,
+    pagesRetrieved: report.grounding.pagesRetrieved,
+    pagesFailed: report.grounding.pagesFailed,
+    citationsDropped: report.grounding.citationsDropped,
+    confidenceCapped: report.grounding.confidenceCapped,
     inputTokens: combined.inputTokens,
     cachedInputTokens: combined.cachedInputTokens,
     outputTokens: combined.outputTokens,

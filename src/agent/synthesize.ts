@@ -3,7 +3,7 @@ import type { Tool } from 'ai'
 import { leadModel } from '../lib/llm.js'
 import { profiles } from './depth.js'
 import { synthesisPrompt } from './prompt.js'
-import { ResearchReport, WorkerDigest } from './schema.js'
+import { SubmittedReport, WorkerDigest } from './schema.js'
 import type { Depth } from './schema.js'
 import { log } from '../lib/log.js'
 import { emptyUsage, toUsageStats } from '../lib/usage.js'
@@ -12,10 +12,10 @@ import type { UsageStats } from '../lib/usage.js'
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyTool = Tool<any, any>
 
-function extractReport(toolCalls: ReadonlyArray<{ toolName: string; input: unknown }>): ResearchReport | null {
+function extractReport(toolCalls: ReadonlyArray<{ toolName: string; input: unknown }>): SubmittedReport | null {
   const submitCall = toolCalls.find((c) => c.toolName === 'submit_report')
   if (!submitCall) return null
-  const parsed = ResearchReport.safeParse(submitCall.input)
+  const parsed = SubmittedReport.safeParse(submitCall.input)
   return parsed.success ? parsed.data : null
 }
 
@@ -33,7 +33,7 @@ function renderDigests(query: string, digests: WorkerDigest[]): string {
 
 // A forced toolChoice on DeepSeek sometimes emits the schema literally instead of filling
 // it in. Reject anything that looks like a schema echo rather than a real report.
-export function isValidReport(report: ResearchReport, digests: WorkerDigest[]): boolean {
+export function isValidReport(report: SubmittedReport, digests: WorkerDigest[]): boolean {
   const text = report.report.trim()
   if (text.length < 200) return false
   if (text.toLowerCase() === 'string') return false
@@ -47,7 +47,7 @@ export async function synthesize(args: {
   digests: WorkerDigest[]
   depth: Depth
   jobId: string
-}): Promise<{ report: ResearchReport | null; usage: UsageStats }> {
+}): Promise<{ report: SubmittedReport | null; usage: UsageStats }> {
   const { query, digests, depth, jobId } = args
   const profile = profiles[depth]
   const start = Date.now()
@@ -55,7 +55,7 @@ export async function synthesize(args: {
   const submitReportTool: AnyTool = tool({
     description:
       'Submit the final research report synthesized from the provided digests. This is the ONLY way to deliver the answer — do not write plain text.',
-    inputSchema: ResearchReport,
+    inputSchema: SubmittedReport,
   }) as AnyTool
 
   try {

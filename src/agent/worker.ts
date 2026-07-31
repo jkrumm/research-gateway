@@ -6,6 +6,8 @@ import { profiles } from './depth.js'
 import { workerPrompt } from './prompt.js'
 import { WorkerDigest } from './schema.js'
 import type { Depth } from './schema.js'
+import { createLedger, type LedgerSnapshot } from './ledger.js'
+import { groundDigest } from './ground.js'
 import { log } from '../lib/log.js'
 import { emptyUsage, toUsageStats } from '../lib/usage.js'
 import type { UsageStats } from '../lib/usage.js'
@@ -29,15 +31,16 @@ export async function runWorker(args: {
   // synthesis always keeps its full budget. A worker still running past this point banks
   // its digest (forced submit_digest) rather than being aborted — see prepareStep below.
   researchDeadlineAt: number
-}): Promise<{ digest: WorkerDigest | null; usage: UsageStats; sourcesRead: string[] }> {
+}): Promise<{ digest: WorkerDigest | null; usage: UsageStats; ledger: LedgerSnapshot }> {
   const { subQuestion, depth, jobId, round, researchDeadlineAt } = args
   const profile = profiles[depth]
   const start = Date.now()
 
-  // Sources actually read this run — backfills the digest's sourcesRead if the model
-  // returns it empty, and is the sources floor when the worker fails entirely.
-  const sourcesRead = new Set<string>()
-  const researchTools = buildTools((url) => sourcesRead.add(url), jobId, profile.searchDepth)
+  // What this worker's tools ACTUALLY retrieved, failed on, or merely glimpsed as a search
+  // snippet. It backfills the digest's sourcesRead, is the sources floor when the worker
+  // fails entirely, and — via groundDigest below — decides which findings may survive.
+  const ledger = createLedger()
+  const researchTools = buildTools(ledger, jobId, profile.searchDepth)
 
   // The done tool — no `execute` means the loop halts when the model calls it.
   const submitDigestTool: AnyTool = tool({
@@ -94,17 +97,24 @@ export async function runWorker(args: {
     })
 
     const usage = toUsageStats(result.totalUsage, Date.now() - start)
-    let digest = extractDigest(result.toolCalls)
+    const raw = extractDigest(result.toolCalls)
 
-    if (digest && digest.sourcesRead.length === 0 && sourcesRead.size > 0) {
-      digest = { ...digest, sourcesRead: [...sourcesRead] }
+    // Ground BEFORE the digest leaves the worker: a finding citing a page this worker
+    // never retrieved is stripped here, so it never enters the synthesis prompt and
+    // therefore cannot surface in the report's prose either — not just its citations.
+    const digest = raw ? groundDigest(raw, ledger) : null
+    if (raw && digest) {
+      const stripped = raw.findings.length - digest.findings.length
+      if (stripped > 0) {
+        log('worker.ungrounded', { jobId, round, stripped, kept: digest.findings.length })
+      }
     }
 
-    return { digest, usage, sourcesRead: [...sourcesRead] }
+    return { digest, usage, ledger: ledger.snapshot() }
   } catch (err) {
     // A worker that throws/times out must not kill the whole job — degrade to null.
-    // sourcesRead is still returned so the job-level fallback still counts pages this
-    // worker actually read before it failed.
+    // The ledger snapshot is still returned so the job-level fallback still counts the
+    // pages this worker actually read (and the fetches it lost) before it failed.
     log('worker.failed', {
       jobId,
       round,
@@ -116,7 +126,7 @@ export async function runWorker(args: {
     return {
       digest: null,
       usage: { ...emptyUsage(), durationMs: Date.now() - start },
-      sourcesRead: [...sourcesRead],
+      ledger: ledger.snapshot(),
     }
   }
 }
