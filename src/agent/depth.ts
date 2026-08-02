@@ -13,6 +13,16 @@ export interface DepthProfile {
   totalTimeoutMs: number
   searchDepth: 'basic' | 'advanced' // Tavily
   searchContextSize: SonarContextSize // Sonar — the same knob, priced per request
+  // How many search hits a worker is handed. This is the fan-out dial, and it is the
+  // expensive one: every extra candidate is a page a worker may decide to fetch, so it
+  // drives worker tokens and wall-clock far more than it drives search spend (which is a
+  // flat per-request fee either way). Sonar returns 17-20 regardless; this trims them.
+  //
+  // Measured 2026-08-02, first live `standard` job on Sonar: handing workers all 20 hits
+  // produced a genuinely better report (50 citations / 35 pages vs ~15 citations before)
+  // but took 545s and $0.16 against a ~100s / $0.009-0.028 baseline. `standard` taking 9
+  // minutes collapses the gap to `deep`, so the tiers get their fan-out back here.
+  maxSearchResults: number
   directive: string
 }
 
@@ -37,11 +47,16 @@ export const profiles: Record<Depth, DepthProfile> = {
     synthesisTimeoutMs: 300_000,
     totalTimeoutMs: 600_000,
     searchDepth: 'basic',
-    // Sonar bills per request by context size, and the tiers are close enough that depth
-    // can spend freely: $0.005 (low) / $0.008 (medium) / $0.012 (high) per call, measured
-    // against the endpoint. A quick job issues one search, so the cheap tier is right; a
-    // deep job's budget is dominated by fetchPage anyway.
+    // `low` at EVERY depth, deliberately. Sonar prices context size per request — $0.005
+    // (low) / $0.008 (medium) / $0.012 (high) — and the intuition that a deep pass should
+    // buy the expensive tier is wrong here. Measured across two queries at all three
+    // tiers: the result COUNT is identical (17/17/17 and 20/20/20) and the URL set is
+    // identical to within one hit. What the higher tiers buy is longer snippets (2613 →
+    // 3555 chars), and snippets are triage only — the ledger caps a snippet-backed claim
+    // at `medium` confidence no matter what, so paying 2.4x for text we may not cite as
+    // evidence is waste. Raise this only if worker triage visibly picks worse pages.
     searchContextSize: 'low',
+    maxSearchResults: 5,
     directive:
       'QUICK pass — answer directly and precisely. One focused search, read the most relevant page if the snippets are insufficient, then submit.',
   },
@@ -56,7 +71,8 @@ export const profiles: Record<Depth, DepthProfile> = {
     synthesisTimeoutMs: 600_000,
     totalTimeoutMs: 1_500_000,
     searchDepth: 'basic',
-    searchContextSize: 'medium',
+    searchContextSize: 'low',
+    maxSearchResults: 8,
     directive:
       'STANDARD pass — search, then read the 2-3 most relevant pages for your sub-question. Cross-verify across at least 2 independent sources.',
   },
@@ -76,7 +92,10 @@ export const profiles: Record<Depth, DepthProfile> = {
     synthesisTimeoutMs: 900_000,
     totalTimeoutMs: 3_000_000,
     searchDepth: 'advanced',
-    searchContextSize: 'high',
+    searchContextSize: 'low',
+    // Deep keeps the full width — it has the step budget to actually read what it finds,
+    // and breadth of independent domains is the whole point of the tier.
+    maxSearchResults: 20,
     directive:
       'DEEP pass — be thorough. Read full pages across distinct domains, not just snippets. Consult library docs for any libraries involved. Cross-verify every material claim across 3+ independent sources, and surface disagreements and version caveats explicitly.',
   },

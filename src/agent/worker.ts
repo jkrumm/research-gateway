@@ -45,6 +45,7 @@ export async function runWorker(args: {
     jobId,
     searchDepth: profile.searchDepth,
     contextSize: profile.searchContextSize,
+    maxResults: profile.maxSearchResults,
   })
 
   // The done tool — no `execute` means the loop halts when the model calls it.

@@ -159,10 +159,15 @@ interface SearchOutput {
 async function searchViaSonar(args: {
   query: string
   contextSize: SonarContextSize
+  maxResults: number
   ledger: RetrievalLedger
   jobId: string
 }): Promise<SearchOutput> {
-  const r = await sonarSearch({ query: args.query, contextSize: args.contextSize })
+  const r = await sonarSearch({
+    query: args.query,
+    contextSize: args.contextSize,
+    maxResults: args.maxResults,
+  })
 
   meterSonar(args.jobId, {
     costUsd: r.usage.costUsd,
@@ -200,13 +205,16 @@ async function searchViaSonar(args: {
 async function searchViaTavily(args: {
   query: string
   searchDepth: 'basic' | 'advanced'
+  maxResults: number
   ledger: RetrievalLedger
   jobId: string
 }): Promise<SearchOutput> {
   // `timeout` is SECONDS in @tavily/core (default 60) — not milliseconds.
   const r = await tvly.search(args.query, {
     searchDepth: args.searchDepth,
-    maxResults: 5,
+    // Same fan-out dial as the Sonar path, so a fallback mid-job doesn't silently change
+    // how many candidates a worker is weighing.
+    maxResults: args.maxResults,
     includeAnswer: true,
     timeout: 30,
     // Ground truth for billing: Tavily's own credit cost for THIS call, which varies by
@@ -243,10 +251,11 @@ async function searchViaTavily(args: {
 function buildSearchWebTool(args: {
   searchDepth: 'basic' | 'advanced'
   contextSize: SonarContextSize
+  maxResults: number
   ledger: RetrievalLedger
   jobId: string
 }): AnyTool {
-  const { searchDepth, contextSize, ledger, jobId } = args
+  const { searchDepth, contextSize, maxResults, ledger, jobId } = args
 
   // Per-run search dedup, mirroring fetchPage's. Search is a metered resource on either
   // backend, and a re-issued identical query returns identical results — so it burns budget
@@ -272,7 +281,7 @@ function buildSearchWebTool(args: {
     // job must search deeply. Exposing it let the model silently downgrade and halve the
     // sources a deep pass found.
     execute: async ({ query }) => {
-      const cacheKey = `${searchDepth}:${contextSize}:${query.trim().toLowerCase()}`
+      const cacheKey = `${searchDepth}:${contextSize}:${maxResults}:${query.trim().toLowerCase()}`
       const cached = searched.get(cacheKey)
       if (cached !== undefined) {
         log('tool.searchWeb', { jobId, query, via: 'cache' })
@@ -287,8 +296,8 @@ function buildSearchWebTool(args: {
         try {
           const out =
             backend === 'sonar'
-              ? await searchViaSonar({ query, contextSize, ledger, jobId })
-              : await searchViaTavily({ query, searchDepth, ledger, jobId })
+              ? await searchViaSonar({ query, contextSize, maxResults, ledger, jobId })
+              : await searchViaTavily({ query, searchDepth, maxResults, ledger, jobId })
           // Only successes are cached — a transient failure must not permanently poison a query.
           searched.set(cacheKey, out)
           return out
@@ -446,11 +455,12 @@ export function buildTools(args: {
   jobId?: string
   searchDepth?: 'basic' | 'advanced'
   contextSize?: SonarContextSize
+  maxResults?: number
 }): Record<string, AnyTool> {
-  const { ledger, searchDepth = 'basic', contextSize = 'low' } = args
+  const { ledger, searchDepth = 'basic', contextSize = 'low', maxResults = 5 } = args
   const jid = args.jobId ?? '-'
   const tools: Record<string, AnyTool> = {
-    searchWeb: buildSearchWebTool({ searchDepth, contextSize, ledger, jobId: jid }),
+    searchWeb: buildSearchWebTool({ searchDepth, contextSize, maxResults, ledger, jobId: jid }),
     fetchPage: buildFetchPageTool(ledger, jid),
     // Deterministic source-of-truth lookups (registries, GitHub). Registered before the
     // optional libraryDocs tool so tools/list order stays stable across configurations.

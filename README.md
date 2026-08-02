@@ -122,22 +122,38 @@ loop entirely.
 
 Why Sonar is the default (all figures measured against the live endpoint, 2026-08-02):
 
-| | Sonar (`low`/`medium`/`high`) | Tavily (`basic`) |
+| | Sonar | Tavily (`basic`) |
 |-|-|-|
-| Cost per search | $0.005 / $0.008 / $0.012 | ~1 credit ($0.005–0.008) |
-| Sources returned | 18–20 | 5 |
+| Cost per search | $0.005 (`low`, what we send) | ~1 credit ($0.005–0.008) |
+| Sources available | 17–20, trimmed per depth | 5 |
 | Publication dates | on every result | none |
-| Latency | ~2.0–2.3s | ~1.9s |
+| Latency | ~1.7–2.3s | ~1.9s |
 | Billed to | the IU work key | the personal Tavily plan |
+
+**Two settings are pinned against measurement, not intuition** — both live-probed 2026-08-02:
+
+- **`search_context_size` is `low` at every depth.** Across two queries at all three tiers the
+  result *count* was identical (17/17/17, 20/20/20) and the URL set identical to within one
+  hit. The higher tiers buy longer snippets (2613 → 3555 chars), and snippets are triage only
+  — the ledger caps a snippet-backed claim at `medium` no matter what. Paying 2.4x for text
+  that may not serve as evidence is waste.
+- **Hits are trimmed per depth** (`maxSearchResults`: quick 5, standard 8, deep 20). This dial
+  costs nothing on the search side — the per-request fee is flat — but it drives worker tokens
+  and wall-clock, because every extra candidate is a page a worker may fetch. Handing a
+  `standard` job all 20 produced a better report (50 citations / 35 pages vs ~15 before) at
+  545s and $0.16, against a ~100s / $0.009–0.028 baseline. `standard` taking 9 minutes
+  collapses the gap to `deep`, so the tiers get their fan-out back.
 
 Two properties of this route are load-bearing and were established by probing, not from docs:
 
 - IU exposes Sonar as `owned_by: "Perplexity direct"` — a **real passthrough**. `citations` and
   `search_results` sit outside the OpenAI-standard `choices` array, and normalizing gateways
   drop them (LiteLLM #5313/#13777, Portkey's strict-compliance mode, API7). Here they survive.
-  If that ever changes, `search_results` comes back empty; `sonar.ts` treats an empty result set
-  as a failure precisely so the Tavily fallback engages instead of the worker being told the web
-  has nothing.
+  If that ever changes, `search_results` comes back empty; `sonar-parse.ts` treats an empty
+  result set as a failure precisely so the Tavily fallback engages instead of the worker being
+  told the web has nothing. A 429 is retried once (honouring `Retry-After`, capped at 5s)
+  before falling back — Perplexity is 50 RPM at tier 0 on IU's *shared* account, so a rate
+  limit is likely transient and not worth moving spend onto the personal key over.
 - `usage.cost` carries Perplexity's own per-call USD, which is why this is the one backend whose
   telemetry can report real money (see below).
 

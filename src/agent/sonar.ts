@@ -1,5 +1,11 @@
-import { z } from 'zod'
 import { env } from '../env.js'
+import { log } from '../lib/log.js'
+import {
+  ANSWER_TOKEN_FLOOR,
+  parseSonarResponse,
+  type SonarContextSize,
+  type SonarSearchOutcome,
+} from './sonar-parse.js'
 
 // Perplexity Sonar as a pure SEARCH backend, called over the same IU unified endpoint the
 // DeepSeek lead/workers run on — so web search is billed to the work key rather than the
@@ -13,8 +19,9 @@ import { env } from '../env.js'
 //      sit OUTSIDE the OpenAI-standard `choices` array, and normalizing gateways drop them
 //      (LiteLLM #5313/#13777, Portkey's strict-compliance mode, API7). Here they arrive
 //      intact, which is the only reason this file can exist. If IU ever re-routes Sonar
-//      through its LiteLLM tier, `search_results` goes empty and `searchWeb` silently
-//      returns nothing — hence the explicit empty-result error below rather than a shrug.
+//      through its LiteLLM tier, `search_results` goes empty — which `parseSonarResponse`
+//      turns into a throw so the caller's Tavily fallback engages, rather than handing a
+//      worker an empty result set that reads as "the web has nothing".
 //   2. `usage.cost` carries Perplexity's OWN per-call USD breakdown. That is why the
 //      telemetry for this tool reports `cost_source: 'reported'` while Tavily's stays
 //      'none' (see cost.ts) — this number is the vendor's, not our guess at a rate card.
@@ -25,77 +32,60 @@ import { env } from '../env.js'
 // context would launder Perplexity's assertions into our report attached to URLs we never
 // retrieved — precisely what the retrieval ledger exists to prevent. We take the URLs and
 // the snippets and throw the answer away.
+//
+// Also deliberately NOT used: `search_context_size` above `low`. It buys longer snippets,
+// not more or different sources — see the measurement in depth.ts.
 
-export type SonarContextSize = 'low' | 'medium' | 'high'
+export type { SonarContextSize, SonarResult, SonarUsage, SonarSearchOutcome } from './sonar-parse.js'
+export { parseSonarResponse } from './sonar-parse.js'
 
-// Sonar rejects the request outright below this — `{"error":{"message":"max_tokens must be
-// at least 16", ...}}`, HTTP 400. So this is a hard floor imposed by the API, not a tuned
-// value: it is the smallest answer we are allowed to pay for and immediately discard.
-// Generation is what makes a Sonar call slow, so keeping it at the floor is also what keeps
-// a search at ~2s instead of the 3-10s a full answer costs.
-const ANSWER_TOKEN_FLOOR = 16
+// Upper bound on how long a 429 may park a worker step. Perplexity's `Retry-After` is
+// advisory and can be tens of seconds; a worker has a step budget to protect, so past this
+// it is cheaper to fall back to Tavily than to wait.
+const MAX_RETRY_AFTER_MS = 5_000
 
-const SonarResponse = z.object({
-  search_results: z
-    .array(
-      z.object({
-        title: z.string().nullish(),
-        url: z.string(),
-        snippet: z.string().nullish(),
-        date: z.string().nullish(),
-        last_updated: z.string().nullish(),
-      }),
-    )
-    .nullish(),
-  usage: z
-    .object({
-      prompt_tokens: z.number().nullish(),
-      completion_tokens: z.number().nullish(),
-      num_search_queries: z.number().nullish(),
-      cost: z.object({ total_cost: z.number().nullish() }).nullish(),
-    })
-    .nullish(),
-})
-
-export interface SonarResult {
-  title: string
-  url: string
-  snippet: string
-  /** `date` or, failing that, `last_updated` — every probed result carried at least one. */
-  published: string | null
-}
-
-export interface SonarUsage {
-  costUsd: number
-  inputTokens: number
-  outputTokens: number
-  searchQueries: number
-}
-
-export interface SonarSearchOutcome {
-  results: SonarResult[]
-  usage: SonarUsage
+function retryAfterMs(res: Response): number {
+  const header = res.headers.get('retry-after')
+  if (!header) return 1_000 // 429 with no hint — one short breath, then one retry
+  const seconds = Number(header)
+  if (!Number.isFinite(seconds) || seconds < 0) return 1_000
+  return Math.min(seconds * 1_000, MAX_RETRY_AFTER_MS)
 }
 
 export async function sonarSearch(args: {
   query: string
   contextSize: SonarContextSize
+  maxResults: number
   timeoutMs?: number
 }): Promise<SonarSearchOutcome> {
-  const res = await fetch(`${env.IU_BASE_URL}/chat/completions`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${env.IU_API_KEY}`,
-    },
-    body: JSON.stringify({
-      model: env.SONAR_MODEL,
-      messages: [{ role: 'user', content: args.query }],
-      max_tokens: ANSWER_TOKEN_FLOOR,
-      web_search_options: { search_context_size: args.contextSize },
-    }),
-    signal: AbortSignal.timeout(args.timeoutMs ?? 30_000),
-  })
+  const request = (): Promise<Response> =>
+    fetch(`${env.IU_BASE_URL}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${env.IU_API_KEY}`,
+      },
+      body: JSON.stringify({
+        model: env.SONAR_MODEL,
+        messages: [{ role: 'user', content: args.query }],
+        max_tokens: ANSWER_TOKEN_FLOOR,
+        web_search_options: { search_context_size: args.contextSize },
+      }),
+      signal: AbortSignal.timeout(args.timeoutMs ?? 30_000),
+    })
+
+  let res = await request()
+
+  // Perplexity is 50 RPM at tier 0 and this runs on IU's SHARED account, so a 429 is not
+  // necessarily our fan-out's fault and is very likely transient. Retry once rather than
+  // failing straight through to Tavily: the fallback works, but it silently moves spend
+  // onto the personal key, which is the thing this whole migration exists to avoid.
+  if (res.status === 429) {
+    const waitMs = retryAfterMs(res)
+    log('tool.sonarRetry', { status: 429, waitMs, retryAfter: res.headers.get('retry-after') })
+    await new Promise((resolve) => setTimeout(resolve, waitMs))
+    res = await request()
+  }
 
   // Read as text first: IU does not return clean JSON on upstream errors — it prefixes the
   // provider's body, e.g. `[Perplexity direct StatusCode: BadRequest] {"error":{...}}`.
@@ -112,38 +102,5 @@ export async function sonarSearch(args: {
     throw new Error(`sonar returned non-JSON: ${body.slice(0, 200)}`)
   }
 
-  const parsed = SonarResponse.parse(json)
-  const raw = parsed.search_results ?? []
-
-  // Same URL twice in one response is possible and would inflate the ledger's snippet
-  // tier with duplicates; first occurrence wins (Perplexity returns them ranked).
-  const seen = new Set<string>()
-  const results: SonarResult[] = []
-  for (const r of raw) {
-    if (seen.has(r.url)) continue
-    seen.add(r.url)
-    results.push({
-      title: r.title ?? '',
-      url: r.url,
-      snippet: r.snippet ?? '',
-      published: r.date ?? r.last_updated ?? null,
-    })
-  }
-
-  const usage: SonarUsage = {
-    costUsd: parsed.usage?.cost?.total_cost ?? 0,
-    inputTokens: parsed.usage?.prompt_tokens ?? 0,
-    outputTokens: parsed.usage?.completion_tokens ?? 0,
-    // Present on sonar-deep-research; absent on plain `sonar`, where one call is one search.
-    searchQueries: parsed.usage?.num_search_queries ?? 1,
-  }
-
-  // A 200 with no results is the signature of the passthrough assumption breaking (point 1
-  // above) — treated as a failure so the caller's Tavily fallback engages instead of the
-  // worker being handed an empty result set that looks like "the web has nothing".
-  if (results.length === 0) {
-    throw new Error('sonar returned no search_results')
-  }
-
-  return { results, usage }
+  return parseSonarResponse(json, args.maxResults)
 }
