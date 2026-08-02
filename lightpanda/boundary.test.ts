@@ -15,9 +15,23 @@ const HERE = dirname(fileURLToPath(import.meta.url))
 // package.json + install step in its Dockerfile, not to relax this test.
 describe('the sidecar is self-contained', () => {
   const sources = readdirSync(HERE).filter((f) => f.endsWith('.ts'))
+  const runtimeSources = sources.filter((f) => !f.endsWith('.test.ts'))
 
   it('has sources to check', () => {
     expect(sources.length).toBeGreaterThan(0)
+  })
+
+  it('ships every runtime source in the image', () => {
+    // The failure this exists for: semaphore.ts was added while the Dockerfile still named
+    // `COPY parse.ts server.ts`, so the built image contained a server importing a module
+    // that was not there. It crash-looped on boot and the deploy rolled back. Import paths
+    // being valid (below) is not the same question as the files being present.
+    const dockerfile = readFileSync(join(HERE, 'Dockerfile'), 'utf8')
+    const copyLine = dockerfile.split('\n').find((l) => l.startsWith('COPY') && l.includes('.ts'))
+    expect(copyLine).toBeDefined()
+
+    if (copyLine!.includes('*.ts')) return // a glob covers whatever exists
+    for (const file of runtimeSources) expect(copyLine).toContain(file)
   })
 
   for (const file of sources) {

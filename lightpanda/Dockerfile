@@ -47,7 +47,13 @@ RUN set -eu; \
   lightpanda version
 
 WORKDIR /app
-COPY --chown=bun:bun parse.ts server.ts ./
+# A glob, not a list. Naming the files individually is a trap that has already been sprung
+# once: adding semaphore.ts without touching this line produced an image whose server.ts
+# imported a module that was not in it, so the container crash-looped on boot and rollhook
+# rolled the deploy back. `.dockerignore` here keeps *.test.ts out, so this copies exactly the
+# runtime sources. `boundary.test.ts` now also asserts every non-test source is reachable
+# through this instruction.
+COPY --chown=bun:bun *.ts ./
 
 ENV NODE_ENV=production
 EXPOSE 7781
