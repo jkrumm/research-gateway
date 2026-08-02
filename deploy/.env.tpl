@@ -6,12 +6,19 @@
 # Gateway's own bearer
 API_SECRET=op://vps/research-gateway/API_SECRET
 
-# IU unified endpoint
+# IU unified endpoint — serves both the DeepSeek lead/workers and the Perplexity Sonar
+# search backend below. (IU_MODEL used to sit here; nothing has consumed it since it was
+# dropped from env.ts, and it read as if the lead were Pro long after it was not.)
 IU_BASE_URL=op://common/anthropic/OPENAI_BASE_URL
 IU_API_KEY=op://common/anthropic/API_KEY
-IU_MODEL=DeepSeek-V4-Pro
 
-# Tavily
+# Web search backend. `sonar` (the default) puts searchWeb on the IU key via Perplexity;
+# `tavily` reverts to the personal Tavily plan. Uncomment only to override the default.
+# SEARCH_PROVIDER=sonar
+# SONAR_MODEL=sonar
+
+# Tavily — still required with SEARCH_PROVIDER=sonar: it is fetchPage's Extract fallback
+# and the per-call fallback when a Sonar search fails.
 TAVILY_API_KEY=op://vps/research-gateway/TAVILY_API_KEY
 
 # Context7 (optional)

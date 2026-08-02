@@ -3,7 +3,7 @@ import { describe, it, expect } from 'bun:test'
 // `reportUsage`'s ARGO_* gate), which parses `process.env` at import time and throws
 // without secrets. `cost.ts` has no such chain, so `computeCost` is testable with zero
 // env vars. `usage.ts` re-exports the same `computeCost` binding for compatibility.
-import { computeCost, buildTavilyCreditRecord } from './cost.js'
+import { computeCost, buildTavilyCreditRecord, buildSonarSearchRecord } from './cost.js'
 
 describe('computeCost', () => {
   it('bills uncached input at the miss rate and cached input at the cache-read rate (deepseek-v4-pro)', () => {
@@ -113,5 +113,63 @@ describe('buildTavilyCreditRecord', () => {
     expect(buildTavilyCreditRecord({ jobId: 'job-123', credits: 0, outcome: 'error' }).outcome).toBe(
       'error',
     )
+  })
+})
+
+describe('buildSonarSearchRecord', () => {
+  const args = {
+    jobId: 'job-123',
+    model: 'sonar',
+    costUsd: 0.04812,
+    inputTokens: 102,
+    outputTokens: 96,
+    searchCalls: 6,
+    searchQueries: 6,
+  }
+
+  it('scopes source_id as `${jobId}:sonar` so it never collides with the tavily or lead/worker rows', () => {
+    const record = buildSonarSearchRecord(args)
+    expect(record.source_id).toBe('job-123:sonar')
+    expect(record.sub_tool).toBe('sonar')
+    expect(record.source_id).not.toBe(buildTavilyCreditRecord({ jobId: 'job-123', credits: 1 }).source_id)
+  })
+
+  it('carries the vendor-reported USD verbatim and marks its provenance as "reported"', () => {
+    const record = buildSonarSearchRecord(args)
+    expect(record.cost_usd).toBe(0.04812)
+    expect(record.cost_source).toBe('reported')
+  })
+
+  it('reports real token counts — a Sonar call IS a model call, unlike a Tavily credit', () => {
+    const record = buildSonarSearchRecord(args)
+    expect(record.model).toBe('sonar')
+    expect(record.model_norm).toBe('sonar')
+    expect(record.input_tokens).toBe(102)
+    expect(record.output_tokens).toBe(96)
+  })
+
+  it('does NOT let computeCost price this row — token math under-reports it by orders of magnitude', () => {
+    // The cost is almost entirely Perplexity's per-request search fee, which no token rate
+    // reconstructs. `sonar` is deliberately absent from the RATES table for this reason.
+    const fromTokens = computeCost('sonar', {
+      inputTokens: args.inputTokens,
+      cachedInputTokens: 0,
+      outputTokens: args.outputTokens,
+    })
+    expect(fromTokens).toEqual({ costUsd: null, costSource: 'none' })
+    expect(buildSonarSearchRecord(args).cost_usd).toBeGreaterThan(0)
+  })
+
+  it('carries call and query counts in `raw`, never in a token field', () => {
+    const record = buildSonarSearchRecord(args)
+    expect(record.raw).toEqual({ searchCalls: 6, searchQueries: 6 })
+    expect(record.cache_read_tokens).toBe(0)
+    expect(record.cache_write_tokens).toBe(0)
+    expect(record.reasoning_tokens).toBe(0)
+  })
+
+  it('defaults outcome to "ok" and honors an explicit "error"', () => {
+    expect(buildSonarSearchRecord(args).outcome).toBe('ok')
+    expect(buildSonarSearchRecord({ ...args, outcome: 'error' }).outcome).toBe('error')
   })
 })

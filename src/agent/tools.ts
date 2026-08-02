@@ -7,26 +7,26 @@ import { Readability } from '@mozilla/readability'
 import { env } from '../env.js'
 import { assertPublicHttpUrl } from '../lib/ssrf.js'
 import { log } from '../lib/log.js'
-import { reportTavilyUsage } from '../lib/usage.js'
+import { reportTavilyUsage, reportSonarUsage } from '../lib/usage.js'
 import { normalizeText, capText, TEXT_CAP } from './extract.js'
 import { buildDirectSourceTools } from './direct-sources.js'
+import { sonarSearch, type SonarContextSize } from './sonar.js'
 import type { RetrievalLedger } from './ledger.js'
 
 const tvly = tavily({ apiKey: env.TAVILY_API_KEY })
 
-// Per-job Tavily credit accumulator. `buildTools` is called once per WORKER (see
-// worker.ts), and a job fans out many workers in parallel (run.ts's dispatchRound), so
-// this state can't live in a tool-local closure the way the searched/fetched dedup maps
-// do — it has to be keyed by jobId at module scope, shared across every worker of every
-// concurrent job the process is running. Nothing in this file is ever told a job has
-// finished (run.ts/run-job.ts own that lifecycle and are out of scope for this change),
-// so entries are pruned opportunistically by age instead of on job completion.
-interface JobCreditState {
-  credits: number
+// Per-job usage accumulator. `buildTools` is called once per WORKER (see worker.ts), and a
+// job fans out many workers in parallel (run.ts's dispatchRound), so this state can't live
+// in a tool-local closure the way the searched/fetched dedup maps do — it has to be keyed
+// by jobId at module scope, shared across every worker of every concurrent job the process
+// is running. Nothing in this file is ever told a job has finished (run.ts/run-job.ts own
+// that lifecycle and are out of scope for this change), so entries are pruned
+// opportunistically by age instead of on job completion.
+interface JobMeterEntry<T> {
+  total: T
   lastSeenAt: number
   flushTimer: ReturnType<typeof setTimeout> | null
 }
-const jobCredits = new Map<string, JobCreditState>()
 
 // Pruning is safe even though a deep job now runs ~28min (HANDOVER.md, re-measured
 // post-fan-out-rewrite): `lastSeenAt` is refreshed on every credit added, so an active
@@ -45,43 +45,78 @@ const STALE_JOB_MS = env.JOB_TTL_MINUTES * 60_000
 // at that point, which becomes the job's true final total once no further calls arrive.
 const CREDIT_FLUSH_DEBOUNCE_MS = 3_000
 
-function pruneStaleJobCredits(now: number): void {
-  for (const [id, entry] of jobCredits) {
-    if (now - entry.lastSeenAt > STALE_JOB_MS) {
-      if (entry.flushTimer) clearTimeout(entry.flushTimer)
-      jobCredits.delete(id)
+// Builds a per-job accumulator with the prune-and-debounce behaviour described above. One
+// instance per billed backend, each owning its own map so a job that used both (Sonar
+// primary, Tavily fallback) reports two independent rows.
+function createJobMeter<T>(args: {
+  add: (prev: T | undefined, delta: T) => T
+  flush: (jobId: string, total: T) => void
+}): (jobId: string, delta: T) => void {
+  const entries = new Map<string, JobMeterEntry<T>>()
+
+  return (jobId, delta) => {
+    const now = Date.now()
+    for (const [id, entry] of entries) {
+      if (now - entry.lastSeenAt > STALE_JOB_MS) {
+        if (entry.flushTimer) clearTimeout(entry.flushTimer)
+        entries.delete(id)
+      }
     }
+
+    const existing = entries.get(jobId)
+    if (existing?.flushTimer) clearTimeout(existing.flushTimer)
+
+    const entry: JobMeterEntry<T> = {
+      total: args.add(existing?.total, delta),
+      lastSeenAt: now,
+      flushTimer: null,
+    }
+    entry.flushTimer = setTimeout(() => {
+      entry.flushTimer = null
+      args.flush(jobId, entry.total)
+    }, CREDIT_FLUSH_DEBOUNCE_MS)
+    // .unref() so a pending flush can never hold the process open — same pattern as
+    // job-store.ts's _sweepTimer.
+    if (typeof entry.flushTimer.unref === 'function') entry.flushTimer.unref()
+
+    entries.set(jobId, entry)
   }
 }
 
-// Records credits a Tavily call actually billed (ground truth from the response's
-// `usage.credits` — see buildSearchWebTool/buildFetchPageTool below) and schedules a
-// debounced report of the job's cumulative total (see CREDIT_FLUSH_DEBOUNCE_MS above).
-// argo upserts on source_id, so each flush just overwrites the last one rather than
-// double-counting.
+// Credits a Tavily call actually billed — ground truth from the response's `usage.credits`
+// (see buildFetchPageTool below), not a hardcoded rate table that would drift the moment
+// Tavily repriced a tier.
+const meterTavily = createJobMeter<number>({
+  add: (prev, delta) => (prev ?? 0) + delta,
+  flush: (jobId, credits) => void reportTavilyUsage({ jobId, credits }),
+})
+
 function addTavilyCredits(jobId: string, credits: number): void {
   if (credits <= 0) return
-  const now = Date.now()
-  pruneStaleJobCredits(now)
-
-  const existing = jobCredits.get(jobId)
-  if (existing?.flushTimer) clearTimeout(existing.flushTimer)
-
-  const entry: JobCreditState = {
-    credits: (existing?.credits ?? 0) + credits,
-    lastSeenAt: now,
-    flushTimer: null,
-  }
-  entry.flushTimer = setTimeout(() => {
-    entry.flushTimer = null
-    void reportTavilyUsage({ jobId, credits: entry.credits })
-  }, CREDIT_FLUSH_DEBOUNCE_MS)
-  // .unref() so a pending flush can never hold the process open — same pattern as
-  // job-store.ts's _sweepTimer.
-  if (typeof entry.flushTimer.unref === 'function') entry.flushTimer.unref()
-
-  jobCredits.set(jobId, entry)
+  meterTavily(jobId, credits)
 }
+
+interface SonarTotals {
+  costUsd: number
+  inputTokens: number
+  outputTokens: number
+  searchCalls: number
+  searchQueries: number
+}
+
+// Perplexity prices each call itself and returns the USD in `usage.cost`, so unlike the
+// Tavily meter this one accumulates money rather than an uncosted credit count.
+const meterSonar = createJobMeter<SonarTotals>({
+  add: (prev, delta) => ({
+    costUsd: (prev?.costUsd ?? 0) + delta.costUsd,
+    inputTokens: (prev?.inputTokens ?? 0) + delta.inputTokens,
+    outputTokens: (prev?.outputTokens ?? 0) + delta.outputTokens,
+    searchCalls: (prev?.searchCalls ?? 0) + delta.searchCalls,
+    searchQueries: (prev?.searchQueries ?? 0) + delta.searchQueries,
+  }),
+  flush: (jobId, total) =>
+    void reportSonarUsage({ jobId, model: env.SONAR_MODEL, ...total }),
+})
 
 async function safeFetch(startUrl: string, jobId = '-', maxHops = 3): Promise<Response> {
   let current = startUrl
@@ -108,78 +143,162 @@ async function safeFetch(startUrl: string, jobId = '-', maxHops = 3): Promise<Re
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyTool = Tool<any, any>
 
-function buildSearchWebTool(
-  defaultSearchDepth: 'basic' | 'advanced',
-  ledger: RetrievalLedger,
-  jobId = '-',
-): AnyTool {
-  // Per-run search dedup, mirroring fetchPage's. Tavily credits are a hard-limited resource
-  // (exceeding the key's cap fails the search outright), and a re-issued identical query
-  // returns identical results — so it burns credit for nothing.
-  const searched = new Map<string, unknown>()
+// What `searchWeb` hands the model, identical across backends so the worker prompt and the
+// grounding rules never have to know which one answered. `published` is Sonar-only — Tavily
+// does not date its results — and is omitted rather than nulled when absent.
+interface SearchOutput {
+  answer: string | null
+  results: Array<{ title: string; url: string; content: string; published?: string }>
+}
+
+// A search result is a candidate, not a consulted source: it is recorded on the ledger as
+// `snippet`, NOT `retrieved`. That distinction is load-bearing — a claim resting on a
+// snippet is capped at `medium` confidence (see ground.ts), while only a page actually read
+// can carry `high`. It is also what keeps Sonar honest: its URLs enter at the same tier as
+// any other search hit, so nothing Perplexity asserts can be cited as verified.
+async function searchViaSonar(args: {
+  query: string
+  contextSize: SonarContextSize
+  ledger: RetrievalLedger
+  jobId: string
+}): Promise<SearchOutput> {
+  const r = await sonarSearch({ query: args.query, contextSize: args.contextSize })
+
+  meterSonar(args.jobId, {
+    costUsd: r.usage.costUsd,
+    inputTokens: r.usage.inputTokens,
+    outputTokens: r.usage.outputTokens,
+    searchCalls: 1,
+    searchQueries: r.usage.searchQueries,
+  })
+
+  log('tool.searchWeb', {
+    jobId: args.jobId,
+    query: args.query,
+    via: 'sonar',
+    contextSize: args.contextSize,
+    results: r.results.length,
+    costUsd: r.usage.costUsd,
+  })
+
+  return {
+    // Sonar's synthesized answer is deliberately dropped — see the header comment in
+    // sonar.ts. `null` keeps the shape identical to the Tavily path.
+    answer: null,
+    results: r.results.map((x) => {
+      if (x.snippet.length > 0) args.ledger.recordSnippet(x.url)
+      return {
+        title: x.title,
+        url: x.url,
+        content: x.snippet,
+        ...(x.published ? { published: x.published } : {}),
+      }
+    }),
+  }
+}
+
+async function searchViaTavily(args: {
+  query: string
+  searchDepth: 'basic' | 'advanced'
+  ledger: RetrievalLedger
+  jobId: string
+}): Promise<SearchOutput> {
+  // `timeout` is SECONDS in @tavily/core (default 60) — not milliseconds.
+  const r = await tvly.search(args.query, {
+    searchDepth: args.searchDepth,
+    maxResults: 5,
+    includeAnswer: true,
+    timeout: 30,
+    // Ground truth for billing: Tavily's own credit cost for THIS call, which varies by
+    // searchDepth (basic vs advanced).
+    includeUsage: true,
+  })
+  // A response that resolved is a call that was billed — count it even if the search itself
+  // came back empty. A call that throws (never resolves) is NOT counted: whether Tavily
+  // billed a request it never answered is unknown, and undercounting is the safer direction
+  // for a cost figure.
+  addTavilyCredits(args.jobId, r.usage?.credits ?? 0)
+  log('tool.searchWeb', {
+    jobId: args.jobId,
+    query: args.query,
+    via: 'tavily',
+    searchDepth: args.searchDepth,
+    results: r.results.length,
+  })
+
+  return {
+    answer: r.answer ?? null,
+    results: r.results.map((x) => {
+      const c = x.content ?? ''
+      if (c.length > 0) args.ledger.recordSnippet(x.url)
+      return {
+        title: x.title,
+        url: x.url,
+        content: c.length > 1_000 ? c.slice(0, 1_000) + '...' : c,
+      }
+    }),
+  }
+}
+
+function buildSearchWebTool(args: {
+  searchDepth: 'basic' | 'advanced'
+  contextSize: SonarContextSize
+  ledger: RetrievalLedger
+  jobId: string
+}): AnyTool {
+  const { searchDepth, contextSize, ledger, jobId } = args
+
+  // Per-run search dedup, mirroring fetchPage's. Search is a metered resource on either
+  // backend, and a re-issued identical query returns identical results — so it burns budget
+  // for nothing.
+  const searched = new Map<string, SearchOutput>()
+
+  // Sonar first, Tavily as a per-call fallback. The fallback is not redundancy theatre: a
+  // Perplexity outage, a 429 against IU's shared account tier, or IU re-routing Sonar
+  // through a normalizing gateway (which empties `search_results`) would otherwise take
+  // search down entirely — and Tavily is already wired up as fetchPage's Extract path, so
+  // the second backend costs nothing to keep available. It does silently move spend back
+  // onto the personal key, which is why every fallback is logged as such.
+  const backends: Array<'sonar' | 'tavily'> =
+    env.SEARCH_PROVIDER === 'sonar' ? ['sonar', 'tavily'] : ['tavily']
 
   return tool({
     description:
-      'Search the web to find candidate sources. Returns an answer summary and result snippets.',
+      'Search the web to find candidate sources. Returns result snippets with URLs, and a publication date where the backend provides one.',
     inputSchema: z.object({
       query: z.string().describe('The search query'),
     }),
-    // Search depth is set by the job's research depth, not chosen per-call: a `deep` job
-    // must search deeply. Exposing it let the model silently downgrade to basic and halve
-    // the sources a deep pass found.
+    // Search depth/context is set by the job's research depth, not chosen per-call: a `deep`
+    // job must search deeply. Exposing it let the model silently downgrade and halve the
+    // sources a deep pass found.
     execute: async ({ query }) => {
-      const depth = defaultSearchDepth
-      const cacheKey = `${depth}:${query.trim().toLowerCase()}`
+      const cacheKey = `${searchDepth}:${contextSize}:${query.trim().toLowerCase()}`
       const cached = searched.get(cacheKey)
       if (cached !== undefined) {
-        log('tool.searchWeb', { jobId, query, searchDepth: depth, via: 'cache' })
+        log('tool.searchWeb', { jobId, query, via: 'cache' })
         return cached
       }
 
       // A search failure must degrade to a tool-visible error, never throw: an uncaught
-      // throw here propagates out of the agent loop and kills the whole worker, losing
-      // every digest it had gathered. fetchPage/libraryDocs already follow this pattern.
-      // `timeout` is SECONDS in @tavily/core (default 60) — not milliseconds.
-      try {
-        const r = await tvly.search(query, {
-          searchDepth: depth,
-          maxResults: 5,
-          includeAnswer: true,
-          timeout: 30,
-          // Ground truth for billing: Tavily's own credit cost for THIS call, which
-          // varies by searchDepth (basic vs advanced). Reading it beats hardcoding a
-          // rate table that would drift the moment Tavily repriced a tier.
-          includeUsage: true,
-        })
-        // A response that resolved is a call that was billed — count it even if the
-        // search itself came back empty. A call that throws below (never resolves)
-        // is NOT counted: whether Tavily billed a request it never answered is
-        // unknown, and undercounting is the safer direction for a cost figure.
-        addTavilyCredits(jobId, r.usage?.credits ?? 0)
-        log('tool.searchWeb', { jobId, query, searchDepth: depth, results: r.results.length })
-        const out = {
-          answer: r.answer ?? null,
-          // A search result is a candidate, not a consulted source: it is recorded on the
-          // ledger as `snippet`, NOT `retrieved`. That distinction is load-bearing — a
-          // claim resting on a snippet is capped at `medium` confidence (see ground.ts),
-          // while only a page actually read can carry `high`.
-          results: r.results.map((x) => {
-            const c = x.content ?? ''
-            if (c.length > 0) ledger.recordSnippet(x.url)
-            return {
-              title: x.title,
-              url: x.url,
-              content: c.length > 1_000 ? c.slice(0, 1_000) + '...' : c,
-            }
-          }),
+      // throw here propagates out of the agent loop and kills the whole worker, losing every
+      // digest it had gathered. fetchPage/libraryDocs already follow this pattern.
+      let lastError = 'no search backend configured'
+      for (const backend of backends) {
+        try {
+          const out =
+            backend === 'sonar'
+              ? await searchViaSonar({ query, contextSize, ledger, jobId })
+              : await searchViaTavily({ query, searchDepth, ledger, jobId })
+          // Only successes are cached — a transient failure must not permanently poison a query.
+          searched.set(cacheKey, out)
+          return out
+        } catch (err) {
+          lastError = String(err)
+          log('tool.searchWeb', { jobId, query, via: backend, error: lastError })
         }
-        // Only successes are cached — a transient failure must not permanently poison a query.
-        searched.set(cacheKey, out)
-        return out
-      } catch (err) {
-        log('tool.searchWeb', { jobId, query, searchDepth: depth, error: String(err) })
-        return { error: `search failed: ${String(err)}`, results: [] }
       }
+
+      return { error: `search failed: ${lastError}`, results: [] }
     },
   })
 }
@@ -322,14 +441,16 @@ function buildLibraryDocsTool(ledger: RetrievalLedger, jobId = '-'): AnyTool | n
   }) as AnyTool
 }
 
-export function buildTools(
-  ledger: RetrievalLedger,
-  jobId: string | undefined,
-  searchDepth: 'basic' | 'advanced' = 'basic',
-): Record<string, AnyTool> {
-  const jid = jobId ?? '-'
+export function buildTools(args: {
+  ledger: RetrievalLedger
+  jobId?: string
+  searchDepth?: 'basic' | 'advanced'
+  contextSize?: SonarContextSize
+}): Record<string, AnyTool> {
+  const { ledger, searchDepth = 'basic', contextSize = 'low' } = args
+  const jid = args.jobId ?? '-'
   const tools: Record<string, AnyTool> = {
-    searchWeb: buildSearchWebTool(searchDepth, ledger, jid),
+    searchWeb: buildSearchWebTool({ searchDepth, contextSize, ledger, jobId: jid }),
     fetchPage: buildFetchPageTool(ledger, jid),
     // Deterministic source-of-truth lookups (registries, GitHub). Registered before the
     // optional libraryDocs tool so tools/list order stays stable across configurations.

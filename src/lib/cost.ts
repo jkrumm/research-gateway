@@ -33,7 +33,12 @@ export function computeCost(
 
 // Shape of an argo `usage_record` row, built here (not usage.ts) for the same reason as
 // computeCost: no env.js import, so the builder is unit-testable with zero env vars.
-export interface TavilyCreditUsageRecord {
+//
+// `cost_source` is a free-form string on argo's side (verified against its OpenAPI schema),
+// so 'reported' below is a legal value and not a silently-rejected record. It exists to keep
+// three provenances distinct on the dashboard: 'computed' (our rate table), 'reported' (the
+// vendor priced the call itself), 'none' (unpriced).
+interface SearchUsageRecordBase {
   source: string
   source_id: string
   grain: string
@@ -52,8 +57,15 @@ export interface TavilyCreditUsageRecord {
   reasoning_tokens: number
   duration_ms: number | null
   cost_usd: number | null
-  cost_source: 'computed' | 'none'
+  cost_source: 'computed' | 'reported' | 'none'
+}
+
+export interface TavilyCreditUsageRecord extends SearchUsageRecordBase {
   raw: { tavilyCredits: number }
+}
+
+export interface SonarSearchUsageRecord extends SearchUsageRecordBase {
+  raw: { searchCalls: number; searchQueries: number }
 }
 
 // Tavily bills by API credit, not by token — jamming a credit count into `input_tokens`/
@@ -94,5 +106,53 @@ export function buildTavilyCreditRecord(args: {
     cost_usd: null,
     cost_source: 'none',
     raw: { tavilyCredits: args.credits },
+  }
+}
+
+// The Sonar counterpart, and the reason the search backend moved: unlike Tavily, Perplexity
+// returns `usage.cost.total_cost` in USD on every call, so this row carries a real cost
+// instead of an uncosted credit count. `cost_source: 'reported'` marks it as the vendor's
+// own number — strictly better provenance than the DeepSeek rows, whose cost this repo
+// computes from a rate table that can drift.
+//
+// Tokens are reported honestly rather than zeroed the way the Tavily record zeroes them: a
+// Sonar call IS a model call and does spend a handful of tokens. They are tiny (the answer
+// is capped at the 16-token floor and thrown away — see agent/sonar.ts), so the per-call
+// cost is almost entirely Perplexity's per-request search fee, which no token math would
+// reconstruct. That is exactly why `cost_usd` must come from the vendor and not from
+// computeCost: pricing this row off its token counts would under-report it by ~100x.
+export function buildSonarSearchRecord(args: {
+  jobId: string
+  model: string
+  costUsd: number
+  inputTokens: number
+  outputTokens: number
+  searchCalls: number
+  searchQueries: number
+  outcome?: 'ok' | 'error'
+}): SonarSearchUsageRecord {
+  return {
+    source: 'research-gateway',
+    // Scoped like the `:tavily` row so a job running both backends (Sonar primary, Tavily
+    // fallback) reports two distinct rows rather than one overwriting the other.
+    source_id: `${args.jobId}:sonar`,
+    grain: 'session',
+    model: args.model,
+    model_norm: normalizeModel(args.model),
+    project: 'research-gateway',
+    workspace: 'private',
+    sub_tool: 'sonar',
+    machine: 'vps',
+    billing: 'iu',
+    outcome: args.outcome ?? 'ok',
+    input_tokens: args.inputTokens,
+    output_tokens: args.outputTokens,
+    cache_read_tokens: 0,
+    cache_write_tokens: 0,
+    reasoning_tokens: 0,
+    duration_ms: null,
+    cost_usd: args.costUsd,
+    cost_source: 'reported',
+    raw: { searchCalls: args.searchCalls, searchQueries: args.searchQueries },
   }
 }

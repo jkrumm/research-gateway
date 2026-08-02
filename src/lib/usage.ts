@@ -1,6 +1,6 @@
 import type { LanguageModelUsage } from 'ai'
 import { env } from '../env.js'
-import { computeCost, normalizeModel, buildTavilyCreditRecord } from './cost.js'
+import { computeCost, normalizeModel, buildTavilyCreditRecord, buildSonarSearchRecord } from './cost.js'
 
 // Re-exported for compatibility — callers importing `computeCost` from `usage.ts` keep
 // working; the implementation lives in `cost.ts` because it has no `env.js` import and
@@ -155,5 +155,24 @@ export async function reportTavilyUsage(args: {
 }): Promise<void> {
   const now = new Date().toISOString()
   const record = { ...buildTavilyCreditRecord(args), ts: now, ingested_at: now }
+  await postUsageRecord(record)
+}
+
+// Fourth per-job record, alongside `lead`/`worker`/`tavily`. Same cumulative-snapshot
+// contract as reportTavilyUsage: `costUsd` and the counters are the job's running totals,
+// and argo's upsert on (source, source_id, machine) means each flush overwrites the last
+// rather than accumulating duplicate rows.
+export async function reportSonarUsage(args: {
+  jobId: string
+  model: string
+  costUsd: number
+  inputTokens: number
+  outputTokens: number
+  searchCalls: number
+  searchQueries: number
+  outcome?: 'ok' | 'error'
+}): Promise<void> {
+  const now = new Date().toISOString()
+  const record = { ...buildSonarSearchRecord(args), ts: now, ingested_at: now }
   await postUsageRecord(record)
 }

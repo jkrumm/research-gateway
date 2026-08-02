@@ -16,7 +16,14 @@ IU_API_KEY=op://common/anthropic/API_KEY
 IU_LEAD_MODEL=DeepSeek-V4-Pro
 IU_WORKER_MODEL=DeepSeek-V4-Flash
 
-# Tavily (search + extract)
+# Web search backend: `sonar` (default) routes searchWeb through Perplexity on the IU
+# endpoint above — billed to the work key, ~20 dated sources per call. `tavily` takes
+# Perplexity out of the loop. Either way Tavily stays required: it is fetchPage's Extract
+# fallback and the per-call fallback when a Sonar search fails.
+# SEARCH_PROVIDER=sonar
+# SONAR_MODEL=sonar
+
+# Tavily (extract + search fallback)
 TAVILY_API_KEY=op://common/tavily/API_KEY
 
 # Context7 (OPTIONAL — libraryDocs tool registers only when set; ctx7sk_ key)

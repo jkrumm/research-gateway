@@ -19,6 +19,18 @@ const Env = z.object({
   IU_LEAD_MODEL: z.string().default('DeepSeek-V4-Flash'),
   IU_WORKER_MODEL: z.string().default('DeepSeek-V4-Flash'),
   WORKER_MAX_CONCURRENCY: z.coerce.number().default(8),
+  // Which backend `searchWeb` uses. Sonar is the default: it runs over IU_BASE_URL on the
+  // work key, costs about the same per call as a Tavily basic search, and returns ~20 dated
+  // sources instead of 5 (measured 2026-08-02). Tavily is kept as a one-shot per-call
+  // fallback and remains the only Extract path, so TAVILY_API_KEY stays required either way.
+  // Set to 'tavily' to take Perplexity out of the loop entirely.
+  SEARCH_PROVIDER: z.enum(['sonar', 'tavily']).default('sonar'),
+  // `sonar` deliberately, not a Reasoning variant: `sonar-reasoning` was deprecated upstream
+  // in Dec 2025 (IU still lists it), and `sonar-reasoning-pro` spends the whole answer budget
+  // on reasoning tokens — it returned empty content at the max_tokens floor this uses.
+  // Perplexity is also migrating Sonar Chat Completions toward its Agent API, so treat this
+  // as the pinned, known-good surface rather than a menu.
+  SONAR_MODEL: z.string().default('sonar'),
   TAVILY_API_KEY: z.string().min(1),
   CONTEXT7_API_KEY: z.string().optional(),
   // Optional. The GitHub tools work unauthenticated, but the anonymous budget is 60

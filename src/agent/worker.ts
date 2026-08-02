@@ -40,7 +40,12 @@ export async function runWorker(args: {
   // snippet. It backfills the digest's sourcesRead, is the sources floor when the worker
   // fails entirely, and — via groundDigest below — decides which findings may survive.
   const ledger = createLedger()
-  const researchTools = buildTools(ledger, jobId, profile.searchDepth)
+  const researchTools = buildTools({
+    ledger,
+    jobId,
+    searchDepth: profile.searchDepth,
+    contextSize: profile.searchContextSize,
+  })
 
   // The done tool — no `execute` means the loop halts when the model calls it.
   const submitDigestTool: AnyTool = tool({

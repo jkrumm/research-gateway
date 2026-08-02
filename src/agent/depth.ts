@@ -1,4 +1,5 @@
 import type { Depth } from './schema.js'
+import type { SonarContextSize } from './sonar.js'
 
 export interface DepthProfile {
   workers: number
@@ -10,7 +11,8 @@ export interface DepthProfile {
   workerTimeoutMs: number
   synthesisTimeoutMs: number
   totalTimeoutMs: number
-  searchDepth: 'basic' | 'advanced'
+  searchDepth: 'basic' | 'advanced' // Tavily
+  searchContextSize: SonarContextSize // Sonar — the same knob, priced per request
   directive: string
 }
 
@@ -35,6 +37,11 @@ export const profiles: Record<Depth, DepthProfile> = {
     synthesisTimeoutMs: 300_000,
     totalTimeoutMs: 600_000,
     searchDepth: 'basic',
+    // Sonar bills per request by context size, and the tiers are close enough that depth
+    // can spend freely: $0.005 (low) / $0.008 (medium) / $0.012 (high) per call, measured
+    // against the endpoint. A quick job issues one search, so the cheap tier is right; a
+    // deep job's budget is dominated by fetchPage anyway.
+    searchContextSize: 'low',
     directive:
       'QUICK pass — answer directly and precisely. One focused search, read the most relevant page if the snippets are insufficient, then submit.',
   },
@@ -49,6 +56,7 @@ export const profiles: Record<Depth, DepthProfile> = {
     synthesisTimeoutMs: 600_000,
     totalTimeoutMs: 1_500_000,
     searchDepth: 'basic',
+    searchContextSize: 'medium',
     directive:
       'STANDARD pass — search, then read the 2-3 most relevant pages for your sub-question. Cross-verify across at least 2 independent sources.',
   },
@@ -68,6 +76,7 @@ export const profiles: Record<Depth, DepthProfile> = {
     synthesisTimeoutMs: 900_000,
     totalTimeoutMs: 3_000_000,
     searchDepth: 'advanced',
+    searchContextSize: 'high',
     directive:
       'DEEP pass — be thorough. Read full pages across distinct domains, not just snippets. Consult library docs for any libraries involved. Cross-verify every material claim across 3+ independent sources, and surface disagreements and version caveats explicitly.',
   },
