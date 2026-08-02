@@ -23,6 +23,17 @@ export interface DepthProfile {
   // but took 545s and $0.16 against a ~100s / $0.009-0.028 baseline. `standard` taking 9
   // minutes collapses the gap to `deep`, so the tiers get their fan-out back here.
   maxSearchResults: number
+  // Hard per-worker search budget, enforced in the tool rather than asked for in the
+  // prompt. The worker prompt has said "1-3 searches should be enough" and "re-searching
+  // with reworded queries is the least effective thing you can do" for a while; measured
+  // 2026-08-02, a deep job issued 74 searches across 11 workers — ~6.7 each. The prompt
+  // does not hold, in exactly the way the retrieval ledger exists because citation
+  // instructions did not hold. Search was 65% of that job's $0.57.
+  //
+  // Exhausting the budget returns the same tool-visible error shape a failed search
+  // returns, which the worker prompt already teaches a response to ("do NOT retry it in a
+  // loop — work with the sources you already have"). No new behaviour to teach.
+  maxSearches: number
   directive: string
 }
 
@@ -57,6 +68,8 @@ export const profiles: Record<Depth, DepthProfile> = {
     // evidence is waste. Raise this only if worker triage visibly picks worse pages.
     searchContextSize: 'low',
     maxSearchResults: 5,
+    // One worker, 5 steps — a second search is already the wrong call here.
+    maxSearches: 2,
     directive:
       'QUICK pass — answer directly and precisely. One focused search, read the most relevant page if the snippets are insufficient, then submit.',
   },
@@ -72,7 +85,14 @@ export const profiles: Record<Depth, DepthProfile> = {
     totalTimeoutMs: 1_500_000,
     searchDepth: 'basic',
     searchContextSize: 'low',
-    maxSearchResults: 8,
+    // 12, not 8. A/B on one query showed the dial is much more sensitive than "trim the
+    // candidate list": at 20 hits a standard job ran 545s/$0.1595/50 citations, at 8 it ran
+    // 247s/$0.0307/15. Fewer candidates means fewer fetches, which means workers reach
+    // `submit_digest` sooner — the whole loop shortens, and Sonar calls fell 12 → 3. At 8
+    // this tier sits too close to `quick`; 12 is the deliberate middle, chosen so standard
+    // is visibly more than quick without competing with deep.
+    maxSearchResults: 12,
+    maxSearches: 4,
     directive:
       'STANDARD pass — search, then read the 2-3 most relevant pages for your sub-question. Cross-verify across at least 2 independent sources.',
   },
@@ -96,6 +116,9 @@ export const profiles: Record<Depth, DepthProfile> = {
     // Deep keeps the full width — it has the step budget to actually read what it finds,
     // and breadth of independent domains is the whole point of the tier.
     maxSearchResults: 20,
+    // Generous against the prompt's own "1-3", and still well under the ~6.7/worker
+    // measured before this existed.
+    maxSearches: 6,
     directive:
       'DEEP pass — be thorough. Read full pages across distinct domains, not just snippets. Consult library docs for any libraries involved. Cross-verify every material claim across 3+ independent sources, and surface disagreements and version caveats explicitly.',
   },

@@ -137,12 +137,21 @@ Why Sonar is the default (all figures measured against the live endpoint, 2026-0
   hit. The higher tiers buy longer snippets (2613 → 3555 chars), and snippets are triage only
   — the ledger caps a snippet-backed claim at `medium` no matter what. Paying 2.4x for text
   that may not serve as evidence is waste.
-- **Hits are trimmed per depth** (`maxSearchResults`: quick 5, standard 8, deep 20). This dial
-  costs nothing on the search side — the per-request fee is flat — but it drives worker tokens
-  and wall-clock, because every extra candidate is a page a worker may fetch. Handing a
+- **Hits are trimmed per depth** (`maxSearchResults`: quick 5, standard 12, deep 20). This
+  dial costs nothing on the search side — the per-request fee is flat — but it drives worker
+  tokens and wall-clock, because every extra candidate is a page a worker may fetch. Handing a
   `standard` job all 20 produced a better report (50 citations / 35 pages vs ~15 before) at
-  545s and $0.16, against a ~100s / $0.009–0.028 baseline. `standard` taking 9 minutes
-  collapses the gap to `deep`, so the tiers get their fan-out back.
+  545s and $0.16; trimming to 8 gave 247s and $0.031 but only 15 citations. `standard` taking
+  9 minutes collapses the gap to `deep`, so the tiers get their fan-out back.
+
+There is also a **hard per-worker search budget** (`maxSearches`: quick 2, standard 4, deep 6),
+enforced in the tool rather than requested in the prompt. The worker prompt has long said "1–3
+searches should be enough" and "re-searching with reworded queries is the least effective thing
+you can do"; a measured deep job issued **74 searches across 11 workers** (~6.7 each), and
+search was 65% of that job's $0.57. Prompts do not hold here, the same way citation
+instructions did not hold before the retrieval ledger. Exhausting the budget returns the same
+tool-visible error shape a failed search returns — behaviour the prompt already teaches a
+response to — and cache hits do not count against it.
 
 Two properties of this route are load-bearing and were established by probing, not from docs:
 

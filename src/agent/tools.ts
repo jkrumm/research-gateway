@@ -252,15 +252,22 @@ function buildSearchWebTool(args: {
   searchDepth: 'basic' | 'advanced'
   contextSize: SonarContextSize
   maxResults: number
+  maxSearches: number
   ledger: RetrievalLedger
   jobId: string
 }): AnyTool {
-  const { searchDepth, contextSize, maxResults, ledger, jobId } = args
+  const { searchDepth, contextSize, maxResults, maxSearches, ledger, jobId } = args
 
   // Per-run search dedup, mirroring fetchPage's. Search is a metered resource on either
   // backend, and a re-issued identical query returns identical results — so it burns budget
   // for nothing.
   const searched = new Map<string, SearchOutput>()
+
+  // Per-WORKER budget: `buildTools` is called once per worker (worker.ts), so this closure
+  // counts exactly one worker's searches. Only BILLED searches count — a cache hit is free
+  // and a failure that reached no backend bought nothing. See DepthProfile.maxSearches for
+  // why this is enforced here instead of asked for in the prompt.
+  let spent = 0
 
   // Sonar first, Tavily as a per-call fallback. The fallback is not redundancy theatre: a
   // Perplexity outage, a 429 against IU's shared account tier, or IU re-routing Sonar
@@ -287,6 +294,21 @@ function buildSearchWebTool(args: {
         log('tool.searchWeb', { jobId, query, via: 'cache' })
         return cached
       }
+
+      if (spent >= maxSearches) {
+        log('tool.searchWeb', { jobId, query, via: 'budget', spent, maxSearches })
+        return {
+          error: `search budget exhausted (${maxSearches} searches used). Do not search again — read the most promising pages you have already found with fetchPage, and report anything still unresolved in openGaps.`,
+          results: [],
+        }
+      }
+
+      // Counted once per attempt, before any backend runs — a Sonar failure that falls back
+      // to Tavily is ONE search from the worker's point of view, and a search that fails on
+      // every backend still spends budget. Not charging failures would hand a worker stuck
+      // in a failure loop unlimited retries, which is the exact behaviour the worker prompt
+      // warns against ("do NOT retry it in a loop").
+      spent++
 
       // A search failure must degrade to a tool-visible error, never throw: an uncaught
       // throw here propagates out of the agent loop and kills the whole worker, losing every
@@ -456,11 +478,19 @@ export function buildTools(args: {
   searchDepth?: 'basic' | 'advanced'
   contextSize?: SonarContextSize
   maxResults?: number
+  maxSearches?: number
 }): Record<string, AnyTool> {
-  const { ledger, searchDepth = 'basic', contextSize = 'low', maxResults = 5 } = args
+  const { ledger, searchDepth = 'basic', contextSize = 'low', maxResults = 5, maxSearches = 4 } = args
   const jid = args.jobId ?? '-'
   const tools: Record<string, AnyTool> = {
-    searchWeb: buildSearchWebTool({ searchDepth, contextSize, maxResults, ledger, jobId: jid }),
+    searchWeb: buildSearchWebTool({
+      searchDepth,
+      contextSize,
+      maxResults,
+      maxSearches,
+      ledger,
+      jobId: jid,
+    }),
     fetchPage: buildFetchPageTool(ledger, jid),
     // Deterministic source-of-truth lookups (registries, GitHub). Registered before the
     // optional libraryDocs tool so tools/list order stays stable across configurations.
