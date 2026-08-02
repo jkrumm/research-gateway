@@ -430,18 +430,27 @@ function buildFetchPageTool(ledger: RetrievalLedger, jobId = '-'): AnyTool {
       // handles the one failure Tavily cannot — a page whose text simply is not in the HTML
       // — while Tavily remains the better fallback for a page that IS static but whose
       // structure Readability could not parse. Inert unless JINA_API_KEY is set.
-      if (env.JINA_API_KEY) {
+      if (env.JINA_ENABLED) {
         try {
-          const res = await fetch(jinaUrl(fetchUrl), {
-            headers: {
-              Authorization: `Bearer ${env.JINA_API_KEY}`,
-              // Force the full browser engine. Jina otherwise picks between a lightweight
-              // fetcher and headless Chrome, and the lightweight one returns exactly the
-              // shell this step exists to get past.
-              'x-engine': 'browser',
-            },
-            signal: AbortSignal.timeout(30_000),
-          })
+          // Force the full browser engine. Jina otherwise picks between a lightweight
+          // fetcher and headless Chrome, and the lightweight one returns exactly the shell
+          // this step exists to get past.
+          const headers: Record<string, string> = { 'x-engine': 'browser' }
+          if (env.JINA_API_KEY) headers['Authorization'] = `Bearer ${env.JINA_API_KEY}`
+
+          let res = await fetch(jinaUrl(fetchUrl), { headers, signal: AbortSignal.timeout(30_000) })
+
+          // A key on an account with no balance returns 402 on EVERY request, which would
+          // silently disable this whole step while anonymous access still works. Measured:
+          // a real key 402'd (`InsufficientBalanceError`) where no key returned 200. Retry
+          // once without it, and say so loudly — a dead key should be visible, not papered
+          // over forever.
+          if ((res.status === 402 || res.status === 401) && env.JINA_API_KEY) {
+            log('tool.fetchPage', { jobId, url, via: 'jina', error: `key rejected (HTTP ${res.status}) — retrying anonymously; recharge or unset JINA_API_KEY` })
+            delete headers['Authorization']
+            res = await fetch(jinaUrl(fetchUrl), { headers, signal: AbortSignal.timeout(30_000) })
+          }
+
           if (res.ok) {
             const parsed = parseJinaResponse(await res.text())
             if (parsed.ok) {

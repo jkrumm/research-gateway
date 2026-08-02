@@ -114,7 +114,8 @@ bun test           # pure-function tests; needs no secrets
 | `SEARCH_PROVIDER` | no (`sonar`) | `sonar` \| `tavily` — which backend `searchWeb` uses. See [Web search backend](#web-search-backend) |
 | `SONAR_MODEL` | no (`sonar`) | pinned; not a menu — see the note in `env.ts` before changing it |
 | `TAVILY_API_KEY` | yes | required even on `sonar`: it is the Extract fallback inside `fetchPage` and the per-call search fallback. Credits are hard-limited |
-| `JINA_API_KEY` | no | enables the JavaScript-rendering step in `fetchPage`. **Opt-in on purpose** — it makes the URLs this service fetches visible to a third party. Inert when unset |
+| `JINA_ENABLED` | no (off) | turns on the JavaScript-rendering step in `fetchPage`. **This is the switch, not the key** — it makes fetched URLs visible to a third party |
+| `JINA_API_KEY` | no | rate-limit lever only: anonymous is 20 RPM, a key raises it to 500. A key on an unfunded account returns 402 on every request, so the gateway retries anonymously and logs it |
 | `CONTEXT7_API_KEY` | no | enables the `libraryDocs` tool when set. Free, and the best source for library questions |
 | `GITHUB_TOKEN` | no | the `githubFile`/`githubRepo`/`findPackages` tools work without it, but anonymous GitHub is **60 req/h per IP** shared across all jobs; a no-scope token raises it to 5000/h |
 | `ARGO_USAGE_URL` / `ARGO_API_SECRET` | no | telemetry → argo `POST /usage/records`; no-op if unset |
@@ -226,7 +227,7 @@ Three findings that outlast the tuning:
 |-|-|-|
 | 1. `@mozilla/readability` | ordinary article pages | serves the large majority |
 | 2. site adapter | pages the generic path structurally cannot read | `site-adapters.ts`; Reddit today |
-| 3. Jina Reader | pages whose text is not in the HTML at all | opt-in via `JINA_API_KEY` |
+| 3. Jina Reader | pages whose text is not in the HTML at all | opt-in via `JINA_ENABLED` |
 | 4. Tavily Extract | static pages Readability could not parse | costs a credit |
 
 The ordering is the point. A site adapter runs first because it is deterministic and free.

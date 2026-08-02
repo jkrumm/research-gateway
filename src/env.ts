@@ -48,10 +48,20 @@ const Env = z.object({
     .optional()
     .transform((v) => (v ? v : undefined)),
   // Jina Reader — the JavaScript-rendering step in fetchPage's chain (see agent/jina.ts).
-  // OPT-IN: the step is inert until this is set, because enabling it means the URLs this
-  // service fetches become visible to a third party. r.jina.ai also serves anonymous
-  // callers at 20 RPM, but requiring the key keeps that trade an explicit decision rather
-  // than a default, and lifts the limit to 500 RPM.
+  //
+  // This flag, not the API key, is the switch. Enabling it means the URLs this service
+  // fetches become visible to a third party, which is a decision to take explicitly — but
+  // r.jina.ai serves ANONYMOUS callers fine (measured: HTTP 200 without a key), so gating on
+  // the key would have tied a privacy decision to a rate-limit lever. Worse, it would have
+  // made a bad key strictly worse than no key: the first key tried here returned HTTP 402
+  // `InsufficientBalanceError` on every request while anonymous access worked.
+  JINA_ENABLED: z
+    .string()
+    .optional()
+    .transform((v) => v === 'true' || v === '1'),
+  // OPTIONAL rate-limit lever on top of JINA_ENABLED: anonymous is 20 RPM, a key raises it
+  // to 500. A key whose account has no balance 402s every request, so tools.ts retries once
+  // anonymously and logs loudly rather than letting the whole step die silently.
   //
   // Empty-as-unset for the same reason as GITHUB_TOKEN above: `op inject` renders an empty
   // 1Password field as `JINA_API_KEY=`, and sending `Authorization: Bearer ` is worse than

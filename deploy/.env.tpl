@@ -31,8 +31,12 @@ CONTEXT7_API_KEY=op://vps/research-gateway/CONTEXT7_API_KEY
 # back to anonymous, so this line is safe to keep enabled before a token is pasted in.
 GITHUB_TOKEN=op://vps/research-gateway/GITHUB_TOKEN
 
-# Jina Reader (OPTIONAL — JavaScript rendering in fetchPage, inert until set). Opt-in
-# because it exposes fetched URLs to a third party. Free key raises 20 RPM -> 500 RPM.
+# Jina Reader — JavaScript rendering in fetchPage. THIS flag is the switch, not the key
+# (r.jina.ai serves anonymous callers at 20 RPM). Opt-in because it exposes fetched URLs to
+# a third party.
+JINA_ENABLED=true
+# OPTIONAL rate-limit lever (20 -> 500 RPM). A key with no account balance 402s every
+# request; the gateway retries anonymously and logs it. Leave unset unless funded.
 # JINA_API_KEY=op://vps/research-gateway/JINA_API_KEY
 
 # Telemetry → argo
