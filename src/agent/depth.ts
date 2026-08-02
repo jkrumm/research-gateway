@@ -92,7 +92,14 @@ export const profiles: Record<Depth, DepthProfile> = {
     // this tier sits too close to `quick`; 12 is the deliberate middle, chosen so standard
     // is visibly more than quick without competing with deep.
     maxSearchResults: 12,
-    maxSearches: 4,
+    // 3, cut from 4 on 15 benchmarked runs (scripts/bench.ts, 5 queries x 3 reps). Across
+    // those runs pages-read correlates with citations at r=+0.78 while searches-issued
+    // manages only +0.52 — and searches only reach citations THROUGH pages (searches->pages
+    // r=+0.49). Yield also falls as search volume rises: 3.8 pages per search on the query
+    // that searched least, 1.7 on the one that searched most. The two queries that ran into
+    // the old 4x4=16 ceiling were exactly the two with the worst yield, i.e. the budget was
+    // binding precisely where extra searching had stopped paying.
+    maxSearches: 3,
     directive:
       'STANDARD pass — search, then read the 2-3 most relevant pages for your sub-question. Cross-verify across at least 2 independent sources.',
   },
