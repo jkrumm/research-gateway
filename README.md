@@ -208,6 +208,13 @@ Three findings that outlast the tuning:
 - **Tavily is dormant** — 12 credits across all 15 runs, touched by only 5 of them. That is
   the Sonar migration's real result: search left the personal key, and Tavily is back to
   being the Extract fallback it was meant to be.
+- **13.4% of page fetches fail** (41% worst case), ~3.9 wasted fetches per run — and each one
+  costs a worker step, the resource that actually buys citations. One host dominated: 6 of 13
+  unverified entries in a sampled deep run were `www.reddit.com`, which answers a bot with
+  HTTP 200 and an 8 KB JavaScript shell. `fetch-url.ts` now fetches those through
+  `old.reddit.com` (267 KB of real HTML for the same thread) while the ledger keeps the
+  original URL, so citations still ground. The remaining failures are genuine — dead domains,
+  404s, paywalls.
 - **Pages predict citations far better than searches do.** Pages-read correlates with citations
   at r=+0.78; searches-issued reaches only +0.52, and does so *through* pages (searches→pages
   r=+0.49). Yield decays with volume: 3.8 pages per search on the query that searched least,
