@@ -291,6 +291,29 @@ One more, from Bun rather than the browser: `proc.killed` is **true after a clea
 not only after a timeout kill (Bun 1.3.14). Gating the timeout branch on it turned every
 successful render into "render timed out". `proc.signalCode` is the discriminator that holds.
 
+### What the rendering stage actually recovers
+
+Measured against the real failure set — the URLs that were unverifiable across the 45
+benchmark runs — by replaying each through the deployed chain (2026-08-02):
+
+| URL | raw bytes | rendered chars | |
+|-|-|-|-|
+| `techempower.com/benchmarks` | 2,003 | 4,626 | recovered |
+| `web-frameworks-benchmark.netlify.app` | 3,326 | 28,960 | recovered |
+| `x.com/…/status/…` | 4,285 | 5,497 | recovered |
+| `app.daily.dev/posts/…` | 169 | — | auth wall |
+| `medium.com/…` | 5,784 | — | paywall |
+| `justdigitaldrafts.com/…` | 87 | — | dead |
+| `devstract.site/…` | 0 | — | DNS dead |
+
+**3 of 7 recovered.** The four that remain fail on authentication, a paywall and two dead
+domains — none of which any renderer fixes. That is the ceiling, not a shortfall.
+
+This is deliberately a *fetch-level* measurement rather than another job-level A/B. The 45
+runs established that fetch-stage effects land below the job-level resolution floor
+(within-query citation cv 0.09–0.43), so a 15-run comparison could not have resolved this
+either way — while replaying the actual failing URLs answers it directly, in minutes.
+
 ### What this harness can and cannot resolve
 
 At 3 repetitions per query, the resolvable effect size (2 × standard error, as a share of that
