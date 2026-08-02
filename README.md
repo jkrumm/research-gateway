@@ -140,9 +140,10 @@ Why Sonar is the default (all figures measured against the live endpoint, 2026-0
 - **Hits are trimmed per depth** (`maxSearchResults`: quick 5, standard 12, deep 20). This
   dial costs nothing on the search side — the per-request fee is flat — but it drives worker
   tokens and wall-clock, because every extra candidate is a page a worker may fetch. Handing a
-  `standard` job all 20 produced a better report (50 citations / 35 pages vs ~15 before) at
-  545s and $0.16; trimming to 8 gave 247s and $0.031 but only 15 citations. `standard` taking
-  9 minutes collapses the gap to `deep`, so the tiers get their fan-out back.
+  `standard` job all 20 produced a better report (50 citations / 35 pages) at 545s and $0.16;
+  trimming to 8 gave 247s and $0.031 but only 15 citations; the shipped 12 gives 213s, $0.080
+  and 39 citations — faster than the 8-hit config *and* 2.6x its citations, so it is not a
+  midpoint but a better operating point than either. (n=1 per config on one broad query.)
 
 There is also a **hard per-worker search budget** (`maxSearches`: quick 2, standard 4, deep 6),
 enforced in the tool rather than requested in the prompt. The worker prompt has long said "1–3
