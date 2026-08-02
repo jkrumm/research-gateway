@@ -315,6 +315,34 @@ runs established that fetch-stage effects land below the job-level resolution fl
 (within-query citation cv 0.09–0.43), so a 15-run comparison could not have resolved this
 either way — while replaying the actual failing URLs answers it directly, in minutes.
 
+A 15-run `standard` benchmark on the deployed chain says the same thing from the other side.
+Counting what each step actually terminated (487 `fetchPage` outcomes):
+
+| step | resolved | failed |
+|-|-|-|
+| Readability | 326 | — |
+| site adapter | 3 | — |
+| lightpanda | **44** (1,705,597 chars) | 40 |
+| Jina, behind it | 8 | 32 (30 are 404s) |
+| Tavily Extract | 1 | 31 exhausted the chain |
+
+**Read the two renderer rows together — that is the argument for keeping both.** The
+self-hosted one carries the volume; Jina still recovers 8 pages it could not, which is the
+bot-blocked case its proxy pool is for. Deleting it would cost those 8.
+
+The job-level metrics moved as predicted, which is to say not resolvably: wall 354 → 328s,
+cost $0.0891 → $0.0887, fetch failure rate 10.8% → 11.3% (pagesFailed cv **1.00** — this
+metric cannot resolve anything at n=3). `tavilyCredits` read 12 → 7 → **0**, but that field is
+not trustworthy on its own: the one Extract call that *succeeded* here also recorded 0
+credits, so it under-reports. The honest version of that claim is the table — Tavily Extract
+now terminates 1 fetch in 487.
+
+Two things the run surfaced that are not about rendering. `github.com` is now the top
+unverifiable host (16 of 26 across 15 runs), replacing Reddit as the site-adapter candidate.
+And a definitive **404 is still retried** through Jina and then Tavily — 30 of Jina's 32
+failures are 404s the renderer had already proven — so short-circuiting that status would
+remove two round trips and a billable call per hallucinated URL.
+
 ### Sonar and Tavily are complementary, not interchangeable
 
 Measured head-to-head on the 5-query benchmark set, 12 results each, run from the deployed
