@@ -3,6 +3,17 @@ name: Deploy
 on:
   push:
     branches: [master]
+    # A deploy restarts the container, and the job store is in-memory — so any in-flight
+    # research job is LOST, not just delayed (a deep run is 10-20 minutes of work). A
+    # documentation commit has no business doing that. This was not hypothetical: a
+    # README-only push during a 15-run benchmark killed the run that was executing.
+    #
+    # Only markdown and repo metadata. deploy/compose.yml and deploy/.env.tpl are not .md,
+    # so a real deployment change still triggers normally.
+    paths-ignore:
+      - '**.md'
+      - LICENSE
+      - .gitignore
   workflow_dispatch:
 
 permissions:
