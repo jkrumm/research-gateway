@@ -114,8 +114,9 @@ bun test           # pure-function tests; needs no secrets
 | `SEARCH_PROVIDER` | no (`sonar`) | `sonar` \| `tavily` — which backend `searchWeb` uses. See [Web search backend](#web-search-backend) |
 | `SONAR_MODEL` | no (`sonar`) | pinned; not a menu — see the note in `env.ts` before changing it |
 | `TAVILY_API_KEY` | yes | required even on `sonar`: it is the Extract fallback inside `fetchPage` and the per-call search fallback. Credits are hard-limited |
-| `JINA_ENABLED` | no (off) | turns on the JavaScript-rendering step in `fetchPage`. **This is the switch, not the key** — it makes fetched URLs visible to a third party |
-| `JINA_API_KEY` | no | rate-limit lever only: anonymous is 20 RPM, a key raises it to 500. A key on an unfunded account returns 402 on every request, so the gateway retries anonymously and logs it |
+| `LIGHTPANDA_URL` | no (off) | base URL of the JavaScript-rendering sidecar, e.g. `http://research-gateway-lightpanda:7781`. Unset takes the renderer out of `fetchPage`'s chain — the gateway must run without it. See [Rendering JavaScript](#rendering-javascript) |
+| `JINA_ENABLED` | no (off) | the *second* renderer, kept as the rollback for the sidecar. **This is the switch, not the key** — it makes fetched URLs visible to a third party, which is what the sidecar removes |
+| `JINA_API_KEY` | no | rate-limit lever only: anonymous is 20 RPM, a key raises it to 500. A key on an unfunded account returns 402 on every request, so the gateway retries anonymously and logs it. Note `op inject` resolves `op://` refs **inside comments**, so a commented-out ref to a non-existent field fails the whole injection |
 | `CONTEXT7_API_KEY` | no | enables the `libraryDocs` tool when set. Free, and the best source for library questions |
 | `GITHUB_TOKEN` | no | the `githubFile`/`githubRepo`/`findPackages` tools work without it, but anonymous GitHub is **60 req/h per IP** shared across all jobs; a no-scope token raises it to 5000/h |
 | `ARGO_USAGE_URL` / `ARGO_API_SECRET` | no | telemetry → argo `POST /usage/records`; no-op if unset |
@@ -313,6 +314,29 @@ This is deliberately a *fetch-level* measurement rather than another job-level A
 runs established that fetch-stage effects land below the job-level resolution floor
 (within-query citation cv 0.09–0.43), so a 15-run comparison could not have resolved this
 either way — while replaying the actual failing URLs answers it directly, in minutes.
+
+### The price of an answer
+
+From the 45 runs, pooled within-query cv is 0.235 (citations), 0.172 (cost), 0.372 (wall),
+0.263 (pages). Reps **per query** needed to detect a relative effect at α=0.05, power=0.80,
+and the wall-clock that implies for a two-arm A/B over the 5-query set:
+
+| effect | citations | cost | wall |
+|-|-|-|-|
+| 5% | 348 (319 h) | 186 (171 h) | 868 (795 h) |
+| 10% | 87 (80 h) | 47 (43 h) | 217 (199 h) |
+| 20% | 22 (20 h) | 12 (11 h) | 54 (50 h) |
+| 30% | 10 (9 h) | 5 (5 h) | 24 (22 h) |
+
+At ~$0.087 per run, resolving a 10% citation change costs roughly **80 hours and $76** of
+live jobs. That is the honest constraint on tuning this system, and it is why the remaining
+knobs (`deep`'s `maxSearches`, a Sonar-vs-Tavily quality comparison) are documented as open
+rather than guessed at: anything under a ~20% effect is not affordably decidable here.
+
+It also reframes a decision already made. The `maxSearches` 4→3 A/B measured a 9% citation
+drop on 3 reps per query — by this table, ~29x underpowered for that effect size. It was
+nonetheless reverted correctly, but on **sign consistency** (down on 5 of 5 queries, p≈0.06)
+rather than on the magnitude. Use that test, not the effect size, for anything this small.
 
 ### What this harness can and cannot resolve
 
