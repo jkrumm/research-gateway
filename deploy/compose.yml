@@ -68,7 +68,12 @@ services:
   # same event costs one fetch, which falls through to Tavily Extract. (The binary is also
   # glibc-linked and cannot run on the gateway's alpine base at all.)
   research-gateway-lightpanda:
-    image: ${RESEARCH_GATEWAY_LIGHTPANDA_IMAGE:-rollhook.jkrumm.com/research-gateway-lightpanda:latest}
+    # The nested ${IMAGE_TAG:-...} is REQUIRED, not stylistic: RollHook's validator rejects a
+    # service whose image does not reference IMAGE_TAG ("service image must reference
+    # IMAGE_TAG"). Omitting it fails the sidecar's deploy workflow while the container keeps
+    # running happily from whatever image it already had — so nothing looks broken and the
+    # next push simply never ships. Same shape as the gateway above.
+    image: ${RESEARCH_GATEWAY_LIGHTPANDA_IMAGE:-${IMAGE_TAG:-rollhook.jkrumm.com/research-gateway-lightpanda:latest}}
     restart: unless-stopped
     environment:
       PORT: 7781
