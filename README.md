@@ -43,9 +43,16 @@ server-side. See [`PRD.md`](./PRD.md) for the full rationale and decisions.
 | `GET /research/:jobId` | bearer | — | `{ status, result?, error? }` |
 
 `result` shape: `{ report, citations: [{ claim, url, confidence }], sources, unverified,
-status, warnings, grounding }` — `report` is the narrative cited answer, `citations` ties
-claims to URLs, `sources` is the pages actually read, `unverified` is what could not be
+status, warnings, grounding, cost }` — `report` is the narrative cited answer, `citations`
+ties claims to URLs, `sources` is the pages actually read, `unverified` is what could not be
 checked, and `status` / `grounding` are the code-counted evidence accounting.
+
+`cost` is what this one run actually spent: `{ wallMs, totalUsd, llmUsd, searchUsd,
+searchCalls, tavilyCredits }`. `searchUsd` is Perplexity's own per-call figure, `llmUsd` is
+computed from the local rate table (null if the configured model has no entry), and
+`tavilyCredits` is left unpriced — no verified USD-per-credit rate exists. It is read from
+the same per-job meters that feed argo, so the result and the dashboard report one number
+rather than two accountings that can drift.
 
 Runs are **async**: submit returns a `jobId` immediately; poll `GET /research/:jobId` until
 `status` is `done` (agentic runs take tens of seconds to minutes). A global concurrency cap
