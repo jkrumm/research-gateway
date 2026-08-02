@@ -90,3 +90,34 @@ describe('parseLightpandaStdout', () => {
     expect(out.ok).toBe(false)
   })
 })
+
+describe('error-shaped short pages', () => {
+  it('REFUSES the measured walmart.com error page, which clears the 200-char floor', () => {
+    // Verbatim shape, 243 chars, HTTP 200 — a non-page that would otherwise be filed as
+    // retrieved content and become citable.
+    const out = parseLightpandaStdout(
+      dump({
+        content:
+          '![](https://i5.walmartimages.com/dfw/63fd9f59-d90e/v1/error-generic-toaster.svg)\n\n# Sorry...\nWe’re having technical issues, but\nwe’ll be back in a flash.\nTry again\n[Return to home](https://www.walmart.com/)\nand some more padding to clear the floor.',
+      }),
+    )
+    expect(out.ok).toBe(false)
+    if (out.ok) return
+    expect(out.error).toContain('error notice')
+  })
+
+  it('KEEPS the measured ticketmaster.com page, whose banner sits on 28k chars of real content', () => {
+    // The counter-example that decides the design: matching the phrase alone would discard a
+    // fully rendered page. The guard only fires when the page is also too short to be a page.
+    const out = parseLightpandaStdout(
+      dump({
+        content: `Your browser is not supported. For the best experience, use any of these supported browsers: Chrome, Firefox, Safari, Edge.\n\n${long(2000)}`,
+      }),
+    )
+    expect(out.ok).toBe(true)
+  })
+
+  it('keeps a short page that is not error-shaped', () => {
+    expect(parseLightpandaStdout(dump({ content: long(300) })).ok).toBe(true)
+  })
+})

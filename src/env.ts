@@ -55,11 +55,20 @@ const Env = z.object({
   // sidecar, both in local dev and if the container fails to come up in production. The two
   // renderers are ordered, not exclusive: Jina stays wired behind its own flag as the
   // rollback, so if this one has to be pulled, that is one env var and no deploy.
-  LIGHTPANDA_URL: z
-    .string()
-    .trim()
-    .optional()
-    .transform((v) => (v ? v.replace(/\/+$/, '') : undefined)),
+  // `z.url()`, matching IU_BASE_URL and ARGO_USAGE_URL rather than a bare string: a
+  // scheme-less or typo'd value would otherwise pass boot and surface only as an opaque fetch
+  // failure inside the tool's catch, silently demoting every render to the fallback while the
+  // container reported healthy.
+  // Empty-as-unset first, for the same reason as GITHUB_TOKEN below and one specific to this
+  // var: setting it to `""` in compose is the obvious way to switch the renderer off, and a
+  // bare `z.url()` would answer that by refusing to boot the gateway at all.
+  LIGHTPANDA_URL: z.preprocess(
+    (v) => (typeof v === 'string' && v.trim() === '' ? undefined : v),
+    z
+      .url()
+      .optional()
+      .transform((v) => (v ? v.replace(/\/+$/, '') : undefined)),
+  ),
   // Jina Reader — the previous JavaScript-rendering step in fetchPage's chain (agent/jina.ts).
   //
   // This flag, not the API key, is the switch. Enabling it means the URLs this service

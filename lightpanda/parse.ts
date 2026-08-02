@@ -33,6 +33,28 @@ const MIN_CONTENT_CHARS = 200
 const NAVIGATION_FAILED = /^#[ \t]+Navigation failed/m
 const NAVIGATION_REASON = /^Reason:[ \t]*(.+)$/m
 
+// A page that is BOTH short and error-shaped. Both halves are load-bearing, and the reason is
+// a measurement rather than caution — nine bot-hostile sites were put through this renderer to
+// find out what a block actually looks like here:
+//
+//   - Seven answered with HTTP **403** (g2, crunchbase, indeed, ...), which the status check
+//     above already rejects. The Cloudflare-style "200 with a challenge page" that this guard
+//     was originally proposed for did not occur once.
+//   - walmart.com answered **200 with 243 chars**: "# Sorry... We're having technical issues,
+//     but we'll be back in a flash." That is the real case — a non-page that clears the
+//     200-char floor by 43 characters and would be filed as retrieved content.
+//   - ticketmaster.com answered **200 with 28,331 chars**, opening with "Your browser is not
+//     supported. For the best experience, use any of these supported browsers: Chrome,
+//     Firefox...". That banner sits on top of a fully rendered page, and the other 28k chars
+//     are real. Matching on the phrase alone would have thrown all of it away.
+//
+// So the phrase is never enough on its own; it only counts on a page too short to be a page.
+// A genuine article of under 1,000 chars is already near-worthless as a citation source, which
+// is what makes the conjunction safe.
+const SHORT_PAGE_CEILING = 1000
+const ERROR_SHAPED =
+  /having technical issues|temporarily unavailable|access denied|request blocked|are you a robot|verify you are human|checking your browser|enable javascript|too many requests|try again later/i
+
 interface Dump {
   http_status: number
   content?: string
@@ -91,6 +113,10 @@ export function parseLightpandaStdout(stdout: string): RenderResult {
 
   if (content.length < MIN_CONTENT_CHARS) {
     return { ok: false, error: `lightpanda returned ${content.length} chars of content` }
+  }
+
+  if (content.length < SHORT_PAGE_CEILING && ERROR_SHAPED.test(content)) {
+    return { ok: false, error: `page is an error notice, not content (${content.length} chars)` }
   }
 
   return { ok: true, text: content, status: dump.http_status }

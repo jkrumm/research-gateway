@@ -34,14 +34,31 @@
 // page's memory dies with the page — an unbounded page is bounded by process exit.
 
 import { parseLightpandaStdout, type RenderResult } from './parse.js'
+import { createSemaphore } from './semaphore.js'
 
-const PORT = Number(process.env['PORT'] ?? 7781)
+// The gateway validates its whole environment through zod at boot (src/env.ts) precisely so a
+// bad value fails loudly instead of degrading at request time. This service has no zod (it
+// ships with no dependencies at all), so it gets the same guarantee the short way. It is not
+// theoretical: `RENDER_MAX_CONCURRENCY=""` makes `Number('')` zero, and a zero-slot semaphore
+// never admits anyone — every render would queue and time out, on a container reporting
+// healthy. A stringified NaN would likewise be handed to the browser as `--v8-max-heap-mb NaN`.
+function numberFromEnv(name: string, fallback: number): number {
+  const raw = process.env[name]
+  if (raw === undefined || raw.trim() === '') return fallback
+  const value = Number(raw)
+  if (!Number.isFinite(value) || value <= 0) {
+    throw new Error(`${name} must be a positive number, got ${JSON.stringify(raw)}`)
+  }
+  return value
+}
+
+const PORT = numberFromEnv('PORT', 7781)
 const BIN = process.env['LIGHTPANDA_BIN'] ?? '/usr/local/bin/lightpanda'
 
 // Sized against the measured worst case: 205 MB for the heaviest page in the sweep, at the
 // heap cap below. 3 x 205 MB + this Bun process (~50 MB) = ~665 MB, which is what the 768 MiB
 // `mem_limit` in deploy/compose.yml is derived from. Change one, recompute the other.
-const MAX_CONCURRENCY = Number(process.env['RENDER_MAX_CONCURRENCY'] ?? 3)
+const MAX_CONCURRENCY = numberFromEnv('RENDER_MAX_CONCURRENCY', 3)
 
 // The single most valuable flag on the binary. Measured across 8 real pages at caps of 32, 64
 // and none: at 64 the extracted content is byte-identical to uncapped on every one of them,
@@ -56,26 +73,26 @@ const MAX_CONCURRENCY = Number(process.env['RENDER_MAX_CONCURRENCY'] ?? 3)
 // Note that lightpanda logs `JS heap limit reached` whenever the cap binds, INCLUDING on pages
 // where the extracted content is identical to uncapped. It is a curiosity, not a defect
 // signal — do not wire an alert to it.
-const V8_MAX_HEAP_MB = Number(process.env['RENDER_V8_MAX_HEAP_MB'] ?? 64)
+const V8_MAX_HEAP_MB = numberFromEnv('RENDER_V8_MAX_HEAP_MB', 64)
 
 // lightpanda's own default `--wait-ms` is 5000 and it is the latency floor for almost every
 // page: 7 of 8 pages in the sweep finished in 5.1s, a static one in 0.7s. Left at the default
 // deliberately — this step only ever runs on pages whose text is not in the HTML, so cutting
 // the settle time is cutting the one thing we came for.
-const WAIT_MS = Number(process.env['RENDER_WAIT_MS'] ?? 5000)
+const WAIT_MS = numberFromEnv('RENDER_WAIT_MS', 5000)
 
 // Hard deadline for page JavaScript, then a longer hard deadline on the process itself. Both
 // are needed: --terminate-ms stops a runaway script but still lets the dump be written (a
 // partial page beats no page), while the process timeout covers the case where the binary
 // itself wedges and never gets to the dump.
-const TERMINATE_MS = Number(process.env['RENDER_TERMINATE_MS'] ?? 20_000)
-const PROCESS_TIMEOUT_MS = Number(process.env['RENDER_TIMEOUT_MS'] ?? 35_000)
+const TERMINATE_MS = numberFromEnv('RENDER_TERMINATE_MS', 20_000)
+const PROCESS_TIMEOUT_MS = numberFromEnv('RENDER_TIMEOUT_MS', 35_000)
 
 // How long a request will wait for a render slot before giving up. A caller that waits longer
 // than this is worse off than one that fails fast: the gateway's fallback (Tavily Extract)
 // costs a credit but answers in ~2s, and the resource actually being conserved over there is
 // the worker step, not the credit.
-const QUEUE_TIMEOUT_MS = Number(process.env['RENDER_QUEUE_TIMEOUT_MS'] ?? 20_000)
+const QUEUE_TIMEOUT_MS = numberFromEnv('RENDER_QUEUE_TIMEOUT_MS', 20_000)
 
 // A dump is a whole page of markdown; 4 MiB is far above anything measured (the largest in the
 // sweep was 68 KB) and exists only so a pathological page cannot grow this process's heap
@@ -87,42 +104,7 @@ function log(event: string, fields: Record<string, unknown> = {}): void {
   console.log(JSON.stringify({ ts: new Date().toISOString(), event, ...fields }))
 }
 
-// --- Semaphore ---------------------------------------------------------------------------
-
-let active = 0
-const waiting: Array<() => void> = []
-
-function release(): void {
-  active--
-  const next = waiting.shift()
-  if (next) next()
-}
-
-/** Resolves true once a slot is held, or false if the queue wait timed out (nothing held). */
-function acquire(): Promise<boolean> {
-  if (active < MAX_CONCURRENCY) {
-    active++
-    return Promise.resolve(true)
-  }
-  return new Promise((resolve) => {
-    let settled = false
-    const grant = (): void => {
-      if (settled) return
-      settled = true
-      clearTimeout(timer)
-      active++
-      resolve(true)
-    }
-    const timer = setTimeout(() => {
-      if (settled) return
-      settled = true
-      const at = waiting.indexOf(grant)
-      if (at >= 0) waiting.splice(at, 1)
-      resolve(false)
-    }, QUEUE_TIMEOUT_MS)
-    waiting.push(grant)
-  })
-}
+const slots = createSemaphore(MAX_CONCURRENCY, QUEUE_TIMEOUT_MS)
 
 // --- Render ------------------------------------------------------------------------------
 
@@ -173,7 +155,12 @@ async function render(url: string): Promise<RenderResult> {
 
   const { text, truncated } = await readCapped(proc.stdout, MAX_STDOUT_BYTES)
   if (truncated) {
-    proc.kill()
+    // SIGKILL explicitly, not a bare kill(). Bun's `killSignal` option governs only the kill
+    // its OWN timeout fires; a manual .kill() defaults to SIGTERM, which a page still busy in
+    // JS does not honour promptly. That would hold a render slot — one of three — for the
+    // remaining tens of seconds until the process timeout got around to it, which is the exact
+    // stall this fast-fail path exists to avoid.
+    proc.kill('SIGKILL')
     await proc.exited
     return { ok: false, error: `render output exceeded ${MAX_STDOUT_BYTES} bytes` }
   }
@@ -204,7 +191,7 @@ const server = Bun.serve({
     const { pathname } = new URL(req.url)
 
     if (pathname === '/health') {
-      return Response.json({ status: 'ok', active, queued: waiting.length })
+      return Response.json({ status: 'ok', active: slots.active, queued: slots.queued })
     }
 
     if (pathname !== '/render' || req.method !== 'POST') {
@@ -227,8 +214,8 @@ const server = Bun.serve({
     // itself is broken, which is a different thing and worth distinguishing in the gateway's
     // logs.
     const started = Date.now()
-    if (!(await acquire())) {
-      log('render', { url, ok: false, error: 'queue timeout', queued: waiting.length })
+    if (!(await slots.acquire())) {
+      log('render', { url, ok: false, error: 'queue timeout', queued: slots.queued })
       return Response.json({ ok: false, error: `no render slot within ${QUEUE_TIMEOUT_MS}ms` })
     }
 
@@ -248,7 +235,7 @@ const server = Bun.serve({
       log('render', { url, ok: false, error: String(err), ms: Date.now() - started })
       return Response.json({ ok: false, error: String(err) })
     } finally {
-      release()
+      slots.release()
     }
   },
 })
