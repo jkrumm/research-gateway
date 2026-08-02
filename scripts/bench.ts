@@ -86,6 +86,8 @@ interface RunRow {
   citationsDropped: number
   confidenceCapped: number
   status: string
+  /** Hosts of URLs the run could not verify — the shortlist for a new site adapter. */
+  failedHosts: string[]
 }
 
 async function runOne(args: Args, secret: string, queryIndex: number, rep: number): Promise<RunRow> {
@@ -112,6 +114,7 @@ async function runOne(args: Args, secret: string, queryIndex: number, rep: numbe
     citationsDropped: 0,
     confidenceCapped: 0,
     status: 'unknown',
+    failedHosts: [],
   }
 
   const submit = await fetch(`${args.base}/research`, {
@@ -140,6 +143,7 @@ async function runOne(args: Args, secret: string, queryIndex: number, rep: numbe
       result?: {
         citations: unknown[]
         sources: unknown[]
+        unverified?: Array<{ url: string | null }>
         status: string
         grounding: { pagesRetrieved: number; pagesFailed: number; citationsDropped: number; confidenceCapped: number }
         cost?: {
@@ -179,6 +183,17 @@ async function runOne(args: Args, secret: string, queryIndex: number, rep: numbe
       citationsDropped: r.grounding.citationsDropped,
       confidenceCapped: r.grounding.confidenceCapped,
       status: r.status,
+      failedHosts: (r.unverified ?? [])
+        .map((u) => u.url)
+        .filter((u): u is string => typeof u === 'string' && u.length > 0)
+        .map((u) => {
+          try {
+            return new URL(u).host.toLowerCase()
+          } catch {
+            return ''
+          }
+        })
+        .filter(Boolean),
     }
   }
 }
@@ -228,6 +243,21 @@ function summarize(rows: RunRow[]): void {
   // Per-query spread matters separately: a metric can look noisy in aggregate purely
   // because the queries differ in difficulty. Only WITHIN-query spread is the noise that
   // invalidates an A/B on a fixed query.
+  // How the Reddit adapter was found, made repeatable. A host that keeps reappearing here
+  // is either genuinely dead (nothing to do) or serving this crawler something it cannot
+  // read — the second case is what site-adapters.ts exists for. Checking whether a host
+  // returns HTTP 200 with a suspiciously small body separates the two in one curl.
+  const hostCounts = new Map<string, number>()
+  for (const r of ok) for (const h of r.failedHosts) hostCounts.set(h, (hostCounts.get(h) ?? 0) + 1)
+  const ranked = [...hostCounts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 10)
+  if (ranked.length > 0) {
+    const total = [...hostCounts.values()].reduce((a, b) => a + b, 0)
+    console.log(`\nUnverifiable hosts (${total} across ${ok.length} runs) — site-adapter candidates:`)
+    for (const [host, n] of ranked) {
+      console.log(`  ${String(n).padStart(3)}x  ${host}${n >= 3 ? '   <- recurring, worth probing' : ''}`)
+    }
+  }
+
   console.log('\nWithin-query spread (this is the noise floor an A/B must beat):')
   console.log('  query  n   wall cv   cost cv   citations cv')
   const byQuery = new Map<number, RunRow[]>()
