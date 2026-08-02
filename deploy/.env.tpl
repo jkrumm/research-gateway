@@ -19,7 +19,9 @@ IU_API_KEY=op://common/anthropic/API_KEY
 
 # Tavily — still required with SEARCH_PROVIDER=sonar: it is fetchPage's Extract fallback
 # and the per-call fallback when a Sonar search fails.
-TAVILY_API_KEY=op://vps/research-gateway/TAVILY_API_KEY
+# Shared item, NOT a gateway-specific one — see DEPLOY.md step 1. The live VPS .env.tpl
+# has always used this ref; the gateway-scoped one written here did not exist.
+TAVILY_API_KEY=op://common/tavily/API_KEY
 
 # Context7 (optional)
 CONTEXT7_API_KEY=op://vps/research-gateway/CONTEXT7_API_KEY
