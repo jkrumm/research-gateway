@@ -227,23 +227,69 @@ Three findings that outlast the tuning:
 |-|-|-|
 | 1. `@mozilla/readability` | ordinary article pages | serves the large majority |
 | 2. site adapter | pages the generic path structurally cannot read | `site-adapters.ts`; Reddit today |
-| 3. Jina Reader | pages whose text is not in the HTML at all | opt-in via `JINA_ENABLED` |
-| 4. Tavily Extract | static pages Readability could not parse | costs a credit |
+| 3. lightpanda sidecar | pages whose text is not in the HTML at all | self-hosted browser; on when `LIGHTPANDA_URL` is set |
+| 4. Jina Reader | same, via a third party | rollback for step 3; `JINA_ENABLED` |
+| 5. Tavily Extract | static pages Readability could not parse | costs a credit |
 
 The ordering is the point. A site adapter runs first because it is deterministic and free.
-Jina sits ahead of Tavily because it handles the one failure Tavily cannot — text that was
+Rendering sits ahead of Tavily because it handles the one failure Tavily cannot — text that was
 never sent — while Tavily remains better for a page that *is* static but awkwardly structured.
 
-Jina renders server-side, so it adds **zero** image size and zero RAM here. That mattered:
-this container runs under a 512 MiB limit at ~151 MiB, so bundling Playwright (300–500 MB per
-page) does not fit, and a Browserless sidecar is a 1.25–2.8 GB image for a few percentage
-points of fetch failures. Cloudflare Browser Rendering has the same zero footprint but
-announces itself as a bot by cryptographic signature and is capped at 1 request / 10s free.
+### Rendering JavaScript
 
-Both Jina and Reddit share a failure shape worth knowing: **HTTP 200 with the failure in the
-body**. Jina answers a blocked target with `Warning: Target URL returned error 403` and a page
-reading "You've been blocked by network security". Taking that at face value would let a
-citation rest on it, so it is detected and treated as a failure.
+Step 3 runs [lightpanda](https://github.com/lightpanda-io/browser) 0.3.6 in a sidecar container
+(`lightpanda/`), reached over a private Docker network. On the page that motivated this — 
+`techempower.com/benchmarks`, which serves a 2,003-byte shell to a plain fetch — it returns
+**4,626 chars where Jina returns 1,030**, and it does so without showing a third party which
+URLs this service reads and without a per-minute quota. Jina stays wired behind it as a
+one-env-var rollback.
+
+It is a **separate container**, and that is the measured part. Peak RSS is 100–205 MB per
+render, and **479 MB** on a real page (`bun.com/docs`) without a heap cap. The gateway runs at
+~151 MiB under a 512 MiB limit, so one uncapped render inside it is an OOM kill of the service
+— which, with the job store it has, takes every in-flight research job with it. In its own
+cgroup the same event costs one fetch, which falls through to Tavily. (The binary is also
+glibc-linked and cannot execute on the gateway's alpine base at all.) Sizing: `mem_limit: 768m`
+against 3 concurrent renders × 205 MB + ~50 MB of wrapper.
+
+`--v8-max-heap-mb 64` is the flag that makes that sizing hold. Measured across 8 real pages at
+32 / 64 / uncapped:
+
+| cap | content vs uncapped | worst RSS | worst wall |
+|-|-|-|-|
+| 32 | **lossy** — 2,517 chars where uncapped gives 4,627 | 90 MB | 5.4s |
+| 64 | byte-identical on all 8 | 205 MB | 9.3s |
+| none | — | 479 MB | 32.2s |
+
+Capping at 32 would have silently dropped 45% of the techempower page while landing well above
+the 200-char floor, so nothing downstream would have noticed. 64 costs nothing and buys a 2.3×
+memory bound and a 3.5× speedup, because V8 spends the difference growing a heap nothing reads.
+
+Concurrency is bounded **in the sidecar**, not the gateway: the sidecar owns the memory budget,
+and the gateway has 8 workers × 3 jobs with no single place that could enforce it. A request
+that waits more than 20s for a slot is failed fast — the fallback costs a Tavily credit and
+answers in ~2s, and the scarce resource on the gateway side is the worker step, not the credit.
+
+### Success-shaped failures
+
+Every renderer in this chain reports failure by not failing, and each shape had to be found by
+running it:
+
+| Source | What it does |
+|-|-|
+| Reddit | HTTP 200 with an 8 KB JavaScript shell |
+| Jina | HTTP 200 with `Warning: Target URL returned error 403` in the body |
+| lightpanda | **exit 0** on a dead domain, with a synthetic `# Navigation failed` markdown page as the content, and `http_status: 0` |
+| lightpanda | **exit 0** on HTTP 404 |
+| lightpanda | uncaught page-JS exceptions written to **stdout**, after the JSON — `JSON.parse` of the stream throws `Extra data` (deterministic on techempower) |
+
+Taking any of them at face value files un-retrieved text as page content and lets a citation
+rest on it. All are detected and treated as errors; the rules are unit-tested in
+`lightpanda/parse.test.ts` and `src/agent/lightpanda.test.ts` against the exact shapes measured.
+
+One more, from Bun rather than the browser: `proc.killed` is **true after a clean `exit 0`**,
+not only after a timeout kill (Bun 1.3.14). Gating the timeout branch on it turned every
+successful render into "render timed out". `proc.signalCode` is the discriminator that holds.
 
 ### What this harness can and cannot resolve
 

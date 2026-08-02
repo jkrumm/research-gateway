@@ -13,6 +13,7 @@ import { buildDirectSourceTools } from './direct-sources.js'
 import { sonarSearch, type SonarContextSize } from './sonar.js'
 import { resolveSite } from './site-adapters.js'
 import { parseJinaResponse, jinaUrl } from './jina.js'
+import { parseRenderResponse, renderUrl } from './lightpanda.js'
 import type { RetrievalLedger } from './ledger.js'
 
 const tvly = tavily({ apiKey: env.TAVILY_API_KEY })
@@ -429,7 +430,41 @@ function buildFetchPageTool(ledger: RetrievalLedger, jobId = '-'): AnyTool {
       // JavaScript-rendering step. Sits between Readability and Tavily Extract because it
       // handles the one failure Tavily cannot — a page whose text simply is not in the HTML
       // — while Tavily remains the better fallback for a page that IS static but whose
-      // structure Readability could not parse. Inert unless JINA_API_KEY is set.
+      // structure Readability could not parse.
+      //
+      // Self-hosted first, Jina second. On the page this step exists for
+      // (techempower.com/benchmarks, which serves a 2,003-byte shell to a plain fetch) the
+      // sidecar returns 4,627 chars where Jina returns 1,030 — and it does it without
+      // showing a third party which URLs this service reads, and without a per-minute
+      // quota. Jina is kept behind it as the rollback rather than deleted: this renderer is
+      // beta software, and the cost of leaving a working fallback wired up is one `if`.
+      if (env.LIGHTPANDA_URL) {
+        try {
+          const res = await fetch(renderUrl(env.LIGHTPANDA_URL), {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ url: fetchUrl }),
+            // Generous on purpose: the sidecar's own budget is a 20s queue wait plus a 35s
+            // render, and it answers a saturated queue with a fast, explicit failure. This
+            // only has to outlast that, so a slow render is never cut off by the caller.
+            signal: AbortSignal.timeout(60_000),
+          })
+          const parsed = parseRenderResponse(res.status, await res.json().catch(() => null))
+          if (parsed.ok) {
+            const text = normalizeText(parsed.text)
+            fetched.add(url)
+            ledger.recordRetrieved(url)
+            log('tool.fetchPage', { jobId, url, via: 'lightpanda', chars: text.length, rdReason, rdChars })
+            return { url, text: capText(text, TEXT_CAP) }
+          }
+          log('tool.fetchPage', { jobId, url, via: 'lightpanda', error: parsed.error })
+        } catch (err) {
+          // Never fatal — this is a fallback inside a fallback chain, and the sidecar being
+          // down must degrade this step, not the job.
+          log('tool.fetchPage', { jobId, url, via: 'lightpanda', error: String(err) })
+        }
+      }
+
       if (env.JINA_ENABLED) {
         try {
           // Force the full browser engine. Jina otherwise picks between a lightweight

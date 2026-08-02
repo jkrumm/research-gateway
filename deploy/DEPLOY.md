@@ -113,6 +113,37 @@ JOB=$(curl -sS -X POST "$BASE/research" \
 curl -sS "$BASE/research/$JOB" -H "Authorization: Bearer $TOKEN" | jq   # poll until status=done
 ```
 
+## 6. The JavaScript-rendering sidecar (first run only)
+
+`lightpanda/` builds a **second image**, `research-gateway-lightpanda`, deployed by its own
+workflow (`.github/workflows/deploy-lightpanda.yml`) so a browser-version bump does not restart
+the gateway and kill in-flight jobs. Two consequences on a fresh server, both one-time:
+
+- **RollHook tags by git SHA and never moves `:latest`**, so CI alone never produces the
+  `:latest` tag `compose.yml` defaults to. `make research-gateway-bootstrap-image` builds and
+  pushes both images (it was extended for this) — run it before the first
+  `make research-gateway-up`.
+- **The first `deploy-lightpanda.yml` run fails at the deploy step** if it lands before that
+  container exists: the image builds and pushes fine, but RollHook has nothing to roll and
+  nothing to authorize the `rollhook.allowed_repos` label against. Bootstrap, bring the stack
+  up, then re-run the workflow (`gh workflow run deploy-lightpanda.yml`) — it succeeds from
+  then on. Expect exactly one red run in Actions the first time; it is not a code failure.
+
+The sidecar needs **no secret and no `.env` entry**. It is reached over a compose-private
+`render` network, and `LIGHTPANDA_URL` is set in `compose.yml`, not `.env.tpl` — the network is
+what stands in for authentication, since the service's whole job is to fetch a URL it is given.
+Unsetting `LIGHTPANDA_URL` takes the renderer out of the fetch chain without a gateway rebuild.
+
+Verify after deploying — the check that matters is a page whose text is not in its HTML:
+
+```bash
+ssh vps 'docker exec $(docker ps -qf name=research-gateway-lightpanda) \
+  curl -sS -m 90 -X POST http://localhost:7781/render \
+  -H "content-type: application/json" \
+  -d "{\"url\":\"https://www.techempower.com/benchmarks/\"}"' | head -c 200
+# expect {"ok":true,...} with ~4600 chars — a plain fetch of that URL returns a 2 KB shell
+```
+
 ## Notes / caveats
 
 - **Job store persists to SQLite (status-only, heartbeat-reaped).** Job records (status,

@@ -5,6 +5,9 @@ node_modules
 .env.local
 .env.local.tpl
 deploy
+# The renderer sidecar is its own image with its own context (lightpanda/.dockerignore);
+# nothing in the gateway image comes from there.
+lightpanda
 *.log
 PRD.md
 README.md

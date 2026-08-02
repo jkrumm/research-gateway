@@ -1,0 +1,4 @@
+# Governs the `lightpanda` build context (docker build -f lightpanda/Dockerfile lightpanda),
+# NOT the repo root — the root .dockerignore governs the gateway image and cannot see this
+# directory's build.
+*.test.ts

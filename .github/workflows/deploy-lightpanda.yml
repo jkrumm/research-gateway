@@ -1,0 +1,49 @@
+name: Deploy lightpanda sidecar
+
+# The renderer ships on its own schedule. Pinning a new browser version has nothing to do with
+# a gateway release, and the image carries a 153 MB download — rebuilding it on every gateway
+# push would be pure waste. So this workflow watches only lightpanda/, and deploy.yml watches
+# everything else.
+#
+# A push touching BOTH directories starts both workflows; they build different images and
+# rolling-update different containers, so they do not fight. The gateway restart still kills
+# in-flight jobs (in-memory job store) — the sidecar restart does not, because a research job
+# holds no state there.
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'lightpanda/**'
+      - '.github/workflows/deploy-lightpanda.yml'
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+      - run: bun install --frozen-lockfile --ignore-scripts
+      - run: bun run typecheck
+      # Covers lightpanda/parse.test.ts — the rules that turn this renderer's several
+      # success-shaped failures (exit 0 on a dead domain, a synthetic "Navigation failed"
+      # markdown page, page exceptions printed onto stdout) into errors.
+      - run: bun test
+
+  deploy:
+    needs: check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jkrumm/rollhook-action@v1
+        with:
+          url: https://rollhook.jkrumm.com
+          image_name: research-gateway-lightpanda
+          dockerfile: lightpanda/Dockerfile
+          context: lightpanda

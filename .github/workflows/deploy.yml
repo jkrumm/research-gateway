@@ -10,10 +10,15 @@ on:
     #
     # Only markdown and repo metadata. deploy/compose.yml and deploy/.env.tpl are not .md,
     # so a real deployment change still triggers normally.
+    #
+    # lightpanda/ is ignored here for the same reason: the renderer is a separate image with
+    # its own workflow (deploy-lightpanda.yml), and restarting the gateway to ship a change
+    # that is not in the gateway image is the exact mistake this list exists to prevent.
     paths-ignore:
       - '**.md'
       - LICENSE
       - .gitignore
+      - 'lightpanda/**'
   workflow_dispatch:
 
 permissions:

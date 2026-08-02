@@ -16,6 +16,10 @@ services:
     environment:
       PORT: 7780
       NODE_ENV: production
+      # The JavaScript-rendering sidecar below. Deliberately NOT in .env: it is not a secret,
+      # and the gateway is meant to be readable without materializing one. Unset it to take
+      # the renderer out of the fetch chain without redeploying the gateway image.
+      LIGHTPANDA_URL: http://research-gateway-lightpanda:7781
     mem_limit: 512m
     security_opt:
       - no-new-privileges:true
@@ -24,6 +28,11 @@ services:
     networks:
       - proxy
       - monitoring-net
+      - render
+    # NO `depends_on` on the renderer, on purpose. It is one optional step inside a fallback
+    # chain — a gateway that refuses to start because the browser sidecar is unhealthy would
+    # trade a few percent of fetch quality for a total outage. The gateway treats an
+    # unreachable sidecar as a failed render and falls through to Tavily Extract.
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:7780/health"]
       interval: 10s
@@ -47,11 +56,62 @@ services:
       # rollhook OIDC authorization — only this repo may deploy this container
       - "rollhook.allowed_repos=jkrumm/research-gateway"
 
+  # JavaScript rendering — a self-hosted browser engine, replacing Jina Reader. Built from the
+  # same repo but as its own image (lightpanda/Dockerfile,
+  # .github/workflows/deploy-lightpanda.yml), because a browser-version bump and a gateway
+  # release have nothing to do with each other.
+  #
+  # It is a separate CONTAINER rather than a process in the gateway for one measured reason:
+  # peak RSS per render is 100-205 MB, and 479 MB on a real page without the V8 heap cap the
+  # sidecar applies. Inside the gateway's 512 MiB that is an OOM kill of the whole service —
+  # and with an in-memory job store, every in-flight research job dies with it. Out here, the
+  # same event costs one fetch, which falls through to Tavily Extract. (The binary is also
+  # glibc-linked and cannot run on the gateway's alpine base at all.)
+  research-gateway-lightpanda:
+    image: ${RESEARCH_GATEWAY_LIGHTPANDA_IMAGE:-rollhook.jkrumm.com/research-gateway-lightpanda:latest}
+    restart: unless-stopped
+    environment:
+      PORT: 7781
+      NODE_ENV: production
+      # This number and mem_limit below are one decision, not two: 3 x the measured 205 MB
+      # worst-case render + ~50 MB for the Bun wrapper = ~665 MB. Change one, recompute the
+      # other. The reasoning and the measurements are in lightpanda/server.ts.
+      RENDER_MAX_CONCURRENCY: 3
+    mem_limit: 768m
+    # The wrapper spawns one browser process per render and SIGKILLs the ones that overrun,
+    # so PID 1 here actually has children to reap.
+    init: true
+    security_opt:
+      - no-new-privileges:true
+    # Only `render` — no `proxy`, so Traefik cannot route to it and nothing outside this pair
+    # can reach it. It still gets NAT egress from this bridge, which it needs: its whole job is
+    # fetching public pages.
+    networks:
+      - render
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:7781/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 5s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    labels:
+      - "com.centurylinklabs.watchtower.enable=false"
+      - "rollhook.allowed_repos=jkrumm/research-gateway"
+
 networks:
   proxy:
     external: true
   monitoring-net:
     external: true
+  # Private to this pair — created by compose, not shared with the rest of the VPS. This is
+  # what stands in for authentication on the sidecar: it takes a URL and fetches it, so the set
+  # of things able to talk to it is the control that matters.
+  render:
 
 volumes:
   research-gateway-data:

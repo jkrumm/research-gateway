@@ -47,7 +47,20 @@ const Env = z.object({
     .trim()
     .optional()
     .transform((v) => (v ? v : undefined)),
-  // Jina Reader — the JavaScript-rendering step in fetchPage's chain (see agent/jina.ts).
+  // The JavaScript-rendering sidecar — a self-hosted browser engine, and the step that
+  // replaced Jina Reader as fetchPage's renderer (see agent/lightpanda.ts, lightpanda/).
+  //
+  // Base URL of the sidecar, e.g. http://research-gateway-lightpanda:7781. Unset makes the
+  // step inert, exactly like JINA_ENABLED — the gateway must be able to run without the
+  // sidecar, both in local dev and if the container fails to come up in production. The two
+  // renderers are ordered, not exclusive: Jina stays wired behind its own flag as the
+  // rollback, so if this one has to be pulled, that is one env var and no deploy.
+  LIGHTPANDA_URL: z
+    .string()
+    .trim()
+    .optional()
+    .transform((v) => (v ? v.replace(/\/+$/, '') : undefined)),
+  // Jina Reader — the previous JavaScript-rendering step in fetchPage's chain (agent/jina.ts).
   //
   // This flag, not the API key, is the switch. Enabling it means the URLs this service
   // fetches become visible to a third party, which is a decision to take explicitly — but

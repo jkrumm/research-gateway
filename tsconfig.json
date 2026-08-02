@@ -19,5 +19,5 @@
     "lib": ["es2023"],
     "types": ["bun-types"]
   },
-  "include": ["src"]
+  "include": ["src", "lightpanda"]
 }
