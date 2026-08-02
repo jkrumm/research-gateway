@@ -12,6 +12,7 @@ import { normalizeText, capText, TEXT_CAP } from './extract.js'
 import { buildDirectSourceTools } from './direct-sources.js'
 import { sonarSearch, type SonarContextSize } from './sonar.js'
 import { rewriteFetchUrl } from './fetch-url.js'
+import { extractRedditThread } from './extract-reddit.js'
 import type { RetrievalLedger } from './ledger.js'
 
 const tvly = tavily({ apiKey: env.TAVILY_API_KEY })
@@ -403,14 +404,21 @@ function buildFetchPageTool(ledger: RetrievalLedger, jobId = '-'): AnyTool {
         if (res.ok) {
           const html = await res.text()
           const { document } = parseHTML(html)
-          const article = new Readability(document as unknown as ConstructorParameters<typeof Readability>[0]).parse()
-          const raw = article?.textContent?.trim()
+          // Reddit threads go through a dedicated extractor: Readability keeps the
+          // submission and throws the comment tree away, which on a measured 1814-comment
+          // thread is 2,729 chars kept vs 37,963 discarded. Returns null on anything that
+          // isn't a thread, so this falls through to Readability unchanged.
+          const reddit = fetchUrl === url ? null : extractRedditThread(document as never)
+          const article = reddit
+            ? null
+            : new Readability(document as unknown as ConstructorParameters<typeof Readability>[0]).parse()
+          const raw = reddit ?? article?.textContent?.trim()
           const text = raw ? normalizeText(raw) : raw
           rdChars = text?.length ?? 0
           if (text && text.length >= 200) {
             fetched.add(url)
             ledger.recordRetrieved(url)
-            log('tool.fetchPage', { jobId, url, via: 'readability', chars: text.length })
+            log('tool.fetchPage', { jobId, url, via: reddit ? 'reddit' : 'readability', chars: text.length })
             return { url, text: capText(text, TEXT_CAP) }
           }
         }
