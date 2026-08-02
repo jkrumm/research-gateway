@@ -11,6 +11,7 @@ import { reportTavilyUsage, reportSonarUsage } from '../lib/usage.js'
 import { normalizeText, capText, TEXT_CAP } from './extract.js'
 import { buildDirectSourceTools } from './direct-sources.js'
 import { sonarSearch, type SonarContextSize } from './sonar.js'
+import { rewriteFetchUrl } from './fetch-url.js'
 import type { RetrievalLedger } from './ledger.js'
 
 const tvly = tavily({ apiKey: env.TAVILY_API_KEY })
@@ -378,9 +379,16 @@ function buildFetchPageTool(ledger: RetrievalLedger, jobId = '-'): AnyTool {
         return { url, text: 'Already fetched earlier in this conversation — reuse the previous result for this URL.' }
       }
 
-      // SSRF guard — refuse any non-public URL before making any fetch
+      // Some hosts must be fetched at a different address than the one the model was
+      // given (see fetch-url.ts). Everything below fetches `fetchUrl`; everything the
+      // ledger and the caller see stays `url`, because that is what a citation will name.
+      const fetchUrl = rewriteFetchUrl(url)
+      if (fetchUrl !== url) log('tool.fetchPage', { jobId, url, via: 'rewrite', fetchUrl })
+
+      // SSRF guard — refuse any non-public URL before making any fetch. Guards the address
+      // actually dialled, not the one asked for.
       try {
-        await assertPublicHttpUrl(url)
+        await assertPublicHttpUrl(fetchUrl)
       } catch (err) {
         ledger.recordFailed(url, `refused: ${String(err)}`)
         log('tool.fetchPage', { jobId, url, via: 'refused' })
@@ -391,7 +399,7 @@ function buildFetchPageTool(ledger: RetrievalLedger, jobId = '-'): AnyTool {
       let rdReason: 'thin' | 'threw' = 'thin'
       let rdChars = 0
       try {
-        const res = await safeFetch(url, jobId)
+        const res = await safeFetch(fetchUrl, jobId)
         if (res.ok) {
           const html = await res.text()
           const { document } = parseHTML(html)
@@ -413,7 +421,7 @@ function buildFetchPageTool(ledger: RetrievalLedger, jobId = '-'): AnyTool {
 
       // Fallback: Tavily Extract
       try {
-        const ex = await tvly.extract([url], {
+        const ex = await tvly.extract([fetchUrl], {
           extractDepth: 'basic',
           format: 'markdown',
           timeout: 30,
