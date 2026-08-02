@@ -315,6 +315,30 @@ runs established that fetch-stage effects land below the job-level resolution fl
 (within-query citation cv 0.09–0.43), so a 15-run comparison could not have resolved this
 either way — while replaying the actual failing URLs answers it directly, in minutes.
 
+### Sonar and Tavily are complementary, not interchangeable
+
+Measured head-to-head on the 5-query benchmark set, 12 results each, run from the deployed
+container (2026-08-02):
+
+| | Sonar | Tavily |
+|-|-|-|
+| results | 60 | 60 |
+| unique domains | 36 | 45 |
+| shared domains | 14 | 14 |
+| results carrying a date | 60/60 | 0/60 |
+| dead or blocked (40 sampled) | 1 | 2 |
+
+**Only 14 domains overlap** — 2–3 per query out of 12 results each. The switch to Sonar was
+framed as replacing one search backend with another; it is closer to trading one slice of the
+web for a different one. Tavily surfaces *more* distinct domains (45 vs 36); Sonar dates every
+result, Tavily dates none; dead-link rates are comparable.
+
+This is answerable at the component level for the same reason the renderer was: it is a
+property of the search call, not of a whole job, so it costs cents and minutes instead of the
+80 hours a job-level A/B would need (see below). The open question it raises — whether `deep`
+should query **both** backends for roughly double the domain diversity, at the cost of Tavily
+credits on deep jobs — is a spending decision, not a measurement one.
+
 ### The price of an answer
 
 From the 45 runs, pooled within-query cv is 0.235 (citations), 0.172 (cost), 0.372 (wall),
