@@ -8,6 +8,7 @@ import { groundReport } from './ground.js'
 import type { Depth, ResearchReport, SubmittedReport, SubQuestion, WorkerDigest } from './schema.js'
 import { log } from '../lib/log.js'
 import { computeCost, emptyUsage, addUsage } from '../lib/usage.js'
+import { readSearchSpend } from './tools.js'
 import type { UsageStats } from '../lib/usage.js'
 import { env } from '../env.js'
 
@@ -210,7 +211,7 @@ export async function runResearch(
   // genuinely read, and `status`/`grounding` are counted in code. This is the invariant
   // from issue #1: a URL this run could not fetch can never back a citation.
   const jobLedger = mergeLedgers(allLedgers)
-  const report: ResearchReport = groundReport(submitted, jobLedger)
+  const grounded = groundReport(submitted, jobLedger)
 
   const wallMs = Date.now() - start
   const combined = addUsage(leadUsage, workerUsage)
@@ -233,6 +234,22 @@ export async function runResearch(
       ? null
       : (leadCost.costUsd ?? 0) + (workerCost.costUsd ?? 0)
 
+  // Search spend is read here, at the end of the run, from the same per-job meters that
+  // feed argo — so the number in the result and the number on the dashboard are the same
+  // number, not two independent accountings that can drift.
+  const search = readSearchSpend(jobId)
+  const report: ResearchReport = {
+    ...grounded,
+    cost: {
+      wallMs,
+      totalUsd: costUsd === null ? null : costUsd + search.sonarCostUsd,
+      llmUsd: costUsd,
+      searchUsd: search.sonarCostUsd,
+      searchCalls: search.sonarCalls,
+      tavilyCredits: search.tavilyCredits,
+    },
+  }
+
   log('research.done', {
     jobId,
     reason,
@@ -240,19 +257,21 @@ export async function runResearch(
     rounds: round,
     workers: workersDispatchedTotal,
     digests: allDigests.length,
-    citations: report.citations.length,
-    sources: report.sources.length,
-    status: report.status,
-    pagesRetrieved: report.grounding.pagesRetrieved,
-    pagesFailed: report.grounding.pagesFailed,
-    citationsDropped: report.grounding.citationsDropped,
-    confidenceCapped: report.grounding.confidenceCapped,
+    citations: grounded.citations.length,
+    sources: grounded.sources.length,
+    status: grounded.status,
+    pagesRetrieved: grounded.grounding.pagesRetrieved,
+    pagesFailed: grounded.grounding.pagesFailed,
+    citationsDropped: grounded.grounding.citationsDropped,
+    confidenceCapped: grounded.grounding.confidenceCapped,
     inputTokens: combined.inputTokens,
     cachedInputTokens: combined.cachedInputTokens,
     outputTokens: combined.outputTokens,
     totalTokens: combined.totalTokens,
     reasoningTokens: combined.reasoningTokens,
     costUsd,
+    searchUsd: search.sonarCostUsd,
+    searchCalls: search.sonarCalls,
     wallMs,
   })
 

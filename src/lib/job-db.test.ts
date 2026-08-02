@@ -24,6 +24,14 @@ function report(overrides: Partial<ResearchReport> = {}): ResearchReport {
     unverified: [],
     status: 'ok',
     warnings: [],
+    cost: {
+      wallMs: 1_000,
+      totalUsd: 0.01,
+      llmUsd: 0.005,
+      searchUsd: 0.005,
+      searchCalls: 1,
+      tavilyCredits: 0,
+    },
     grounding: { pagesRetrieved: 1, pagesFailed: 0, citationsKept: 1, citationsDropped: 0, confidenceCapped: 0 },
     ...overrides,
   }

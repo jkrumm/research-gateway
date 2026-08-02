@@ -51,10 +51,16 @@ const CREDIT_FLUSH_DEBOUNCE_MS = 3_000
 function createJobMeter<T>(args: {
   add: (prev: T | undefined, delta: T) => T
   flush: (jobId: string, total: T) => void
-}): (jobId: string, delta: T) => void {
+}): { add: (jobId: string, delta: T) => void; read: (jobId: string) => T | undefined } {
   const entries = new Map<string, JobMeterEntry<T>>()
 
-  return (jobId, delta) => {
+  // Same running total the debounced flush reports, readable synchronously so a finishing
+  // job can put its own search spend in its result (see run.ts). Deliberately does NOT
+  // clear the entry: the debounced flush may still be pending, and the age-based prune
+  // already owns cleanup.
+  const read = (jobId: string): T | undefined => entries.get(jobId)?.total
+
+  const add = (jobId: string, delta: T): void => {
     const now = Date.now()
     for (const [id, entry] of entries) {
       if (now - entry.lastSeenAt > STALE_JOB_MS) {
@@ -81,6 +87,8 @@ function createJobMeter<T>(args: {
 
     entries.set(jobId, entry)
   }
+
+  return { add, read }
 }
 
 // Credits a Tavily call actually billed — ground truth from the response's `usage.credits`
@@ -93,10 +101,10 @@ const meterTavily = createJobMeter<number>({
 
 function addTavilyCredits(jobId: string, credits: number): void {
   if (credits <= 0) return
-  meterTavily(jobId, credits)
+  meterTavily.add(jobId, credits)
 }
 
-interface SonarTotals {
+export interface SonarTotals {
   costUsd: number
   inputTokens: number
   outputTokens: number
@@ -117,6 +125,25 @@ const meterSonar = createJobMeter<SonarTotals>({
   flush: (jobId, total) =>
     void reportSonarUsage({ jobId, model: env.SONAR_MODEL, ...total }),
 })
+
+// Per-job search spend, readable when a job finishes so it can travel in the job's own
+// result instead of only reaching argo. Without this the only way to price a single run was
+// to difference argo's cumulative counter between jobs — which works exactly as long as no
+// two jobs overlap, i.e. not at RESEARCH_MAX_CONCURRENCY > 1, and never for a client.
+export interface JobSearchSpend {
+  sonarCostUsd: number
+  sonarCalls: number
+  tavilyCredits: number
+}
+
+export function readSearchSpend(jobId: string): JobSearchSpend {
+  const sonar = meterSonar.read(jobId)
+  return {
+    sonarCostUsd: sonar?.costUsd ?? 0,
+    sonarCalls: sonar?.searchCalls ?? 0,
+    tavilyCredits: meterTavily.read(jobId) ?? 0,
+  }
+}
 
 async function safeFetch(startUrl: string, jobId = '-', maxHops = 3): Promise<Response> {
   let current = startUrl
@@ -169,7 +196,7 @@ async function searchViaSonar(args: {
     maxResults: args.maxResults,
   })
 
-  meterSonar(args.jobId, {
+  meterSonar.add(args.jobId, {
     costUsd: r.usage.costUsd,
     inputTokens: r.usage.inputTokens,
     outputTokens: r.usage.outputTokens,

@@ -35,6 +35,29 @@ export const SubmittedReport = z.object({
 })
 export type SubmittedReport = z.infer<typeof SubmittedReport>
 
+// What one run cost, counted in code alongside `grounding`. This exists because the only
+// way to price a single job used to be differencing argo's cumulative counter between
+// jobs — which is only correct while no two jobs overlap (i.e. not at
+// RESEARCH_MAX_CONCURRENCY > 1) and was never available to a caller at all. Telemetry to
+// argo is unchanged; this is the same numbers, delivered with the result.
+export const RunCost = z.object({
+  wallMs: z.number().describe('End-to-end duration of the run in milliseconds.'),
+  totalUsd: z
+    .number()
+    .nullable()
+    .describe('llmUsd + searchUsd. Null when the LLM rate table has no entry for the configured model.'),
+  llmUsd: z
+    .number()
+    .nullable()
+    .describe('Lead + worker token spend, computed from the local rate table (cache-aware).'),
+  searchUsd: z.number().describe("Web-search spend, as reported by the vendor's own per-call cost."),
+  searchCalls: z.number().describe('Billed search calls this run — cache hits excluded.'),
+  tavilyCredits: z
+    .number()
+    .describe('Tavily credits consumed (page extraction, plus any search that fell back). Not priced — no verified USD-per-credit rate exists.'),
+})
+export type RunCost = z.infer<typeof RunCost>
+
 // Machine-checked evidence accounting for the run. Every number here is counted in code
 // from what the fetch tools actually returned, so a caller can weigh the report without
 // trusting the model's own account of its work.
@@ -64,6 +87,9 @@ export const ResearchReport = SubmittedReport.extend({
     .default([])
     .describe('Human-readable notes about degraded evidence for this run. Empty on a clean run.'),
   grounding: Grounding.describe('Machine-checked evidence accounting — counted in code, not asserted by the model.'),
+  cost: RunCost.describe(
+    'What this single run actually cost and how long it took — counted in code. Search spend is the vendor-reported USD, LLM spend is computed from the rate table.',
+  ),
 })
 export type ResearchReport = z.infer<typeof ResearchReport>
 
