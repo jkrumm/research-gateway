@@ -123,11 +123,19 @@ the gateway and kill in-flight jobs. Two consequences on a fresh server, both on
   `:latest` tag `compose.yml` defaults to. `make research-gateway-bootstrap-image` builds and
   pushes both images (it was extended for this) — run it before the first
   `make research-gateway-up`.
-- **The first `deploy-lightpanda.yml` run fails at the deploy step** if it lands before that
-  container exists: the image builds and pushes fine, but RollHook has nothing to roll and
-  nothing to authorize the `rollhook.allowed_repos` label against. Bootstrap, bring the stack
-  up, then re-run the workflow (`gh workflow run deploy-lightpanda.yml`) — it succeeds from
-  then on. Expect exactly one red run in Actions the first time; it is not a code failure.
+- **The first `deploy-lightpanda.yml` run cannot deploy** if it lands before that container
+  exists. It fails at the *token* step, before build or push, with:
+
+  ```
+  POST /auth/token failed (403): service not found — ensure the app is running
+  before requesting a registry credential
+  ```
+
+  RollHook has nothing to roll and nothing to authorize the `rollhook.allowed_repos` label
+  against. Bootstrap and `make research-gateway-up` is the fix. Observed on 2026-08-02: the
+  deploy step retries, so a run that failed at 20:20 went green on its own at 20:28 once the
+  container was up — no manual `gh workflow run` was needed. If it does not recover, dispatch
+  it by hand. Either way it is not a code failure.
 
 The sidecar needs **no secret and no `.env` entry**. It is reached over a compose-private
 `render` network, and `LIGHTPANDA_URL` is set in `compose.yml`, not `.env.tpl` — the network is
