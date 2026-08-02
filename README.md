@@ -214,7 +214,18 @@ Three findings that outlast the tuning:
   HTTP 200 and an 8 KB JavaScript shell. `fetch-url.ts` now fetches those through
   `old.reddit.com` (267 KB of real HTML for the same thread) while the ledger keeps the
   original URL, so citations still ground. The remaining failures are genuine — dead domains,
-  404s, paywalls.
+  404s, paywalls. A 15-run re-measurement after the fix: fetch failure rate 13.4% → 10.8%,
+  **Tavily credits 12 → 7 across the whole matrix** (the predicted mechanism — no more
+  Extract calls wasted on shells), cost unchanged, and no resolvable change in citations.
+
+### What this harness can and cannot resolve
+
+At 3 repetitions per query, the resolvable effect size (2 × standard error, as a share of that
+query's mean) is **±7% to ±55% for citations** and **±10% to ±38% for cost**, depending on the
+query. So: a 20%+ cost change is measurable, a 5% citation change is not — and a single run
+resolves nothing at all. Raise `--reps` before trying to defend a small effect, and expect the
+occasional degenerate run (one q0 run did 3 searches and 7 pages where its siblings did 14–15
+and 29–51); report those rather than dropping them silently.
 - **Pages predict citations far better than searches do.** Pages-read correlates with citations
   at r=+0.78; searches-issued reaches only +0.52, and does so *through* pages (searches→pages
   r=+0.49). Yield decays with volume: 3.8 pages per search on the query that searched least,
