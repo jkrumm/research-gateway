@@ -35,6 +35,11 @@ CONTEXT7_API_KEY=op://vps/research-gateway/CONTEXT7_API_KEY
 # only after seeding, or `bun run dev` fails on a cache miss.
 # GITHUB_TOKEN=op://vps/research-gateway/GITHUB_TOKEN
 
+# Jina Reader (OPTIONAL — JavaScript rendering step in fetchPage, inert until set).
+# Enabling it means the URLs this service fetches become visible to a third party; that is
+# why it is opt-in rather than on by default. Free key raises 20 RPM -> 500 RPM.
+# JINA_API_KEY=op://vps/research-gateway/JINA_API_KEY
+
 # Telemetry → argo POST /usage/records (ARGO_API_SECRET = argo's shared bearer)
 ARGO_USAGE_URL=https://argo.jkrumm.com/api/usage/records
 ARGO_API_SECRET=op://common/api/SECRET

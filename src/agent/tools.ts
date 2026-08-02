@@ -12,6 +12,7 @@ import { normalizeText, capText, TEXT_CAP } from './extract.js'
 import { buildDirectSourceTools } from './direct-sources.js'
 import { sonarSearch, type SonarContextSize } from './sonar.js'
 import { resolveSite } from './site-adapters.js'
+import { parseJinaResponse, jinaUrl } from './jina.js'
 import type { RetrievalLedger } from './ledger.js'
 
 const tvly = tavily({ apiKey: env.TAVILY_API_KEY })
@@ -423,6 +424,41 @@ function buildFetchPageTool(ledger: RetrievalLedger, jobId = '-'): AnyTool {
       } catch {
         // fetch or linkedom failed — fall through to Tavily Extract
         rdReason = 'threw'
+      }
+
+      // JavaScript-rendering step. Sits between Readability and Tavily Extract because it
+      // handles the one failure Tavily cannot — a page whose text simply is not in the HTML
+      // — while Tavily remains the better fallback for a page that IS static but whose
+      // structure Readability could not parse. Inert unless JINA_API_KEY is set.
+      if (env.JINA_API_KEY) {
+        try {
+          const res = await fetch(jinaUrl(fetchUrl), {
+            headers: {
+              Authorization: `Bearer ${env.JINA_API_KEY}`,
+              // Force the full browser engine. Jina otherwise picks between a lightweight
+              // fetcher and headless Chrome, and the lightweight one returns exactly the
+              // shell this step exists to get past.
+              'x-engine': 'browser',
+            },
+            signal: AbortSignal.timeout(30_000),
+          })
+          if (res.ok) {
+            const parsed = parseJinaResponse(await res.text())
+            if (parsed.ok) {
+              const text = normalizeText(parsed.text)
+              fetched.add(url)
+              ledger.recordRetrieved(url)
+              log('tool.fetchPage', { jobId, url, via: 'jina', chars: text.length, rdReason, rdChars })
+              return { url, text: capText(text, TEXT_CAP) }
+            }
+            log('tool.fetchPage', { jobId, url, via: 'jina', error: parsed.error })
+          } else {
+            log('tool.fetchPage', { jobId, url, via: 'jina', error: `HTTP ${res.status}` })
+          }
+        } catch (err) {
+          // Never fatal — this is a fallback inside a fallback chain.
+          log('tool.fetchPage', { jobId, url, via: 'jina', error: String(err) })
+        }
       }
 
       // Fallback: Tavily Extract

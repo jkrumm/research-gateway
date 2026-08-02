@@ -47,6 +47,20 @@ const Env = z.object({
     .trim()
     .optional()
     .transform((v) => (v ? v : undefined)),
+  // Jina Reader — the JavaScript-rendering step in fetchPage's chain (see agent/jina.ts).
+  // OPT-IN: the step is inert until this is set, because enabling it means the URLs this
+  // service fetches become visible to a third party. r.jina.ai also serves anonymous
+  // callers at 20 RPM, but requiring the key keeps that trade an explicit decision rather
+  // than a default, and lifts the limit to 500 RPM.
+  //
+  // Empty-as-unset for the same reason as GITHUB_TOKEN above: `op inject` renders an empty
+  // 1Password field as `JINA_API_KEY=`, and sending `Authorization: Bearer ` is worse than
+  // sending nothing.
+  JINA_API_KEY: z
+    .string()
+    .trim()
+    .optional()
+    .transform((v) => (v ? v : undefined)),
   ARGO_USAGE_URL: z.url().optional(),
   ARGO_API_SECRET: z.string().optional(),
   RESEARCH_MAX_CONCURRENCY: z.coerce.number().default(3),

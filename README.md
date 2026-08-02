@@ -25,9 +25,8 @@ server-side. See [`PRD.md`](./PRD.md) for the full rationale and decisions.
     (Context7, when `CONTEXT7_API_KEY` is set). These answer a question exactly instead of
     approximately, and workers are told to reach for them first.
   - *Open-web research* — `searchWeb` (Perplexity Sonar over the IU endpoint by default;
-    Tavily as the per-call fallback), plus fetch + `@mozilla/readability` (→ Tavily Extract
-    fallback on thin content), for everything the lookups cannot answer. See
-    [Web search backend](#web-search-backend).
+    Tavily as the per-call fallback), plus `fetchPage`, for everything the lookups cannot
+    answer. See [Web search backend](#web-search-backend) and [Fetching pages](#fetching-pages).
 - **Grounding:** a retrieval ledger records what each tool actually returned — `retrieved`
   (full text), `snippet` (search result only), `failed` (fetch attempted and lost). Findings
   and citations are gated against it in code at both the worker and job boundary, so a page
@@ -115,6 +114,7 @@ bun test           # pure-function tests; needs no secrets
 | `SEARCH_PROVIDER` | no (`sonar`) | `sonar` \| `tavily` — which backend `searchWeb` uses. See [Web search backend](#web-search-backend) |
 | `SONAR_MODEL` | no (`sonar`) | pinned; not a menu — see the note in `env.ts` before changing it |
 | `TAVILY_API_KEY` | yes | required even on `sonar`: it is the Extract fallback inside `fetchPage` and the per-call search fallback. Credits are hard-limited |
+| `JINA_API_KEY` | no | enables the JavaScript-rendering step in `fetchPage`. **Opt-in on purpose** — it makes the URLs this service fetches visible to a third party. Inert when unset |
 | `CONTEXT7_API_KEY` | no | enables the `libraryDocs` tool when set. Free, and the best source for library questions |
 | `GITHUB_TOKEN` | no | the `githubFile`/`githubRepo`/`findPackages` tools work without it, but anonymous GitHub is **60 req/h per IP** shared across all jobs; a no-scope token raises it to 5000/h |
 | `ARGO_USAGE_URL` / `ARGO_API_SECRET` | no | telemetry → argo `POST /usage/records`; no-op if unset |
@@ -217,6 +217,32 @@ Three findings that outlast the tuning:
   404s, paywalls. A 15-run re-measurement after the fix: fetch failure rate 13.4% → 10.8%,
   **Tavily credits 12 → 7 across the whole matrix** (the predicted mechanism — no more
   Extract calls wasted on shells), cost unchanged, and no resolvable change in citations.
+
+## Fetching pages
+
+`fetchPage` walks a chain and stops at the first step that yields real text:
+
+| Step | Handles | Notes |
+|-|-|-|
+| 1. `@mozilla/readability` | ordinary article pages | serves the large majority |
+| 2. site adapter | pages the generic path structurally cannot read | `site-adapters.ts`; Reddit today |
+| 3. Jina Reader | pages whose text is not in the HTML at all | opt-in via `JINA_API_KEY` |
+| 4. Tavily Extract | static pages Readability could not parse | costs a credit |
+
+The ordering is the point. A site adapter runs first because it is deterministic and free.
+Jina sits ahead of Tavily because it handles the one failure Tavily cannot — text that was
+never sent — while Tavily remains better for a page that *is* static but awkwardly structured.
+
+Jina renders server-side, so it adds **zero** image size and zero RAM here. That mattered:
+this container runs under a 512 MiB limit at ~151 MiB, so bundling Playwright (300–500 MB per
+page) does not fit, and a Browserless sidecar is a 1.25–2.8 GB image for a few percentage
+points of fetch failures. Cloudflare Browser Rendering has the same zero footprint but
+announces itself as a bot by cryptographic signature and is capped at 1 request / 10s free.
+
+Both Jina and Reddit share a failure shape worth knowing: **HTTP 200 with the failure in the
+body**. Jina answers a blocked target with `Warning: Target URL returned error 403` and a page
+reading "You've been blocked by network security". Taking that at face value would let a
+citation rest on it, so it is detected and treated as a failure.
 
 ### What this harness can and cannot resolve
 
