@@ -92,14 +92,19 @@ export const profiles: Record<Depth, DepthProfile> = {
     // this tier sits too close to `quick`; 12 is the deliberate middle, chosen so standard
     // is visibly more than quick without competing with deep.
     maxSearchResults: 12,
-    // 3, cut from 4 on 15 benchmarked runs (scripts/bench.ts, 5 queries x 3 reps). Across
-    // those runs pages-read correlates with citations at r=+0.78 while searches-issued
-    // manages only +0.52 — and searches only reach citations THROUGH pages (searches->pages
-    // r=+0.49). Yield also falls as search volume rises: 3.8 pages per search on the query
-    // that searched least, 1.7 on the one that searched most. The two queries that ran into
-    // the old 4x4=16 ceiling were exactly the two with the worst yield, i.e. the budget was
-    // binding precisely where extra searching had stopped paying.
-    maxSearches: 3,
+    // 4, and it was measured rather than guessed — including one round trip through being
+    // wrong. Correlations over 15 runs said searching buys little: pages-read predicts
+    // citations at r=+0.78, searches-issued only +0.52, and yield decays with volume (3.8
+    // pages per search on the query that searched least, 1.7 on the one that searched most).
+    // That argued for 3. A 14-run A/B at 3 refuted it: cost fell 13.6% but citations fell
+    // 9.0% and did so on 5 of 5 queries — individually inside the noise, but a 5/5 sign
+    // agreement is not (p ~ 0.06 under a coin flip). One query lost 17.9% of its citations
+    // while its cost went UP 6.3%.
+    //
+    // So it is a trade, not a saving, and it is the wrong way round for this service: search
+    // is billed to the IU work key while report quality is the whole product. Spend the
+    // cheap resource. Revisit only if IU spend ever becomes the binding constraint.
+    maxSearches: 4,
     directive:
       'STANDARD pass — search, then read the 2-3 most relevant pages for your sub-question. Cross-verify across at least 2 independent sources.',
   },

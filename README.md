@@ -208,11 +208,17 @@ Three findings that outlast the tuning:
 - **Tavily is dormant** — 12 credits across all 15 runs, touched by only 5 of them. That is
   the Sonar migration's real result: search left the personal key, and Tavily is back to
   being the Extract fallback it was meant to be.
-- **Pages produce citations; searches do not.** Across the 15 runs, pages-read correlates with
-  citations at r=+0.78 while searches-issued reaches only +0.52 — and searches reach citations
-  *through* pages (searches→pages r=+0.49). Yield decays with volume: 3.8 pages per search on
-  the query that searched least, 1.7 on the one that searched most. This is why `maxSearches`
-  is deliberately tight rather than generous.
+- **Pages predict citations far better than searches do.** Pages-read correlates with citations
+  at r=+0.78; searches-issued reaches only +0.52, and does so *through* pages (searches→pages
+  r=+0.49). Yield decays with volume: 3.8 pages per search on the query that searched least,
+  1.7 on the one that searched most.
+
+That last finding argued for a tighter search budget, so it was tested rather than assumed —
+and the test refuted it. A 14-run arm at `maxSearches: 3` cut cost 13.6% but cut citations
+9.0%, **down on 5 of 5 queries** (individually inside the noise; a 5/5 sign agreement is not).
+One query lost 17.9% of its citations while its cost rose 6.3%. So it is a trade, not a
+saving — and the wrong way round here, since search bills the IU work key while report quality
+is the product. `maxSearches` stayed at 4. Revisit if IU spend ever becomes binding.
 
 ## Telemetry
 
