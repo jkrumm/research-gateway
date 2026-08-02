@@ -181,6 +181,39 @@ kept, and they enter the ledger at the `snippet` tier like any other search hit 
 Sonar asserts can be cited as verified. `max_tokens` is pinned at 16 (the API's floor; it 400s
 below that) to pay for as little discarded generation as possible.
 
+## Measured baseline
+
+`standard`, 15 runs — 5 heterogeneous queries x 3 repetitions via
+[`scripts/bench.ts`](./scripts/bench.ts) against the live gateway, 2026-08-02:
+
+| metric | mean | sd | cv | min | max |
+|-|-|-|-|-|-|
+| wall (s) | 354 | 223 | 0.63 | 131 | 777 |
+| total ($) | 0.0891 | 0.0257 | 0.29 | 0.0363 | 0.1212 |
+| search ($) | 0.0523 | 0.0186 | 0.36 | 0.0151 | 0.0754 |
+| searches | 10.4 | 3.7 | 0.36 | 3 | 15 |
+| citations | 38.4 | 16.9 | 0.44 | 14 | 66 |
+| pages | 24.7 | 8.0 | 0.32 | 10 | 37 |
+
+**Read the within-query spread, not the table, before believing a config change.** Per query
+(n=3): wall cv 0.11–0.77, cost cv 0.08–0.33, citations cv 0.06–0.47. Cost is the trustworthy
+metric — a >25% difference is probably real. Citations are usable with care. **Wall-clock is
+not usable for config decisions**: one query spanned 206s to 779s on identical configuration.
+Several tuning claims in this repo's history were made from single runs and did not survive
+being measured properly; that is what the harness exists to prevent.
+
+Three findings that outlast the tuning:
+
+- **Search is 59% of a standard job's cost** ($0.052 of $0.089). LLM is 41%.
+- **Tavily is dormant** — 12 credits across all 15 runs, touched by only 5 of them. That is
+  the Sonar migration's real result: search left the personal key, and Tavily is back to
+  being the Extract fallback it was meant to be.
+- **Pages produce citations; searches do not.** Across the 15 runs, pages-read correlates with
+  citations at r=+0.78 while searches-issued reaches only +0.52 — and searches reach citations
+  *through* pages (searches→pages r=+0.49). Yield decays with volume: 3.8 pages per search on
+  the query that searched least, 1.7 on the one that searched most. This is why `maxSearches`
+  is deliberately tight rather than generous.
+
 ## Telemetry
 
 Each job reports spend to argo `POST /usage/records` as `source: "research-gateway"`,
