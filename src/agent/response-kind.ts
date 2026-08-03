@@ -4,7 +4,7 @@
 // 2026-08-03 by scripts/fetch-bench.ts and both cheap to get wrong silently.
 //
 // Dependency-free by design (no env/log/fetch import) so it stays unit-testable — same
-// convention as ledger.ts / extract.ts / jina.ts / lightpanda.ts / site-adapters.ts.
+// convention as ledger.ts / extract.ts / lightpanda.ts / site-adapters.ts.
 
 // Content types that ARE the answer, rather than a document containing one.
 //
@@ -47,12 +47,12 @@ export function isRawContentType(contentType: string | null | undefined): boolea
 
 // HTTP statuses where no other client, renderer or third party can help: the resource is
 // definitively absent. Short-circuiting them is worth real time and money — measured, a
-// hallucinated GitHub path burned 10.1s dragging a known 404 through the renderer, Jina and
-// a BILLED Tavily Extract call, all four of which saw the same 404.
+// hallucinated GitHub path burned 10.1s dragging a known 404 through the renderer, Jina (now
+// retired) and a BILLED Tavily Extract call, all four of which saw the same 404.
 //
 // Deliberately NOT 401/403: those mean "not to you, like this", and a different client often
-// does get through — Surfline 403s the renderer on the same page Jina reads fine. Only 404
-// and 410 assert that the thing does not exist.
+// does get through — Medium 403s the renderer on pages a plain fetch reads at step one. Only
+// 404 and 410 assert that the thing does not exist.
 //
 // The trade, stated: a site that 404s this crawler but serves a browser now fails fast
 // instead of being rescued by a later step. That is rare, and it is the same bet the 404

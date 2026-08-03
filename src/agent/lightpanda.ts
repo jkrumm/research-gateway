@@ -15,9 +15,9 @@
 // put un-retrieved text into a report.
 //
 // Dependency-free by design (no env/fetch import) so the parser is unit-testable — same
-// convention as ledger.ts / extract.ts / jina.ts.
+// convention as ledger.ts / extract.ts.
 
-// Same 200-char floor as Readability in tools.ts and parseJinaResponse, for the same reason.
+// Same 200-char floor as Readability in fetch-chain.ts, for the same reason.
 const MIN_CONTENT_CHARS = 200
 
 export type LightpandaResult = { ok: true; text: string } | { ok: false; error: string }

@@ -115,13 +115,17 @@ bun test           # pure-function tests; needs no secrets
 | `SONAR_MODEL` | no (`sonar`) | pinned; not a menu — see the note in `env.ts` before changing it |
 | `TAVILY_API_KEY` | yes | required even on `sonar`: it is the Extract fallback inside `fetchPage` and the per-call search fallback. Credits are hard-limited |
 | `LIGHTPANDA_URL` | no (off) | base URL of the JavaScript-rendering sidecar, e.g. `http://research-gateway-lightpanda:7781`. Unset takes the renderer out of `fetchPage`'s chain — the gateway must run without it. See [Rendering JavaScript](#rendering-javascript) |
-| `JINA_ENABLED` | no (off) | the *second* renderer, kept as the rollback for the sidecar. **This is the switch, not the key** — it makes fetched URLs visible to a third party, which is what the sidecar removes |
-| `JINA_API_KEY` | no | rate-limit lever only: anonymous is 20 RPM, a key raises it to 500. A key on an unfunded account returns 402 on every request, so the gateway retries anonymously and logs it. Note `op inject` resolves `op://` refs **inside comments**, so a commented-out ref to a non-existent field fails the whole injection |
 | `CONTEXT7_API_KEY` | no | enables the `libraryDocs` tool when set. Free, and the best source for library questions |
 | `GITHUB_TOKEN` | no | the `githubFile`/`githubRepo`/`findPackages` tools work without it, but anonymous GitHub is **60 req/h per IP** shared across all jobs; a no-scope token raises it to 5000/h |
 | `ARGO_USAGE_URL` / `ARGO_API_SECRET` | no | telemetry → argo `POST /usage/records`; no-op if unset |
 | `RESEARCH_MAX_CONCURRENCY` | no (3) | concurrent *jobs* |
 | `WORKER_MAX_CONCURRENCY` | no (8) | concurrent *workers within one job* |
+
+Production values are materialized on the VPS from `deploy/.env.tpl` with `op inject`. One
+trap that has cost a deploy here: **`op inject` resolves `op://` refs inside comments too**, so
+a commented-out ref to a field that does not exist fails the whole injection — and the failure
+is the *previous* revision of the file never materializing at all, not an error next to the
+offending line. Never park an unused ref behind a `#`; delete it.
 
 ## Web search backend
 
@@ -229,8 +233,7 @@ Three findings that outlast the tuning:
 | 1. `@mozilla/readability` | ordinary article pages | serves the large majority |
 | 2. site adapter | pages the generic path structurally cannot read | `site-adapters.ts`; Reddit today |
 | 3. lightpanda sidecar | pages whose text is not in the HTML at all | self-hosted browser; on when `LIGHTPANDA_URL` is set |
-| 4. Jina Reader | same, via a third party | rollback for step 3; `JINA_ENABLED` |
-| 5. Tavily Extract | static pages Readability could not parse | costs a credit |
+| 4. Tavily Extract | static pages Readability could not parse | costs a credit |
 
 The ordering is the point. A site adapter runs first because it is deterministic and free.
 Rendering sits ahead of Tavily because it handles the one failure Tavily cannot — text that was
@@ -241,9 +244,10 @@ never sent — while Tavily remains better for a page that *is* static but awkwa
 Step 3 runs [lightpanda](https://github.com/lightpanda-io/browser) 0.3.6 in a sidecar container
 (`lightpanda/`), reached over a private Docker network. On the page that motivated this — 
 `techempower.com/benchmarks`, which serves a 2,003-byte shell to a plain fetch — it returns
-**4,626 chars where Jina returns 1,030**, and it does so without showing a third party which
-URLs this service reads and without a per-minute quota. Jina stays wired behind it as a
-one-env-var rollback.
+**4,626 chars where Jina Reader — the third-party renderer it replaced — returned 1,030**, and
+it does so without showing a third party which URLs this service reads and without a per-minute
+quota. Jina was kept wired behind it as a one-env-var rollback for a while; it has since been
+[retired](#retiring-the-third-party-renderer).
 
 It is a **separate container**, and that is the measured part. Peak RSS is 100–205 MB per
 render, and **479 MB** on a real page (`bun.com/docs`) without a heap cap. The gateway runs at
@@ -273,13 +277,13 @@ answers in ~2s, and the scarce resource on the gateway side is the worker step, 
 
 ### Success-shaped failures
 
-Every renderer in this chain reports failure by not failing, and each shape had to be found by
-running it:
+Every renderer this chain has run reports failure by not failing, and each shape had to be
+found by running it:
 
 | Source | What it does |
 |-|-|
 | Reddit | HTTP 200 with an 8 KB JavaScript shell |
-| Jina | HTTP 200 with `Warning: Target URL returned error 403` in the body |
+| Jina (retired) | HTTP 200 with `Warning: Target URL returned error 403` in the body |
 | lightpanda | **exit 0** on a dead domain, with a synthetic `# Navigation failed` markdown page as the content, and `http_status: 0` |
 | lightpanda | **exit 0** on HTTP 404 |
 | lightpanda | uncaught page-JS exceptions written to **stdout**, after the JSON — `JSON.parse` of the stream throws `Extra data` (deterministic on techempower) |
@@ -295,27 +299,27 @@ successful render into "render timed out". `proc.signalCode` is the discriminato
 ### What the rendering stage actually recovers
 
 This table is **generated**, not hand-built — `bun run scripts/fetch-bench.ts` replays a
-fixed corpus through the deployed chain and prints it. Run 2026-08-03, 13 URLs, 21.0s, 0
+fixed corpus through the deployed chain and prints it. Run 2026-08-03, 13 URLs, 19.3s, 0
 Tavily credits:
 
 | url | terminated at | chars | chain |
 |-|-|-|-|
-| reddit-thread | site-adapter | 30,538 | `site-adapter✓` |
-| reddit-old | site-adapter | 30,539 | `site-adapter✓` |
+| reddit-thread | site-adapter | 30,539 | `site-adapter✓` |
+| reddit-old | site-adapter | 30,540 | `site-adapter✓` |
 | surfline-api | **raw** | 8,076 | `raw✓` |
 | surfline | readability | 825 | `readability✓` |
-| walmart | readability | 1,603 | `readability✓` |
+| walmart | readability | 1,649 | `readability✓` |
 | daily-dev-auth | readability | 889 | `readability✓` |
 | techempower | lightpanda | 4,626 | `readability✗ → lightpanda✓` |
 | web-frameworks | lightpanda | 28,960 | `readability✗ → lightpanda✓` |
-| x-status | lightpanda | 7,375 | `readability✗ → lightpanda✓` |
-| ticketmaster | lightpanda | 30,400 | `readability✗ → lightpanda✓` |
-| medium-paywall | jina | 5,014 | `readability✗ → lightpanda✗ → jina✓` |
+| x-status | lightpanda | 7,406 | `readability✗ → lightpanda✓` |
+| ticketmaster | lightpanda | 28,504 | `readability✗ → lightpanda✓` |
+| medium-paywall | — | 0 | `readability✗ → lightpanda✗ → tavily-extract✗` |
 | hard-404 | — | 0 | `readability✗` |
-| dead-domain | — | 0 | `(none)` — SSRF guard catches DNS failure in 9ms |
+| dead-domain | — | 0 | `(none)` — SSRF guard catches DNS failure in 13ms |
 
-**11 of 13 recovered.** The two that do not are a hallucinated 404 and a dead domain, both
-of which are correct outcomes.
+**10 of 13 recovered.** Three do not: a hallucinated 404 and a dead domain, both correct
+outcomes, and a Medium URL that no step in the chain can read.
 
 This is deliberately a *fetch-level* measurement rather than another job-level A/B. The 45
 runs established that fetch-stage effects land below the job-level resolution floor
@@ -324,15 +328,16 @@ either way — while replaying the actual failing URLs answers it directly, in m
 
 Two caveats worth carrying, because the corpus is small enough to over-read:
 
-- **`chars` is not a verdict.** `medium-paywall`'s 5,014 characters are Medium's navigation
-  and sign-in furniture, not the article — a success-shaped failure that clears every length
-  floor in the chain. The bench prints a `preview` for exactly this reason; read it before
+- **`chars` is not a verdict.** When Jina was still in the chain it terminated `medium-paywall`
+  at 5,014 characters — all of it Medium's navigation and sign-in furniture, none of it the
+  article. A success-shaped failure that clears every length floor in the chain reads as the
+  best row in the table. The bench prints a `preview` for exactly this reason; read it before
   calling a row a recovery.
 - **Not every row-to-row change is attributable to a code change.** Between the 2026-08-03
   baseline and this run, `surfline` moved from a 10s step-1 timeout to a clean 825-char read
-  and `walmart` from 33 characters to 1,603 — neither is explained by anything in the chain.
-  Those origins vary. Three repeat runs put the new values at 825/825/825 and 1,603/1,603/1,603,
-  so the *current* readings are stable; the *baseline* was the anomaly.
+  and `walmart` from 33 characters to 1,649 — neither is explained by anything in the chain.
+  Those origins vary. Repeat runs put the current values within a few characters of each
+  other, so the *current* readings are stable; the *baseline* was the anomaly.
 
 A 15-run `standard` benchmark on the deployed chain says the same thing from the other side.
 Counting what each step actually terminated (487 `fetchPage` outcomes):
@@ -345,15 +350,8 @@ Counting what each step actually terminated (487 `fetchPage` outcomes):
 | Jina, behind it | 8 | 32 (30 are 404s) |
 | Tavily Extract | 1 | 31 exhausted the chain |
 
-**That argued for keeping both renderers, and the fetch-level bench has since undercut it.**
-The self-hosted one carries the volume — unchanged. But Jina fell from 4 of 11 recoveries to
-1 of 11 once non-HTML bodies stopped being discarded (below), and that last one is Medium's
-sign-in chrome rather than the article. On the current corpus, disabling Jina costs no real
-content. That is a 13-URL corpus, not production traffic, so it is a strong prior and not yet
-a decision — `JINA_ENABLED` in the VPS `.env` makes it a one-line experiment with instant
-rollback.
-
-The job-level metrics moved as predicted, which is to say not resolvably: wall 354 → 328s,
+**That argued for keeping both renderers. The fetch-level bench then undercut it, and Jina is
+gone** — see below. The job-level metrics moved as predicted, which is to say not resolvably: wall 354 → 328s,
 cost $0.0891 → $0.0887, fetch failure rate 10.8% → 11.3% (pagesFailed cv **1.00** — this
 metric cannot resolve anything at n=3). `tavilyCredits` read 12 → 7 → **0**, but that field is
 not trustworthy on its own: the one Extract call that *succeeded* here also recorded 0
@@ -367,6 +365,42 @@ failures were 404s the renderer had already proven. That is now fixed: 404 and 4
 short-circuit at step one (`response-kind.ts`), which took the benchmark's `hard-404` row
 from 10,543 ms and a billed Extract call to 365 ms and none. Deliberately not 401/403 —
 those mean "not to you, like this", and a different client often does get through.
+
+### Retiring the third-party renderer
+
+Jina Reader was step 4 for as long as the self-hosted sidecar needed a rollback. It is now
+deleted — schema, env vars, module and test.
+
+The decision was one measurement, not an argument: run the 13-URL corpus against the deployed
+chain with `JINA_ENABLED=true`, flip it to `false` in the VPS `.env`, recreate the container,
+run the same corpus again.
+
+| | Jina on | Jina off |
+|-|-|-|
+| recovered | 11 / 13 | 10 / 13 |
+| wall | 21.0s | 19.3s |
+| Tavily credits | 0 | 0 |
+| terminated by lightpanda | 4 | 4 |
+| terminated by Jina | 1 | — |
+
+**One row changed: `medium-paywall`.** Its 5,014 characters were Medium's navigation chrome,
+and its URL (`medium.com/@ai/some-post`) does not name a real post — so the row Jina "won" was
+furniture on a page that does not exist. Nothing a citation could rest on was lost.
+
+What the removal buys, beyond one less step: no third party learns which URLs this service
+reads. That was the reason the sidecar was built, and keeping Jina wired behind it kept the
+exposure alive for whatever the sidecar could not render. The 20 RPM anonymous ceiling and
+the dead-key 402 handling go with it.
+
+Rolling back is a `git revert`, not an env var. That is the deliberate cost of the change,
+and it is affordable because the fallback below Jina — Tavily Extract — never moved.
+
+**Known gap this leaves open.** The corpus's Medium row tests a *nonexistent* post, so it
+never tested the paywall. Measured separately against four real Medium articles, the chain
+terminates at Readability on all of them, above the 200-char floor, with the member-only ones
+truncated to the lede: 1,068 and 1,206 characters where the full article runs 5,607 and
+14,911. That is a success-shaped failure the corpus does not currently catch, and no step
+Jina's removal touched would have caught it either.
 
 ### Sonar and Tavily are complementary, not interchangeable
 

@@ -7,14 +7,13 @@ import { log } from '../lib/log.js'
 import { normalizeText, capText, TEXT_CAP } from './extract.js'
 import { resolveSite } from './site-adapters.js'
 import { isRawContentType, isDefinitivelyMissing } from './response-kind.js'
-import { parseJinaResponse, jinaUrl } from './jina.js'
 import { parseRenderResponse, renderUrl } from './lightpanda.js'
 import type { RetrievalLedger } from './ledger.js'
 
 // The page-fetch chain, extracted from the `fetchPage` tool so it can be RUN AND MEASURED
 // without an LLM in the loop.
 //
-// Why it lives on its own: the chain has five steps that each recover a different failure,
+// Why it lives on its own: the chain has four steps that each recover a different failure,
 // and until now the only record of which one fired was a log line inside a job. That made
 // every fetch-level question ("does the renderer earn its container?", "what would adding a
 // step buy?") answerable only by running the full job benchmark — 15 runs, ~90 minutes,
@@ -29,12 +28,12 @@ import type { RetrievalLedger } from './ledger.js'
 //
 // Contract, unchanged from the tool it came from and load-bearing:
 //   - It NEVER throws. Every step is a fallback inside a fallback chain; the sidecar being
-//     down, Jina 402ing or Tavily rejecting must degrade this call, not kill the worker
-//     (which would lose every digest that worker had gathered).
+//     down or Tavily rejecting must degrade this call, not kill the worker (which would lose
+//     every digest that worker had gathered).
 //   - The ledger always hears about the ORIGINAL url, never the rewritten one, because the
 //     original is what a citation will name (site-adapters.test.ts guards this).
 
-export type FetchStep = 'raw' | 'site-adapter' | 'readability' | 'lightpanda' | 'jina' | 'tavily-extract'
+export type FetchStep = 'raw' | 'site-adapter' | 'readability' | 'lightpanda' | 'tavily-extract'
 
 export interface FetchAttempt {
   step: FetchStep
@@ -238,56 +237,8 @@ export async function runFetchChain(url: string, opts: FetchChainOptions): Promi
     }
   }
 
-  // ── Step 3: JavaScript rendering, third-party ──
-  if (env.JINA_ENABLED) {
-    const t3 = performance.now()
-    try {
-      // Force the full browser engine. Jina otherwise picks between a lightweight fetcher
-      // and headless Chrome, and the lightweight one returns exactly the shell this step
-      // exists to get past.
-      const headers: Record<string, string> = { 'x-engine': 'browser' }
-      if (env.JINA_API_KEY) headers['Authorization'] = `Bearer ${env.JINA_API_KEY}`
-
-      let res = await fetch(jinaUrl(fetchUrl), { headers, signal: AbortSignal.timeout(30_000) })
-
-      // A key on an account with no balance returns 402 on EVERY request, which would
-      // silently disable this whole step while anonymous access still works. Measured: a
-      // real key 402'd (`InsufficientBalanceError`) where no key returned 200. Retry once
-      // without it, and say so loudly — a dead key should be visible, not papered over.
-      if ((res.status === 402 || res.status === 401) && env.JINA_API_KEY) {
-        log('tool.fetchPage', {
-          jobId,
-          url,
-          via: 'jina',
-          error: `key rejected (HTTP ${res.status}) — retrying anonymously; recharge or unset JINA_API_KEY`,
-        })
-        delete headers['Authorization']
-        res = await fetch(jinaUrl(fetchUrl), { headers, signal: AbortSignal.timeout(30_000) })
-      }
-
-      if (res.ok) {
-        const parsed = parseJinaResponse(await res.text())
-        if (parsed.ok) {
-          const text = normalizeText(parsed.text)
-          attempt(attempts, 'jina', t3, { ok: true, chars: text.length })
-          log('tool.fetchPage', { jobId, url, via: 'jina', chars: text.length, rdReason, rdChars })
-          return done('jina', text)
-        }
-        attempt(attempts, 'jina', t3, { ok: false, error: parsed.error })
-        log('tool.fetchPage', { jobId, url, via: 'jina', error: parsed.error })
-      } else {
-        attempt(attempts, 'jina', t3, { ok: false, error: `HTTP ${res.status}` })
-        log('tool.fetchPage', { jobId, url, via: 'jina', error: `HTTP ${res.status}` })
-      }
-    } catch (err) {
-      // Never fatal — this is a fallback inside a fallback chain.
-      attempt(attempts, 'jina', t3, { ok: false, error: String(err) })
-      log('tool.fetchPage', { jobId, url, via: 'jina', error: String(err) })
-    }
-  }
-
-  // ── Step 4: Tavily Extract — the only paid step, and therefore the last ──
-  const t4 = performance.now()
+  // ── Step 3: Tavily Extract — the only paid step, and therefore the last ──
+  const t3 = performance.now()
   try {
     const ex = await tvly.extract([fetchUrl], {
       extractDepth: 'basic',
@@ -302,7 +253,7 @@ export async function runFetchChain(url: string, opts: FetchChainOptions): Promi
     const result = ex.results[0]
     if (result) {
       const text = normalizeText(result.rawContent)
-      attempt(attempts, 'tavily-extract', t4, { ok: true, chars: text.length })
+      attempt(attempts, 'tavily-extract', t3, { ok: true, chars: text.length })
       log('tool.fetchPage', { jobId, url, via: 'tavily-extract', chars: text.length, rdReason, rdChars })
       return done('tavily-extract', text)
     }
@@ -310,12 +261,12 @@ export async function runFetchChain(url: string, opts: FetchChainOptions): Promi
     const reason = failed?.error ?? 'Tavily extract returned no content'
     // Every fetch path is now exhausted — this URL is unverifiable for this run, and the
     // ledger is what makes it structurally ineligible as a citation source.
-    attempt(attempts, 'tavily-extract', t4, { ok: false, error: reason })
+    attempt(attempts, 'tavily-extract', t3, { ok: false, error: reason })
     ledger.recordFailed(url, reason)
     log('tool.fetchPage', { jobId, url, via: 'error' })
     return fail(reason)
   } catch (err) {
-    attempt(attempts, 'tavily-extract', t4, { ok: false, error: String(err) })
+    attempt(attempts, 'tavily-extract', t3, { ok: false, error: String(err) })
     ledger.recordFailed(url, String(err))
     log('tool.fetchPage', { jobId, url, via: 'error' })
     return fail(String(err))

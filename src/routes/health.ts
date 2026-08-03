@@ -15,8 +15,8 @@ export const healthRoute = new Elysia()
   // DELIBERATELY a separate path from `/health`, not a field on it.
   //
   // `/health` is what the Docker healthcheck and rollhook's rollout gate read. The renderer
-  // is an OPTIONAL step — when the sidecar is down the fetch chain degrades to Jina and
-  // Tavily Extract and research still works. Folding renderer state into `/health` would
+  // is an OPTIONAL step — when the sidecar is down the fetch chain degrades to Tavily
+  // Extract and research still works. Folding renderer state into `/health` would
   // invert that: a broken renderer would fail the container healthcheck and block deploys of
   // a gateway that is otherwise fine, which is the opposite of the design.
   //

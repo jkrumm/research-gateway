@@ -240,7 +240,7 @@ async function run(args: Args, secret: string, cases: Case[]): Promise<void> {
   console.log('-'.repeat(96))
   for (const r of rows) {
     // The whole chain, so a row shows what was TRIED, not only what worked. This is what
-    // makes a wasted step visible: a definitive 404 dragged through render + Jina + a billed
+    // makes a wasted step visible: a definitive 404 dragged through render + a billed
     // Extract call reads as `readability✗ → lightpanda✗ → tavily-extract✗` at a glance.
     const chain = r.attempts.map((a) => `${a.step}${a.ok ? '✓' : '✗'}`).join(' → ') || '(none)'
     // eslint-disable-next-line no-console

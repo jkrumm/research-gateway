@@ -58,7 +58,7 @@ export const probeRoutes = new Elysia().post(
       url: z.string(),
       fetchUrl: z.string().describe('The address actually dialled — differs when a site adapter rewrites it'),
       via: z
-        .enum(['raw', 'site-adapter', 'readability', 'lightpanda', 'jina', 'tavily-extract'])
+        .enum(['raw', 'site-adapter', 'readability', 'lightpanda', 'tavily-extract'])
         .nullable()
         .describe('The step that terminated the chain, or null if every step failed'),
       chars: z.number(),
@@ -66,7 +66,7 @@ export const probeRoutes = new Elysia().post(
       error: z.string().nullable(),
       attempts: z.array(
         z.object({
-          step: z.enum(['raw', 'site-adapter', 'readability', 'lightpanda', 'jina', 'tavily-extract']),
+          step: z.enum(['raw', 'site-adapter', 'readability', 'lightpanda', 'tavily-extract']),
           ok: z.boolean(),
           chars: z.number().optional(),
           error: z.string().optional(),
@@ -80,7 +80,7 @@ export const probeRoutes = new Elysia().post(
       tags: ['System'],
       summary: 'Fetch-chain diagnostic probe',
       description:
-        'Runs a single URL through the real page-fetch chain (site adapter → Readability → Lightpanda → Jina → Tavily Extract) and reports which step terminated it, how many characters each step recovered, and how long each took. No LLM is involved. Reaching Tavily Extract costs credits, which are reported. Used by `scripts/fetch-bench.ts`.',
+        'Runs a single URL through the real page-fetch chain (site adapter → Readability → Lightpanda → Tavily Extract) and reports which step terminated it, how many characters each step recovered, and how long each took. No LLM is involved. Reaching Tavily Extract costs credits, which are reported. Used by `scripts/fetch-bench.ts`.',
     },
   },
 )

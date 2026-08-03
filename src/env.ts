@@ -51,10 +51,8 @@ const Env = z.object({
   // replaced Jina Reader as fetchPage's renderer (see agent/lightpanda.ts, lightpanda/).
   //
   // Base URL of the sidecar, e.g. http://research-gateway-lightpanda:7781. Unset makes the
-  // step inert, exactly like JINA_ENABLED — the gateway must be able to run without the
-  // sidecar, both in local dev and if the container fails to come up in production. The two
-  // renderers are ordered, not exclusive: Jina stays wired behind its own flag as the
-  // rollback, so if this one has to be pulled, that is one env var and no deploy.
+  // step inert — the gateway must be able to run without the sidecar, both in local dev and
+  // if the container fails to come up in production.
   // `z.url()`, matching IU_BASE_URL and ARGO_USAGE_URL rather than a bare string: a
   // scheme-less or typo'd value would otherwise pass boot and surface only as an opaque fetch
   // failure inside the tool's catch, silently demoting every render to the fallback while the
@@ -69,30 +67,6 @@ const Env = z.object({
       .optional()
       .transform((v) => (v ? v.replace(/\/+$/, '') : undefined)),
   ),
-  // Jina Reader — the previous JavaScript-rendering step in fetchPage's chain (agent/jina.ts).
-  //
-  // This flag, not the API key, is the switch. Enabling it means the URLs this service
-  // fetches become visible to a third party, which is a decision to take explicitly — but
-  // r.jina.ai serves ANONYMOUS callers fine (measured: HTTP 200 without a key), so gating on
-  // the key would have tied a privacy decision to a rate-limit lever. Worse, it would have
-  // made a bad key strictly worse than no key: the first key tried here returned HTTP 402
-  // `InsufficientBalanceError` on every request while anonymous access worked.
-  JINA_ENABLED: z
-    .string()
-    .optional()
-    .transform((v) => v === 'true' || v === '1'),
-  // OPTIONAL rate-limit lever on top of JINA_ENABLED: anonymous is 20 RPM, a key raises it
-  // to 500. A key whose account has no balance 402s every request, so tools.ts retries once
-  // anonymously and logs loudly rather than letting the whole step die silently.
-  //
-  // Empty-as-unset for the same reason as GITHUB_TOKEN above: `op inject` renders an empty
-  // 1Password field as `JINA_API_KEY=`, and sending `Authorization: Bearer ` is worse than
-  // sending nothing.
-  JINA_API_KEY: z
-    .string()
-    .trim()
-    .optional()
-    .transform((v) => (v ? v : undefined)),
   ARGO_USAGE_URL: z.url().optional(),
   ARGO_API_SECRET: z.string().optional(),
   RESEARCH_MAX_CONCURRENCY: z.coerce.number().default(3),

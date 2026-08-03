@@ -49,9 +49,9 @@ describe('isDefinitivelyMissing', () => {
     expect(isDefinitivelyMissing(410)).toBe(true)
   })
 
-  // Load-bearing: a blocked page is not an absent one. Surfline answers the renderer with
-  // 403 on a page Jina reads fine, so treating 403 as definitive would delete a recovery
-  // the benchmark actually observes.
+  // Load-bearing: a blocked page is not an absent one. Medium answers the renderer with 403
+  // on pages a plain fetch reads at step one, so treating 403 as definitive would delete a
+  // recovery the benchmark actually observes.
   it('does NOT short-circuit "blocked" statuses, which a different client can get past', () => {
     expect(isDefinitivelyMissing(401)).toBe(false)
     expect(isDefinitivelyMissing(403)).toBe(false)
