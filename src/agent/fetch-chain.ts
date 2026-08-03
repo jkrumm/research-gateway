@@ -6,6 +6,7 @@ import { assertPublicHttpUrl } from '../lib/ssrf.js'
 import { log } from '../lib/log.js'
 import { normalizeText, capText, TEXT_CAP } from './extract.js'
 import { resolveSite } from './site-adapters.js'
+import { isRawContentType, isDefinitivelyMissing } from './response-kind.js'
 import { parseJinaResponse, jinaUrl } from './jina.js'
 import { parseRenderResponse, renderUrl } from './lightpanda.js'
 import type { RetrievalLedger } from './ledger.js'
@@ -33,7 +34,7 @@ import type { RetrievalLedger } from './ledger.js'
 //   - The ledger always hears about the ORIGINAL url, never the rewritten one, because the
 //     original is what a citation will name (site-adapters.test.ts guards this).
 
-export type FetchStep = 'site-adapter' | 'readability' | 'lightpanda' | 'jina' | 'tavily-extract'
+export type FetchStep = 'raw' | 'site-adapter' | 'readability' | 'lightpanda' | 'jina' | 'tavily-extract'
 
 export interface FetchAttempt {
   step: FetchStep
@@ -73,6 +74,9 @@ const tvly = tavily({ apiKey: env.TAVILY_API_KEY })
 // Readability output shorter than this is treated as a miss rather than an answer. It is
 // the boundary between "this page has content" and "this page has a cookie banner".
 const MIN_USABLE_CHARS = 200
+
+// Whether a response is verbatim-answer or document-to-extract, and whether a status means
+// "absent" rather than "not to you" — both live in response-kind.ts so they are unit-tested.
 
 // Follows redirects BY HAND so every hop can be re-validated against the SSRF guard. A
 // single `fetch` with `redirect: 'follow'` would validate the first address and then follow
@@ -144,27 +148,57 @@ export async function runFetchChain(url: string, opts: FetchChainOptions): Promi
   let step1: FetchStep = 'readability'
   try {
     const res = await safeFetch(fetchUrl, jobId)
-    if (res.ok) {
-      const html = await res.text()
-      const { document } = parseHTML(html)
-      // A site adapter reads its own markup; anything else, and any adapter that does not
-      // recognise what it got, falls through to Readability unchanged.
-      const adapted = site.extract ? site.extract(document as never) : null
-      if (adapted) step1 = 'site-adapter'
-      const article = adapted
-        ? null
-        : new Readability(document as unknown as ConstructorParameters<typeof Readability>[0]).parse()
-      const raw = adapted ?? article?.textContent?.trim()
-      const text = raw ? normalizeText(raw) : raw
-      rdChars = text?.length ?? 0
-      if (text && text.length >= MIN_USABLE_CHARS) {
-        attempt(attempts, step1, t1, { ok: true, chars: text.length })
-        log('tool.fetchPage', { jobId, url, via: step1, chars: text.length })
-        return done(step1, text)
-      }
-      attempt(attempts, step1, t1, { ok: false, chars: rdChars, error: `thin (${rdChars} chars)` })
-    } else {
+
+    // A definitively-absent resource stops here. Every remaining step would ask the same
+    // origin the same question and be told the same thing, and the last of them bills for it.
+    if (isDefinitivelyMissing(res.status)) {
+      const reason = `HTTP ${res.status} — the resource does not exist at this URL`
+      attempt(attempts, 'readability', t1, { ok: false, error: reason })
+      ledger.recordFailed(url, reason)
+      log('tool.fetchPage', { jobId, url, via: 'missing', status: res.status })
+      return fail(reason)
+    }
+
+    if (!res.ok) {
       attempt(attempts, step1, t1, { ok: false, error: `HTTP ${res.status}` })
+    } else {
+      // Read the body ONCE — a Response body is a stream and cannot be consumed twice, so
+      // the content-type branch and the HTML branch have to share this.
+      const body = await res.text()
+      const contentType = res.headers.get('content-type')
+
+      // A non-HTML body IS the answer — hand it back verbatim rather than asking an HTML
+      // parser to find an article in it.
+      if (isRawContentType(contentType)) {
+        const raw = normalizeText(body)
+        if (raw.length > 0) {
+          attempt(attempts, 'raw', t1, { ok: true, chars: raw.length })
+          log('tool.fetchPage', { jobId, url, via: 'raw', chars: raw.length, contentType })
+          return done('raw', raw)
+        }
+        // An empty body is a miss like any other — fall through to the rendering steps, which
+        // is the right answer for a URL that serves an empty JSON body to a bot and a real
+        // page to a browser.
+        attempt(attempts, 'raw', t1, { ok: false, chars: 0, error: 'empty body' })
+      } else {
+        const { document } = parseHTML(body)
+        // A site adapter reads its own markup; anything else, and any adapter that does not
+        // recognise what it got, falls through to Readability unchanged.
+        const adapted = site.extract ? site.extract(document as never) : null
+        if (adapted) step1 = 'site-adapter'
+        const article = adapted
+          ? null
+          : new Readability(document as unknown as ConstructorParameters<typeof Readability>[0]).parse()
+        const raw = adapted ?? article?.textContent?.trim()
+        const text = raw ? normalizeText(raw) : raw
+        rdChars = text?.length ?? 0
+        if (text && text.length >= MIN_USABLE_CHARS) {
+          attempt(attempts, step1, t1, { ok: true, chars: text.length })
+          log('tool.fetchPage', { jobId, url, via: step1, chars: text.length })
+          return done(step1, text)
+        }
+        attempt(attempts, step1, t1, { ok: false, chars: rdChars, error: `thin (${rdChars} chars)` })
+      }
     }
   } catch (err) {
     // fetch or linkedom failed — fall through to the rendering steps.
