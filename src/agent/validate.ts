@@ -37,6 +37,48 @@ export function badPackageName(name: string): string | null {
   return null
 }
 
+// Go's module proxy protocol (proxy.golang.org) requires uppercase letters in a module path
+// to be escaped as "!" + the lowercase letter — module paths are case-sensitive but the
+// proxy's own cache/filesystem layer is not, so this is how it keeps `Foo` and `foo` distinct
+// on disk. MEASURED: `github.com/!masterminds/semver/v3/@latest` returns 200 while the
+// unescaped `github.com/Masterminds/semver/v3/@latest` returns 404 — silent breakage, not a
+// slow one, if this is missed. Exported standalone so it is unit-testable without the
+// env/fetch import chain the tool itself needs.
+export function escapeGoModulePath(path: string): string {
+  return path.replace(/[A-Z]/g, (c) => `!${c.toLowerCase()}`)
+}
+
+// Docker Hub repository names are lowercase alphanumeric with `.`, `_`, `-` separators
+// between groups, and at most one `/` (namespace/repo) — a registry-prefixed name
+// (`quay.io/...`) or anything deeper is out of scope for the Docker Hub API this backs.
+// `badPackageName` above is written for language-package names and does not reject a
+// `namespace/repo` string or enforce lowercase (both are needed here), so this is a
+// dedicated check rather than a weakening of that one.
+const DOCKER_COMPONENT_RE = /^[a-z0-9]+(?:[._-][a-z0-9]+)*$/
+
+export function badDockerName(name: string): string | null {
+  if (name.length === 0) return 'docker image name is empty'
+  const parts = name.split('/')
+  if (parts.length > 2) return `invalid docker image name "${name}" — expected "repo" or "namespace/repo"`
+  if (parts.some((p) => !DOCKER_COMPONENT_RE.test(p))) {
+    return `invalid docker image name "${name}" — Docker Hub names are lowercase alphanumeric with ., _, - separators`
+  }
+  return null
+}
+
+// A bare name (no slash) means an OFFICIAL image, which Docker Hub itself files under the
+// `library` namespace — MEASURED working as `library/postgres`. Assumes `badDockerName`
+// already passed; this only shapes an already-valid name.
+export function resolveDockerName(name: string): { namespace: string; repo: string; pageUrl: string } {
+  const parts = name.split('/')
+  if (parts.length === 1) {
+    const repo = parts[0]!
+    return { namespace: 'library', repo, pageUrl: `https://hub.docker.com/_/${repo}` }
+  }
+  const [namespace, repo] = parts as [string, string]
+  return { namespace, repo, pageUrl: `https://hub.docker.com/r/${namespace}/${repo}` }
+}
+
 // npm's own relevance ranking buries the obvious answer: searching "zod schema validation"
 // returns `@vee-validate/zod` above `zod`. Re-rank so a package the query NAMES outranks one
 // that merely mentions it, keeping the registry's ordering within each tier.

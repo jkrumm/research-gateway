@@ -4,8 +4,18 @@ import { z } from 'zod'
 import { env } from '../env.js'
 import { log } from '../lib/log.js'
 import { capText, TEXT_CAP } from './extract.js'
-import { badPackageName, badPath, badRepoArg, rerankByName } from './validate.js'
+import {
+  badDockerName,
+  badPackageName,
+  badPath,
+  badRepoArg,
+  escapeGoModulePath,
+  resolveDockerName,
+  rerankByName,
+} from './validate.js'
 import type { RetrievalLedger } from './ledger.js'
+import { mapOpenAlexWork, mapPubmedRecord, parsePubmedIds } from './academic.js'
+import type { OpenAlexWork, PubmedEsearchResult, PubmedResult, PubmedSummaryRecord } from './academic.js'
 
 // Direct source-of-truth tools: fixed, well-known APIs that answer a question EXACTLY
 // rather than approximately. Search-then-read is an inference chain — "which page ranks,
@@ -174,19 +184,171 @@ async function lookupPypi(name: string, ledger: RetrievalLedger): Promise<unknow
   }
 }
 
+interface CratesResponse {
+  crate?: {
+    max_stable_version?: string
+    newest_version?: string
+    description?: string
+    homepage?: string
+    documentation?: string
+    repository?: string
+    downloads?: number
+    recent_downloads?: number
+    yanked?: boolean
+    num_versions?: number
+  }
+  // Top-level `versions` (full objects), distinct from `crate.versions` (an id list) — this
+  // is where the per-version `license` actually lives, so the stable release's license is
+  // found by matching its `num` against `crate.max_stable_version`.
+  versions?: Array<{ num?: string; license?: string | null }>
+}
+
+async function lookupCrates(name: string, ledger: RetrievalLedger): Promise<unknown> {
+  const apiUrl = `https://crates.io/api/v1/crates/${encodeURIComponent(name)}`
+  const pageUrl = `https://crates.io/crates/${name}`
+
+  // crates.io's crawler policy expects a User-Agent that identifies the caller; `UA`
+  // already does and was verified working against this endpoint.
+  const res = await getJson<CratesResponse>(apiUrl, { 'user-agent': UA, accept: 'application/json' })
+  if (!res.ok || !res.data?.crate) {
+    const error = res.error ?? 'not found'
+    ledger.recordFailed(pageUrl, error)
+    return { error: `crates.io lookup failed for "${name}": ${error}` }
+  }
+
+  ledger.recordRetrieved(pageUrl)
+  ledger.recordRetrieved(apiUrl)
+
+  const c = res.data.crate
+  const stableEntry = res.data.versions?.find((v) => v.num === c.max_stable_version)
+  return {
+    ecosystem: 'crates',
+    name,
+    // `max_stable_version`, not `newest_version` — "what version is current" almost always
+    // means the stable one, and `newest_version` can be a prerelease ahead of it.
+    latestVersion: c.max_stable_version ?? null,
+    newestVersion: c.newest_version ?? null,
+    description: c.description ?? null,
+    license: stableEntry?.license ?? null,
+    homepage: c.homepage ?? null,
+    documentation: c.documentation ?? null,
+    repository: c.repository ?? null,
+    downloads: c.downloads ?? null,
+    recentDownloads: c.recent_downloads ?? null,
+    yanked: c.yanked ?? false,
+    versionCount: c.num_versions ?? null,
+    sourceUrl: pageUrl,
+    note: 'Authoritative: read live from the crates.io registry. Cite sourceUrl. latestVersion is the stable release; newestVersion may be a prerelease. Prefer these exact strings over any version you remember.',
+  }
+}
+
+interface GoProxyResponse {
+  Version?: string
+  Time?: string
+  Origin?: { VCS?: string; URL?: string; Ref?: string }
+}
+
+async function lookupGo(moduleName: string, ledger: RetrievalLedger): Promise<unknown> {
+  const apiUrl = `https://proxy.golang.org/${escapeGoModulePath(moduleName)}/@latest`
+  // pkg.go.dev has no JSON API of its own — the module proxy IS the authoritative
+  // machine-readable source (MEASURED against proxy.golang.org/github.com/gin-gonic/gin).
+  // pkg.go.dev is still the page a citation should name: it's the human-readable one.
+  const pageUrl = `https://pkg.go.dev/${moduleName}`
+
+  const res = await getJson<GoProxyResponse>(apiUrl, { 'user-agent': UA, accept: 'application/json' })
+  if (!res.ok || !res.data?.Version) {
+    const error = res.error ?? 'not found'
+    ledger.recordFailed(pageUrl, error)
+    return { error: `Go module proxy lookup failed for "${moduleName}": ${error}` }
+  }
+
+  ledger.recordRetrieved(pageUrl)
+  ledger.recordRetrieved(apiUrl)
+
+  const d = res.data
+  return {
+    ecosystem: 'go',
+    name: moduleName,
+    latestVersion: d.Version,
+    publishedAt: d.Time ?? null,
+    vcs: d.Origin?.VCS ?? null,
+    repositoryUrl: d.Origin?.URL ?? null,
+    ref: d.Origin?.Ref ?? null,
+    sourceUrl: pageUrl,
+    note: 'Authoritative: read live from the Go module proxy (proxy.golang.org). Cite sourceUrl. Prefer this exact version string over any version you remember.',
+  }
+}
+
+interface DockerTagsResponse {
+  count?: number
+  results?: Array<{ name?: string; last_updated?: string; full_size?: number }>
+}
+
+async function lookupDocker(name: string, ledger: RetrievalLedger): Promise<unknown> {
+  const nameError = badDockerName(name)
+  if (nameError) return { error: nameError }
+
+  const { namespace, repo, pageUrl } = resolveDockerName(name)
+  const apiUrl = `https://hub.docker.com/v2/repositories/${namespace}/${repo}/tags?page_size=25&ordering=last_updated`
+
+  const res = await getJson<DockerTagsResponse>(apiUrl, { 'user-agent': UA, accept: 'application/json' })
+  if (!res.ok || !res.data) {
+    const error = res.error ?? 'not found'
+    ledger.recordFailed(pageUrl, error)
+    return { error: `Docker Hub lookup failed for "${name}": ${error}` }
+  }
+
+  ledger.recordRetrieved(pageUrl)
+  ledger.recordRetrieved(apiUrl)
+
+  const tags = (res.data.results ?? []).map((t) => ({
+    name: t.name ?? null,
+    lastUpdated: t.last_updated ?? null,
+    sizeBytes: t.full_size ?? null,
+  }))
+  return {
+    ecosystem: 'docker',
+    name: `${namespace}/${repo}`,
+    tags,
+    tagCount: res.data.count ?? tags.length,
+    sourceUrl: pageUrl,
+    // Deliberately no `latestVersion` key: every other ecosystem's `latestVersion` names a
+    // real version, but docker's `latest` is a mutable pointer the maintainer can repoint at
+    // any time and frequently is not the newest build. Returning it under the same key a
+    // model already trusts from npm/pypi/crates/go would invite exactly the wrong answer —
+    // read `tags` and their `lastUpdated` instead. This asymmetry is deliberate; don't "fix"
+    // it back to matching the others.
+    note: '"latest" is a moving tag, not a version — read the tags array and their lastUpdated dates to find the current one. Cite sourceUrl.',
+  }
+}
+
+// Ecosystem dispatch as a lookup map rather than a growing if/else — stays readable as new
+// ecosystems are added, and each branch already has an identical (name, ledger) signature.
+const PACKAGE_LOOKUPS: Record<'npm' | 'pypi' | 'crates' | 'go' | 'docker', (name: string, ledger: RetrievalLedger) => Promise<unknown>> = {
+  npm: lookupNpm,
+  pypi: lookupPypi,
+  crates: lookupCrates,
+  go: lookupGo,
+  docker: lookupDocker,
+}
+
 function buildPackageInfoTool(ledger: RetrievalLedger, jobId: string): AnyTool {
   return tool({
     description:
-      'Look up the AUTHORITATIVE current metadata for a published package straight from its registry: exact latest version, all dist-tags (latest/next/beta), license, dependencies, deprecation status and repository URL. Use this for ANY question about what version of a package is current, what it depends on, or whether it is deprecated — it is exact where search results and model memory are stale. Prefer it over searchWeb for these questions.',
+      'Look up the AUTHORITATIVE current metadata for a published package straight from its registry: exact latest version, dist-tags/license/dependencies/deprecation (npm, pypi), crate metadata (crates.io), module version and VCS origin (go, via the Go module proxy), or the tag list (docker, via Docker Hub — images have no single "latest version", read the tags and their dates). Use this for ANY question about what version of a package, crate, module or image is current, what it depends on, or whether it is deprecated — it is exact where search results and model memory are stale. Prefer it over searchWeb for these questions.',
     inputSchema: z.object({
-      ecosystem: z.enum(['npm', 'pypi']).describe('Which registry to query'),
-      name: z.string().describe('Exact package name, e.g. "elysia", "@ai-sdk/openai-compatible", "httpx"'),
+      ecosystem: z.enum(['npm', 'pypi', 'crates', 'go', 'docker']).describe('Which registry to query'),
+      name: z
+        .string()
+        .describe(
+          'Exact package/module/image name, e.g. "elysia", "@ai-sdk/openai-compatible", "httpx", "serde", "github.com/gin-gonic/gin", "postgres" or "grafana/grafana"',
+        ),
     }),
     execute: async ({ ecosystem, name }) => {
       const clean = name.trim()
       const nameError = badPackageName(clean)
       if (nameError) return { error: nameError }
-      const out = ecosystem === 'npm' ? await lookupNpm(clean, ledger) : await lookupPypi(clean, ledger)
+      const out = await PACKAGE_LOOKUPS[ecosystem](clean, ledger)
       log('tool.packageInfo', { jobId, ecosystem, name: clean, ok: !(out as { error?: string }).error })
       return out
     },
@@ -440,11 +602,132 @@ function buildFindPackagesTool(ledger: RetrievalLedger, jobId: string): AnyTool 
   }) as AnyTool
 }
 
+// ── academicSearch ───────────────────────────────────────────────────────────
+// One tool covering two literature indexes, not two tools — see the tool-count comment on
+// `buildDirectSourceTools` for why that split matters here.
+
+interface OpenAlexSearchResponse {
+  meta?: { count?: number }
+  results?: OpenAlexWork[]
+}
+
+async function lookupOpenAlex(query: string, limit: number, ledger: RetrievalLedger): Promise<unknown> {
+  // `select` trims the response to only the fields mapOpenAlexWork reads — see academic.ts
+  // for why the unselected response is out of budget for a worker call.
+  const url = `https://api.openalex.org/works?search=${encodeURIComponent(query)}&per_page=${limit}&select=id,doi,title,publication_year,cited_by_count,open_access,primary_location,authorships,type`
+
+  const res = await getJson<OpenAlexSearchResponse>(url, { 'user-agent': UA, accept: 'application/json' })
+  if (!res.ok || !res.data) {
+    const error = res.error ?? 'no results'
+    ledger.recordFailed(url, error)
+    return { error: `OpenAlex search failed: ${error}` }
+  }
+
+  ledger.recordRetrieved(url)
+  const results = (res.data.results ?? []).map(mapOpenAlexWork)
+  return {
+    source: 'openalex',
+    query,
+    totalCount: res.data.meta?.count ?? results.length,
+    results,
+    // OpenAlex offers a "polite pool" (a `mailto` query param) with more reliable rate
+    // limits. Deliberately not wired up here — that means shipping a real address into
+    // config for a keyless service that measured fine without one. This is the lever to
+    // pull if OpenAlex reliability ever becomes the problem.
+    note: 'Authoritative bibliographic metadata from OpenAlex (keyless). Cite doi or landingPageUrl.',
+  }
+}
+
+async function lookupPubmed(query: string, limit: number, ledger: RetrievalLedger): Promise<unknown> {
+  const searchUrl = `https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi?db=pubmed&term=${encodeURIComponent(query)}&retmax=${limit}&retmode=json`
+
+  const searchRes = await getJson<PubmedEsearchResult>(searchUrl, { 'user-agent': UA, accept: 'application/json' })
+  if (!searchRes.ok || !searchRes.data) {
+    const error = searchRes.error ?? 'no results'
+    ledger.recordFailed(searchUrl, error)
+    return { error: `PubMed search failed: ${error}` }
+  }
+  ledger.recordRetrieved(searchUrl)
+
+  const { ids, totalCount } = parsePubmedIds(searchRes.data)
+  // An empty id list is a real "no hits" answer, not a failure — do NOT call esummary with
+  // an empty id list, it is a wasted round trip for a query eutils has already answered.
+  if (ids.length === 0) {
+    return { source: 'pubmed', query, totalCount, results: [], note: 'No PubMed hits for this query.' }
+  }
+
+  const summaryUrl = `https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi?db=pubmed&id=${ids.join(',')}&retmode=json`
+  const summaryRes = await getJson<{ result?: Record<string, PubmedSummaryRecord> }>(summaryUrl, {
+    'user-agent': UA,
+    accept: 'application/json',
+  })
+  if (!summaryRes.ok || !summaryRes.data) {
+    const error = summaryRes.error ?? 'no summaries'
+    ledger.recordFailed(summaryUrl, error)
+    return { error: `PubMed summary lookup failed: ${error}` }
+  }
+  ledger.recordRetrieved(summaryUrl)
+
+  const results: PubmedResult[] = []
+  for (const uid of ids) {
+    const record = summaryRes.data.result?.[uid]
+    if (!record) continue
+    const mapped = mapPubmedRecord(uid, record)
+    results.push(mapped)
+    // Each result's own PubMed page is the URL a citation will name — record it directly,
+    // not just the search/summary API endpoints.
+    ledger.recordRetrieved(mapped.url)
+  }
+
+  return {
+    source: 'pubmed',
+    query,
+    totalCount,
+    results,
+    note: "Authoritative bibliographic metadata from PubMed/NCBI (keyless). Cite each result's url.",
+  }
+}
+
+function buildAcademicSearchTool(ledger: RetrievalLedger, jobId: string): AnyTool {
+  return tool({
+    description:
+      'Search academic/scientific literature for authoritative bibliographic metadata: title, authors, year, citation count, DOI, open-access link. Use `openalex` for broad multi-disciplinary coverage (works, preprints, citation counts) and `pubmed` for biomedical/life-science literature specifically. Prefer this over searchWeb for "who wrote / what year / how many citations / is there a paper on X" questions.',
+    inputSchema: z.object({
+      source: z.enum(['openalex', 'pubmed']).describe('Which index to query'),
+      query: z.string().describe('Search terms, e.g. "retrieval augmented generation survey"'),
+      limit: z.number().int().min(1).max(10).default(5).describe('Max results to return'),
+    }),
+    execute: async ({ source, query, limit }) => {
+      const q = query.trim()
+      if (q.length < 2) return { error: 'query too short' }
+
+      // Semantic Scholar is deliberately NOT a third `source` value: MEASURED 2026-08-03,
+      // unauthenticated api.semanticscholar.org/graph/v1/paper/search returned HTTP 429 on
+      // all three consecutive calls from the VPS (the IP that matters for this gateway) and
+      // 200-then-429-then-429 from a residential IP. It is unusable at this gateway's call
+      // rate without a key. The unblock, if this is revisited: request a free key at
+      // https://www.semanticscholar.org/product/api#api-key-form.
+      const out = source === 'openalex' ? await lookupOpenAlex(q, limit, ledger) : await lookupPubmed(q, limit, ledger)
+      log('tool.academicSearch', { jobId, source, query: q, ok: !(out as { error?: string }).error })
+      return out
+    },
+  }) as AnyTool
+}
+
 export function buildDirectSourceTools(ledger: RetrievalLedger, jobId: string): Record<string, AnyTool> {
   return {
     packageInfo: buildPackageInfoTool(ledger, jobId),
     githubFile: buildGithubFileTool(ledger, jobId),
     githubRepo: buildGithubRepoTool(ledger, jobId),
     findPackages: buildFindPackagesTool(ledger, jobId),
+    // Tool definitions are re-sent in EVERY step's context, for EVERY worker, on EVERY job
+    // (8 workers x 3 concurrent jobs measured) against a workerMaxSteps of 5/7/9 (depth.ts) —
+    // a `standard` worker can make 7 tool calls total, so 12 tool definitions in front of a
+    // 7-call budget is the wrong trade. That is why crates/go/docker above are three new
+    // `packageInfo` ecosystems rather than three new tools: zero extra definitions. This is
+    // the one genuinely new tool, because OpenAlex/PubMed answer a different KIND of
+    // question — literature, not package registries — that packageInfo's shape cannot
+    // express. Total after this change: 8 tool definitions, not 12.
+    academicSearch: buildAcademicSearchTool(ledger, jobId),
   }
 }

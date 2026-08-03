@@ -1,5 +1,13 @@
 import { describe, it, expect } from 'bun:test'
-import { badPackageName, badPath, badRepoArg, rerankByName } from './validate.js'
+import {
+  badDockerName,
+  badPackageName,
+  badPath,
+  badRepoArg,
+  escapeGoModulePath,
+  rerankByName,
+  resolveDockerName,
+} from './validate.js'
 
 describe('badRepoArg', () => {
   it('accepts ordinary owner/repo and a release tag', () => {
@@ -48,6 +56,58 @@ describe('badPackageName', () => {
     expect(badPackageName('@scope/name/extra')).not.toBeNull()
     expect(badPackageName('@scope/')).not.toBeNull()
     expect(badPackageName('.hidden')).not.toBeNull()
+  })
+})
+
+describe('escapeGoModulePath', () => {
+  it('passes through a path with no uppercase at all', () => {
+    expect(escapeGoModulePath('github.com/gin-gonic/gin')).toBe('github.com/gin-gonic/gin')
+  })
+
+  it('escapes a single uppercase letter — the measured proxy.golang.org case', () => {
+    expect(escapeGoModulePath('github.com/Masterminds/semver/v3')).toBe('github.com/!masterminds/semver/v3')
+  })
+
+  it('escapes every uppercase letter in an all-uppercase path', () => {
+    expect(escapeGoModulePath('GITHUB.COM/FOO/BAR')).toBe('!g!i!t!h!u!b.!c!o!m/!f!o!o/!b!a!r')
+  })
+
+  it('leaves a lowercase /vN suffix alone', () => {
+    expect(escapeGoModulePath('github.com/Masterminds/semver/v3')).toContain('/v3')
+  })
+})
+
+describe('badDockerName', () => {
+  it('accepts a bare official-image name and an explicit namespace/repo', () => {
+    expect(badDockerName('postgres')).toBeNull()
+    expect(badDockerName('grafana/grafana')).toBeNull()
+    expect(badDockerName('my-org.internal/my_repo-1')).toBeNull()
+  })
+
+  it('rejects empty names, uppercase, registry-prefixed paths and traversal', () => {
+    expect(badDockerName('')).not.toBeNull()
+    expect(badDockerName('Postgres')).not.toBeNull()
+    expect(badDockerName('quay.io/grafana/grafana')).not.toBeNull()
+    expect(badDockerName('grafana/')).not.toBeNull()
+    expect(badDockerName('../etc')).not.toBeNull()
+  })
+})
+
+describe('resolveDockerName', () => {
+  it('maps a bare name to the library namespace and the official-image page', () => {
+    expect(resolveDockerName('postgres')).toEqual({
+      namespace: 'library',
+      repo: 'postgres',
+      pageUrl: 'https://hub.docker.com/_/postgres',
+    })
+  })
+
+  it('maps an explicit namespace/repo to the user-image page', () => {
+    expect(resolveDockerName('grafana/grafana')).toEqual({
+      namespace: 'grafana',
+      repo: 'grafana',
+      pageUrl: 'https://hub.docker.com/r/grafana/grafana',
+    })
   })
 })
 

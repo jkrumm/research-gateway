@@ -19,11 +19,12 @@ server-side. See [`PRD.md`](./PRD.md) for the full rationale and decisions.
 - **LLM:** IU unified endpoint via `@ai-sdk/openai-compatible`. Lead (plan + synthesis):
   DeepSeek-V4-Pro. Workers (fan-out): DeepSeek-V4-Flash.
 - **Tools:** two kinds, and the split is the point.
-  - *Source-of-truth lookups* — `packageInfo` (npm/PyPI registry: exact version, dist-tags,
-    deps, deprecation), `githubFile` (a repo file verbatim), `githubRepo` (release, archived,
-    last push), `findPackages` (discovery ranked by npm score / stars), `libraryDocs`
-    (Context7, when `CONTEXT7_API_KEY` is set). These answer a question exactly instead of
-    approximately, and workers are told to reach for them first.
+  - *Source-of-truth lookups* — `packageInfo` (five registries: npm, PyPI, crates.io, the Go
+    module proxy, Docker Hub), `githubFile` (a repo file verbatim), `githubRepo` (release,
+    archived, last push), `findPackages` (discovery ranked by npm score / stars),
+    `academicSearch` (OpenAlex, PubMed), `libraryDocs` (Context7, when `CONTEXT7_API_KEY` is
+    set). These answer a question exactly instead of approximately, and workers are told to
+    reach for them first. See [Source-of-truth lookups](#source-of-truth-lookups).
   - *Open-web research* — `searchWeb` (Perplexity Sonar over the IU endpoint by default;
     Tavily as the per-call fallback), plus `fetchPage`, for everything the lookups cannot
     answer. See [Web search backend](#web-search-backend) and [Fetching pages](#fetching-pages).
@@ -228,6 +229,48 @@ Three findings that outlast the tuning:
   404s, paywalls. A 15-run re-measurement after the fix: fetch failure rate 13.4% → 10.8%,
   **Tavily credits 12 → 7 across the whole matrix** (the predicted mechanism — no more
   Extract calls wasted on shells), cost unchanged, and no resolvable change in citations.
+
+## Source-of-truth lookups
+
+A registry response is the thing itself; a blog post about it is a second-hand account that
+was true once. These tools answer a question exactly, and the worker prompt tells the model to
+reach for them before searching.
+
+| Question | Tool | Reads |
+|-|-|-|
+| current version, dist-tags, deps, deprecation | `packageInfo` + `npm` / `pypi` / `crates` / `go` | registry.npmjs.org · pypi.org · crates.io · proxy.golang.org |
+| which tags an image publishes, and when | `packageInfo` + `docker` | hub.docker.com |
+| a repo file, verbatim | `githubFile` | api.github.com |
+| is a project alive, latest release, archived | `githubRepo` | api.github.com |
+| which library for X | `findPackages` | npm search · GitHub search |
+| who published what, what year, how many citations | `academicSearch` + `openalex` / `pubmed` | api.openalex.org · eutils.ncbi.nlm.nih.gov |
+| current API surface of a library | `libraryDocs` | Context7 (needs `CONTEXT7_API_KEY`) |
+
+**Why that is eight tools and not twelve.** Tool definitions are re-sent in every step's
+context, for every worker, on every job — 8 workers × 3 concurrent jobs. `workerMaxSteps` is
+5 / 7 / 9 (quick / standard / deep), so a `standard` worker gets **seven tool calls in total**.
+Putting twelve definitions in front of a seven-call budget spends context on options that
+cannot all be taken. So crates.io, the Go proxy and Docker Hub are new *ecosystems* on the
+existing `packageInfo` tool — zero new definitions — and the two literature indexes share one
+`academicSearch`, because they answer a different kind of question than a package registry
+does. Adding a source is cheap; adding a tool is not.
+
+Two shape decisions worth knowing before changing them:
+
+- **`docker` deliberately returns no `latestVersion`.** Every other ecosystem's
+  `latestVersion` names a real release. Docker's `latest` is a mutable pointer a maintainer
+  can repoint at any time, and often is not the newest build. Under the same key a model
+  already trusts from npm, it would produce a confidently wrong version number. It returns a
+  tag list with dates instead.
+- **Go module paths are case-encoded.** proxy.golang.org escapes uppercase as `!` + lowercase.
+  Verified: `github.com/!masterminds/semver/v3/@latest` returns `v3.5.0`, and the unescaped
+  path returns **HTTP 404** — a silent failure that looks exactly like "module not found".
+
+**Semantic Scholar was measured and rejected.** Unauthenticated
+`api.semanticscholar.org/graph/v1/paper/search` returned HTTP 429 on all three consecutive
+calls from the VPS, and 200-then-429-then-429 from a residential IP. It is unusable at this
+gateway's call rate without a key. The unblock is the free-key form
+(`semanticscholar.org/product/api#api-key-form`), not a retry loop.
 
 ## Fetching pages
 

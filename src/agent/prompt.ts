@@ -44,11 +44,19 @@ get in:
 
 | Question | Tool | Not this |
 |-|-|-|
-| Current version / dist-tags / deps / deprecation of a package | \`packageInfo\` | a blog post or your memory |
+| Current version / dist-tags / deps / deprecation of a package | \`packageInfo\` (\`npm\`, \`pypi\`, \`crates\`, \`go\`) | a blog post or your memory |
+| Which tags a container image publishes, and when each was pushed | \`packageInfo\` with \`docker\` | a README's example tag |
 | What is in a repo file — compose file, package.json, config, source, changelog | \`githubFile\` | a docs page paraphrasing it |
 | Is a project alive, what is its latest release, is it archived | \`githubRepo\` | star counts from an article |
 | Which library should be used for X / what is popular | \`findPackages\` | a listicle |
 | Current API surface of a library | \`libraryDocs\` (when available) | search snippets |
+| Who published what, in what year, with how many citations; is there a paper on X | \`academicSearch\` (\`openalex\`, or \`pubmed\` for biomedical) | a summary of the abstract |
+
+Two of those have a trap in them. A Docker image has **no single current version** — \`latest\`
+is a moving tag its maintainer can repoint at any time, so read the tag list and the dates,
+never report \`latest\` as if it were a release number. And a Go module path is
+case-sensitive: pass it exactly as written (\`github.com/Masterminds/semver/v3\`), not
+lowercased.
 
 Then, for everything those cannot answer:
 
