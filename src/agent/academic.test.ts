@@ -87,6 +87,10 @@ describe('parsePubmedIds', () => {
   it('is total against a missing esearchresult', () => {
     expect(parsePubmedIds({})).toEqual({ ids: [], totalCount: 0 })
   })
+
+  it('falls back totalCount to 0 for a non-numeric count', () => {
+    expect(parsePubmedIds({ esearchresult: { count: 'N/A', idlist: [] } })).toEqual({ ids: [], totalCount: 0 })
+  })
 })
 
 describe('mapPubmedRecord', () => {
@@ -125,5 +129,24 @@ describe('mapPubmedRecord', () => {
     const mapped = mapPubmedRecord('1', record)
     expect(mapped.journal).toBe('Short J Name')
     expect(mapped.doi).toBeNull()
+  })
+
+  it('trims authors to the first 5 when more than 5 are listed', () => {
+    const record = {
+      title: 'A multi-author study',
+      fulljournalname: 'Journal of Many Authors',
+      authors: [
+        { name: 'Doe J', authtype: 'Author' },
+        { name: 'Smith A', authtype: 'Author' },
+        { name: 'Lee K', authtype: 'Author' },
+        { name: 'Patel R', authtype: 'Author' },
+        { name: 'Garcia M', authtype: 'Author' },
+        { name: 'Kim S', authtype: 'Author' },
+      ],
+      articleids: [{ idtype: 'pubmed', value: '2' }],
+    }
+
+    const mapped = mapPubmedRecord('2', record)
+    expect(mapped.authors).toEqual(['Doe J', 'Smith A', 'Lee K', 'Patel R', 'Garcia M'])
   })
 })

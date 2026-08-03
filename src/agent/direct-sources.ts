@@ -57,6 +57,36 @@ interface JsonResult<T> {
   error?: string
 }
 
+// Shared by every registry lookup below (npm/pypi/crates/go/docker): each does an ok-check,
+// an error-shaped early return, then two ledger.recordRetrieved calls before mapping its own
+// fields. Five hand-copied versions of this already existed (three added this week) with no
+// shared source — the ledger is what gates citations, so a sixth copy that dropped a
+// recordRetrieved call or swapped pageUrl/apiUrl would silently make a retrieved page
+// ineligible as a citation source and nothing would catch it. `pick` extracts the ecosystem's
+// "found" payload from the raw response, so the success branch below narrows `core` to a
+// defined value without a type assertion at any call site. Returns the error object to
+// return immediately, or the narrowed payload to continue into the field mapping.
+function checkRegistryResult<T, C>(params: {
+  res: JsonResult<T>
+  pick: (data: T | undefined) => C | undefined
+  registryLabel: string
+  name: string
+  pageUrl: string
+  apiUrl: string
+  ledger: RetrievalLedger
+}): { error: string } | { core: C } {
+  const { res, pick, registryLabel, name, pageUrl, apiUrl, ledger } = params
+  const core = pick(res.data)
+  if (!res.ok || !core) {
+    const message = res.error ?? 'not found'
+    ledger.recordFailed(pageUrl, message)
+    return { error: `${registryLabel} lookup failed for "${name}": ${message}` }
+  }
+  ledger.recordRetrieved(pageUrl)
+  ledger.recordRetrieved(apiUrl)
+  return { core }
+}
+
 async function getJson<T>(url: string, headers: Record<string, string>): Promise<JsonResult<T>> {
   try {
     const res = await fetch(url, { headers, signal: AbortSignal.timeout(TIMEOUT_MS) })
@@ -122,16 +152,18 @@ async function lookupNpm(name: string, ledger: RetrievalLedger): Promise<unknown
     getJson<NpmPackument>(apiUrl, { 'user-agent': UA, accept: 'application/vnd.npm.install-v1+json' }),
   ])
 
-  if (!manifest.ok || !manifest.data) {
-    const error = manifest.error ?? 'not found'
-    ledger.recordFailed(pageUrl, error)
-    return { error: `npm lookup failed for "${name}": ${error}` }
-  }
+  const check = checkRegistryResult({
+    res: manifest,
+    pick: (data) => data,
+    registryLabel: 'npm',
+    name,
+    pageUrl,
+    apiUrl,
+    ledger,
+  })
+  if ('error' in check) return check
 
-  ledger.recordRetrieved(pageUrl)
-  ledger.recordRetrieved(apiUrl)
-
-  const m = manifest.data
+  const m = check.core
   const tags = packument.data?.['dist-tags'] ?? {}
   return {
     ecosystem: 'npm',
@@ -157,16 +189,18 @@ async function lookupPypi(name: string, ledger: RetrievalLedger): Promise<unknow
   const pageUrl = `https://pypi.org/project/${name}/`
 
   const res = await getJson<PypiResponse>(apiUrl, { 'user-agent': UA, accept: 'application/json' })
-  if (!res.ok || !res.data?.info) {
-    const error = res.error ?? 'not found'
-    ledger.recordFailed(pageUrl, error)
-    return { error: `PyPI lookup failed for "${name}": ${error}` }
-  }
+  const check = checkRegistryResult({
+    res,
+    pick: (data) => data?.info,
+    registryLabel: 'PyPI',
+    name,
+    pageUrl,
+    apiUrl,
+    ledger,
+  })
+  if ('error' in check) return check
 
-  ledger.recordRetrieved(pageUrl)
-  ledger.recordRetrieved(apiUrl)
-
-  const i = res.data.info
+  const i = check.core
   return {
     ecosystem: 'pypi',
     name,
@@ -178,7 +212,7 @@ async function lookupPypi(name: string, ledger: RetrievalLedger): Promise<unknow
     yanked: i.yanked ?? false,
     homepage: i.home_page || null,
     projectUrls: i.project_urls ?? {},
-    releaseCount: Object.keys(res.data.releases ?? {}).length,
+    releaseCount: Object.keys(res.data?.releases ?? {}).length,
     sourceUrl: pageUrl,
     note: 'Authoritative: read live from the PyPI JSON API. Cite sourceUrl. Prefer these exact strings over any version you remember.',
   }
@@ -210,17 +244,19 @@ async function lookupCrates(name: string, ledger: RetrievalLedger): Promise<unkn
   // crates.io's crawler policy expects a User-Agent that identifies the caller; `UA`
   // already does and was verified working against this endpoint.
   const res = await getJson<CratesResponse>(apiUrl, { 'user-agent': UA, accept: 'application/json' })
-  if (!res.ok || !res.data?.crate) {
-    const error = res.error ?? 'not found'
-    ledger.recordFailed(pageUrl, error)
-    return { error: `crates.io lookup failed for "${name}": ${error}` }
-  }
+  const check = checkRegistryResult({
+    res,
+    pick: (data) => data?.crate,
+    registryLabel: 'crates.io',
+    name,
+    pageUrl,
+    apiUrl,
+    ledger,
+  })
+  if ('error' in check) return check
 
-  ledger.recordRetrieved(pageUrl)
-  ledger.recordRetrieved(apiUrl)
-
-  const c = res.data.crate
-  const stableEntry = res.data.versions?.find((v) => v.num === c.max_stable_version)
+  const c = check.core
+  const stableEntry = res.data?.versions?.find((v) => v.num === c.max_stable_version)
   return {
     ecosystem: 'crates',
     name,
@@ -256,16 +292,18 @@ async function lookupGo(moduleName: string, ledger: RetrievalLedger): Promise<un
   const pageUrl = `https://pkg.go.dev/${moduleName}`
 
   const res = await getJson<GoProxyResponse>(apiUrl, { 'user-agent': UA, accept: 'application/json' })
-  if (!res.ok || !res.data?.Version) {
-    const error = res.error ?? 'not found'
-    ledger.recordFailed(pageUrl, error)
-    return { error: `Go module proxy lookup failed for "${moduleName}": ${error}` }
-  }
+  const check = checkRegistryResult({
+    res,
+    pick: (data) => (data?.Version ? data : undefined),
+    registryLabel: 'Go module proxy',
+    name: moduleName,
+    pageUrl,
+    apiUrl,
+    ledger,
+  })
+  if ('error' in check) return check
 
-  ledger.recordRetrieved(pageUrl)
-  ledger.recordRetrieved(apiUrl)
-
-  const d = res.data
+  const d = check.core
   return {
     ecosystem: 'go',
     name: moduleName,
@@ -292,16 +330,18 @@ async function lookupDocker(name: string, ledger: RetrievalLedger): Promise<unkn
   const apiUrl = `https://hub.docker.com/v2/repositories/${namespace}/${repo}/tags?page_size=25&ordering=last_updated`
 
   const res = await getJson<DockerTagsResponse>(apiUrl, { 'user-agent': UA, accept: 'application/json' })
-  if (!res.ok || !res.data) {
-    const error = res.error ?? 'not found'
-    ledger.recordFailed(pageUrl, error)
-    return { error: `Docker Hub lookup failed for "${name}": ${error}` }
-  }
+  const check = checkRegistryResult({
+    res,
+    pick: (data) => data,
+    registryLabel: 'Docker Hub',
+    name,
+    pageUrl,
+    apiUrl,
+    ledger,
+  })
+  if ('error' in check) return check
 
-  ledger.recordRetrieved(pageUrl)
-  ledger.recordRetrieved(apiUrl)
-
-  const tags = (res.data.results ?? []).map((t) => ({
+  const tags = (check.core.results ?? []).map((t) => ({
     name: t.name ?? null,
     lastUpdated: t.last_updated ?? null,
     sizeBytes: t.full_size ?? null,
@@ -310,7 +350,7 @@ async function lookupDocker(name: string, ledger: RetrievalLedger): Promise<unkn
     ecosystem: 'docker',
     name: `${namespace}/${repo}`,
     tags,
-    tagCount: res.data.count ?? tags.length,
+    tagCount: check.core.count ?? tags.length,
     sourceUrl: pageUrl,
     // Deliberately no `latestVersion` key: every other ecosystem's `latestVersion` names a
     // real version, but docker's `latest` is a mutable pointer the maintainer can repoint at
@@ -322,9 +362,15 @@ async function lookupDocker(name: string, ledger: RetrievalLedger): Promise<unkn
   }
 }
 
+// Single source of truth for the ecosystem set: both PACKAGE_LOOKUPS's key type and the
+// zod enum below are derived from this array, so adding a sixth ecosystem to one and not
+// the other is a type error instead of a silent drift.
+const ECOSYSTEMS = ['npm', 'pypi', 'crates', 'go', 'docker'] as const
+type Ecosystem = (typeof ECOSYSTEMS)[number]
+
 // Ecosystem dispatch as a lookup map rather than a growing if/else — stays readable as new
 // ecosystems are added, and each branch already has an identical (name, ledger) signature.
-const PACKAGE_LOOKUPS: Record<'npm' | 'pypi' | 'crates' | 'go' | 'docker', (name: string, ledger: RetrievalLedger) => Promise<unknown>> = {
+const PACKAGE_LOOKUPS: Record<Ecosystem, (name: string, ledger: RetrievalLedger) => Promise<unknown>> = {
   npm: lookupNpm,
   pypi: lookupPypi,
   crates: lookupCrates,
@@ -337,7 +383,7 @@ function buildPackageInfoTool(ledger: RetrievalLedger, jobId: string): AnyTool {
     description:
       'Look up the AUTHORITATIVE current metadata for a published package straight from its registry: exact latest version, dist-tags/license/dependencies/deprecation (npm, pypi), crate metadata (crates.io), module version and VCS origin (go, via the Go module proxy), or the tag list (docker, via Docker Hub — images have no single "latest version", read the tags and their dates). Use this for ANY question about what version of a package, crate, module or image is current, what it depends on, or whether it is deprecated — it is exact where search results and model memory are stale. Prefer it over searchWeb for these questions.',
     inputSchema: z.object({
-      ecosystem: z.enum(['npm', 'pypi', 'crates', 'go', 'docker']).describe('Which registry to query'),
+      ecosystem: z.enum(ECOSYSTEMS).describe('Which registry to query'),
       name: z
         .string()
         .describe(

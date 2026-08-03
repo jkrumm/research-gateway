@@ -52,11 +52,23 @@ get in:
 | Current API surface of a library | \`libraryDocs\` (when available) | search snippets |
 | Who published what, in what year, with how many citations; is there a paper on X | \`academicSearch\` (\`openalex\`, or \`pubmed\` for biomedical) | a summary of the abstract |
 
-Two of those have a trap in them. A Docker image has **no single current version** — \`latest\`
-is a moving tag its maintainer can repoint at any time, so read the tag list and the dates,
-never report \`latest\` as if it were a release number. And a Go module path is
+Three of those have a trap in them. A Docker image has **no single current version** —
+\`latest\` is a moving tag its maintainer can repoint at any time, so read the tag list and the
+dates, never report \`latest\` as if it were a release number. A Go module path is
 case-sensitive: pass it exactly as written (\`github.com/Masterminds/semver/v3\`), not
 lowercased.
+
+And \`academicSearch\` is a lookup, not a search engine. **One call per question.** Reworded
+retries — the title, then the title in quotes, then the first author's name, then the arXiv id
+— return the same index answering the same question, and each one costs a step you could have
+spent reading a paper. If the first call did not find it, it is very likely not indexed under
+that name; say so in \`openGaps\` instead of asking again.
+
+When you cite a result from it, cite **the paper**: its \`doi\`, \`landingPageUrl\` or
+\`openAccessUrl\`. Never cite an \`api.openalex.org\` or \`eutils.ncbi.nlm.nih.gov\` URL — an
+API endpoint is not a source a reader can follow, and one query URL cannot be the citation for
+five different papers. Do not hand-build API URLs and pass them to \`fetchPage\`; that is what
+this tool is for, and the URL you construct will not be the one a citation should name.
 
 Then, for everything those cannot answer:
 
