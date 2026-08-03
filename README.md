@@ -16,8 +16,11 @@ server-side. See [`PRD.md`](./PRD.md) for the full rationale and decisions.
   terminal tool with no `execute`, whose input is the structured result: `submit_plan`,
   `submit_digest`, `submit_report`). `prepareStep` forces the done-tool in-loop before any
   ceiling is hit, so a run always banks its result instead of being cut off empty-handed.
-- **LLM:** IU unified endpoint via `@ai-sdk/openai-compatible`. Lead (plan + synthesis):
-  DeepSeek-V4-Pro. Workers (fan-out): DeepSeek-V4-Flash.
+- **LLM:** IU unified endpoint via `@ai-sdk/openai-compatible`. **DeepSeek-V4-Flash for both**
+  the lead (plan + synthesis) and the workers (fan-out) — the lead was V4-Pro until synthesis
+  became the wall-clock long pole, and halving its tokens-per-second cost bought more headroom
+  inside the same timeouts than Pro's quality bought in report terms (`depth.ts`). Override
+  either with `IU_LEAD_MODEL` / `IU_WORKER_MODEL`.
 - **Tools:** two kinds, and the split is the point.
   - *Source-of-truth lookups* — `packageInfo` (five registries: npm, PyPI, crates.io, the Go
     module proxy, Docker Hub), `githubFile` (a repo file verbatim), `githubRepo` (release,
@@ -115,7 +118,7 @@ bun test           # pure-function tests; needs no secrets
 | `PORT` | no (7780) | listen port |
 | `API_SECRET` | yes | the gateway's own bearer token |
 | `IU_BASE_URL` / `IU_API_KEY` | yes | IU unified endpoint |
-| `IU_LEAD_MODEL` | no (`DeepSeek-V4-Pro`) | plans + synthesizes |
+| `IU_LEAD_MODEL` | no (`DeepSeek-V4-Flash`) | plans + synthesizes. Was `DeepSeek-V4-Pro`; see [Stack](#stack) for why it is not any more |
 | `IU_WORKER_MODEL` | no (`DeepSeek-V4-Flash`) | the parallel fan-out |
 | `SEARCH_PROVIDER` | no (`sonar`) | `sonar` \| `tavily` — which backend `searchWeb` uses. See [Web search backend](#web-search-backend) |
 | `SONAR_MODEL` | no (`sonar`) | pinned; not a menu — see the note in `env.ts` before changing it |
@@ -271,6 +274,38 @@ Two shape decisions worth knowing before changing them:
 calls from the VPS, and 200-then-429-then-429 from a residential IP. It is unusable at this
 gateway's call rate without a key. The unblock is the free-key form
 (`semanticscholar.org/product/api#api-key-form`), not a retry loop.
+
+### Why a new tool needs two live runs, not one
+
+`academicSearch` shipped working and useless, and only running it showed the difference. Three
+runs of one identical query, each after one fix:
+
+| | as shipped | + ledger fix | + prompt fix |
+|-|-|-|-|
+| findings stripped at the worker boundary | **9 of 14** | 2 of 10 | **0** |
+| citations kept | 5 | 8 | **11** |
+| citations pointing at an API endpoint | — | **5 of 8, at `high`** | **0** |
+| `academicSearch` calls for one question | 8 | 6 | **3** |
+
+Run 1: the tool answered correctly and `groundDigest` threw two thirds of it away, because
+`lookupOpenAlex` recorded only its query URL while the model — correctly — cited works by DOI
+and landing page. **Every URL a model can cite from a tool's response has to be on the
+ledger**, or the tool is doing free work.
+
+Run 2: fixed, and worse in a new way. Five of eight citations were the same
+`api.openalex.org/works?filter=…` URL, at `high` confidence, standing in for five different
+papers. Two behaviours caused it — the worker issued five reworded OpenAlex queries for one
+question, then, out of useful steps, hand-built API URLs and passed them to `fetchPage`, which
+reads them as raw JSON and grounds them at `high`. Neither is a bug in the tool; both are the
+prompt not saying the thing.
+
+Run 3: every citation is a paper (`arxiv.org`, `doi.org`, `pubmed`), all at `medium` — the
+honest ceiling for "the index says so", since nothing read the papers themselves.
+
+The lesson generalises past this tool. A new source-of-truth lookup is not done when it
+returns correct data; it is done when a real worker's citations survive the ledger. Both
+failures were invisible to unit tests and to the corpus, and both showed up in the first
+`worker.ungrounded` line of a live run.
 
 ## Fetching pages
 
