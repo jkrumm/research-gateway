@@ -1,6 +1,12 @@
 import type { LanguageModelUsage } from 'ai'
 import { env } from '../env.js'
-import { computeCost, normalizeModel, buildTavilyCreditRecord, buildSonarSearchRecord } from './cost.js'
+import {
+  computeCost,
+  normalizeModel,
+  buildTavilyCreditRecord,
+  buildSonarSearchRecord,
+  buildRenderRecord,
+} from './cost.js'
 
 // Re-exported for compatibility — callers importing `computeCost` from `usage.ts` keep
 // working; the implementation lives in `cost.ts` because it has no `env.js` import and
@@ -151,6 +157,8 @@ export async function reportUsage(args: {
 export async function reportTavilyUsage(args: {
   jobId: string
   credits: number
+  searchCalls: number
+  extractCalls: number
   outcome?: 'ok' | 'error'
 }): Promise<void> {
   const now = new Date().toISOString()
@@ -174,5 +182,22 @@ export async function reportSonarUsage(args: {
 }): Promise<void> {
   const now = new Date().toISOString()
   const record = { ...buildSonarSearchRecord(args), ts: now, ingested_at: now }
+  await postUsageRecord(record)
+}
+
+// Fifth per-job telemetry record, alongside `lead`/`worker`/`tavily`/`sonar` — lightpanda
+// renders were previously invisible to argo entirely (only container logs, gone on redeploy).
+// Same cumulative-snapshot contract as reportTavilyUsage/reportSonarUsage: the counts are the
+// job's running totals, and argo's upsert on (source, source_id, machine) overwrites rather
+// than accumulates duplicate rows.
+export async function reportRenderUsage(args: {
+  jobId: string
+  renders: number
+  failures: number
+  totalMs: number
+  outcome?: 'ok' | 'error'
+}): Promise<void> {
+  const now = new Date().toISOString()
+  const record = { ...buildRenderRecord(args), ts: now, ingested_at: now }
   await postUsageRecord(record)
 }

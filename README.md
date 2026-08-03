@@ -38,8 +38,10 @@ server-side. See [`PRD.md`](./PRD.md) for the full rationale and decisions.
 |-|-|-|-|
 | `GET /` | public | — | discovery (links to `/openapi`) |
 | `GET /health` | public | — | `{ status: "ok" }` |
+| `GET /health/render` | public | — | `{ renderer, active, queued, error }` — the sidecar. **Deliberately not part of `/health`**, which the container healthcheck and rollhook's rollout gate read: the renderer is optional, and a broken one must not block deploys of a gateway that is otherwise fine |
 | `POST /research` | bearer | `{ query, depth? }` (`depth`: `quick \| standard \| deep`) | `{ jobId, status }` (async) |
 | `GET /research/:jobId` | bearer | — | `{ status, result?, error? }` |
+| `POST /probe/fetch` | bearer | `{ url }` | one URL through the real fetch chain, no LLM — which step terminated it, chars and ms per step. Drives `scripts/fetch-bench.ts` |
 
 `result` shape: `{ report, citations: [{ claim, url, confidence }], sources, unverified,
 status, warnings, grounding, cost }` — `report` is the narrative cited answer, `citations`
@@ -47,11 +49,14 @@ ties claims to URLs, `sources` is the pages actually read, `unverified` is what 
 checked, and `status` / `grounding` are the code-counted evidence accounting.
 
 `cost` is what this one run actually spent: `{ wallMs, totalUsd, llmUsd, searchUsd,
-searchCalls, tavilyCredits }`. `searchUsd` is Perplexity's own per-call figure, `llmUsd` is
-computed from the local rate table (null if the configured model has no entry), and
-`tavilyCredits` is left unpriced — no verified USD-per-credit rate exists. It is read from
-the same per-job meters that feed argo, so the result and the dashboard report one number
-rather than two accountings that can drift.
+searchCalls, tavilyCredits, tavilyExtractCalls }`. `searchUsd` is Perplexity's own per-call
+figure, `llmUsd` is computed from the local rate table (null if the configured model has no
+entry), and the two Tavily fields are left unpriced — no verified USD-per-credit rate exists.
+All of them are read from the same per-job meters that feed argo, so the result and the
+dashboard report one number rather than two accountings that can drift.
+
+`tavilyCredits` covers **search only** — see [what that field cannot
+see](#what-tavilycredits-cannot-see) before using it as a saving.
 
 Runs are **async**: submit returns a `jobId` immediately; poll `GET /research/:jobId` until
 `status` is `done` (agentic runs take tens of seconds to minutes). A global concurrency cap
@@ -363,10 +368,9 @@ Counting what each step actually terminated (487 `fetchPage` outcomes):
 **That argued for keeping both renderers. The fetch-level bench then undercut it, and Jina is
 gone** — see below. The job-level metrics moved as predicted, which is to say not resolvably: wall 354 → 328s,
 cost $0.0891 → $0.0887, fetch failure rate 10.8% → 11.3% (pagesFailed cv **1.00** — this
-metric cannot resolve anything at n=3). `tavilyCredits` read 12 → 7 → **0**, but that field is
-not trustworthy on its own: the one Extract call that *succeeded* here also recorded 0
-credits, so it under-reports. The honest version of that claim is the table — Tavily Extract
-now terminates 1 fetch in 487.
+metric cannot resolve anything at n=3). `tavilyCredits` read 12 → 7 → **0**, which is not the
+saving it looks like — see below. The honest version of that claim is the table: Tavily
+Extract now terminates 1 fetch in 487.
 
 Two things the run surfaced that are not about rendering. `github.com` is now the top
 unverifiable host (16 of 26 across 15 runs), replacing Reddit as the site-adapter candidate.
@@ -527,23 +531,58 @@ is the product. `maxSearches` stayed at 4. Revisit if IU spend ever becomes bind
 ## Telemetry
 
 Each job reports spend to argo `POST /usage/records` as `source: "research-gateway"`,
-`billing: "iu"` — **up to four records per job**: two LLM records, one per model bucket
-(`sub_tool: lead | worker`), since the two run on different models, plus one search record per
-backend the job actually used (`sub_tool: sonar` and/or `sub_tool: tavily`). argo upserts on
-`(source, source_id, machine)`, so `source_id` is scoped `${jobId}:lead` / `${jobId}:worker` /
-`${jobId}:sonar` / `${jobId}:tavily` or a later record would overwrite an earlier one.
+`billing: "iu"` — **up to five records per job**: two LLM records, one per model bucket
+(`sub_tool: lead | worker`), since the two run on different models; one search record per
+backend the job actually used (`sub_tool: sonar` and/or `sub_tool: tavily`); and one render
+record (`sub_tool: lightpanda`). argo upserts on `(source, source_id, machine)`, so `source_id`
+is scoped `${jobId}:lead` / `:worker` / `:sonar` / `:tavily` / `:render` or a later record
+would overwrite an earlier one.
 
-The three `cost_source` values are distinct provenances, not decoration:
+The `cost_source` values are distinct provenances, not decoration:
 
 | Record | `cost_source` | Why |
 |-|-|-|
 | `lead` / `worker` | `computed` | our rate table, cache-aware — the endpoint bills a cache-read ~30x below a miss and the fan-out sustains a ~60% hit rate, so billing all input at the miss rate overstates cost several-fold |
 | `sonar` | `reported` | Perplexity prices the call and returns the USD; pricing it from its token counts would under-report by ~100x, since the cost is almost entirely a per-request search fee |
-| `tavily` | `none` | credit count travels in `raw` — no verified USD-per-credit rate exists to convert it honestly |
+| `tavily` | `none` | credit count travels in `raw` — no verified USD-per-credit rate exists to convert it honestly, and for extraction no per-call credit count exists at all (below) |
+| `lightpanda` | `none` | a different reason from Tavily's: the sidecar is self-hosted, so there is no marginal per-render cost to report. `raw` carries `{ renders, failures, totalMs }` |
 
 Search records are debounced per job (a deep run makes 100+ billed calls that all upsert the
 same row), so argo sees one trailing cumulative POST rather than a flood. Telemetry failure
 never fails a job.
+
+Renders reached no telemetry at all until 2026-08-03 — they existed only in container logs,
+which do not survive a redeploy, so a renderer that had started failing was invisible until
+someone ran the fetch bench. The `:render` record and an Uptime Kuma monitor on
+[`/health/render`](#contract) (homelab `uptime-kuma/monitors.yaml`) are the two halves of that
+fix.
+
+### What `tavilyCredits` cannot see
+
+**`tavilyCredits` counts search credits only. It does not count page extraction, and it never
+did.** Repeated write-ups in this repo blamed the field. The field is fine: `@tavily/core`
+sends `include_usage: true` and surfaces `response.data.usage` correctly, and the zero comes
+from Tavily. Measured against `api.tavily.com` from the VPS, 2026-08-03:
+
+| URLs per Extract call | reported `usage.credits` |
+|-|-|
+| 1 | **0** (four calls, fresh and cached URLs) |
+| 2 | 1 |
+| 5 | 1 |
+| *search, any* | 1 — correct |
+
+`fetchPage` extracts exactly **one** URL per call, so on that path the field is structurally
+zero forever, at any volume. Ground truth lives at `GET https://api.tavily.com/usage`, which
+at measurement time reported `extract_usage: 75` against `search_usage: 1064` — extracts are
+billed, the per-response field just cannot see them at this call shape.
+
+So the fix is not to read a different field. `tavilyExtractCalls` counts the calls, travels in
+`raw` beside the credits, and is what any future USD-per-credit rate would have to multiply.
+
+That same `GET /usage` call is worth running occasionally for a reason unrelated to this
+field: it is the only place the **plan ceiling** is visible. It reports `plan_usage` against
+`plan_limit` and a separate `paygo_usage` — and nothing in this service reads it, so crossing
+from plan credits into pay-as-you-go happens silently.
 
 ## Deploy
 

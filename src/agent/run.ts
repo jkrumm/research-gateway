@@ -8,7 +8,7 @@ import { groundReport } from './ground.js'
 import type { Depth, ResearchReport, SubmittedReport, SubQuestion, WorkerDigest } from './schema.js'
 import { log } from '../lib/log.js'
 import { computeCost, emptyUsage, addUsage } from '../lib/usage.js'
-import { readSearchSpend } from './tools.js'
+import { readSearchSpend, readRenderStats } from './tools.js'
 import type { UsageStats } from '../lib/usage.js'
 import { env } from '../env.js'
 
@@ -247,8 +247,13 @@ export async function runResearch(
       searchUsd: search.sonarCostUsd,
       searchCalls: search.sonarCalls,
       tavilyCredits: search.tavilyCredits,
+      tavilyExtractCalls: search.tavilyExtractCalls,
     },
   }
+
+  // Operational counters, not spend — kept out of RunCost (which stays about money) and
+  // reported only in this log line, plus argo via reportRenderUsage (tools.ts's meterRender).
+  const renderStats = readRenderStats(jobId)
 
   log('research.done', {
     jobId,
@@ -272,6 +277,8 @@ export async function runResearch(
     costUsd,
     searchUsd: search.sonarCostUsd,
     searchCalls: search.sonarCalls,
+    renders: renderStats.renders,
+    rendersFailed: renderStats.failures,
     wallMs,
   })
 

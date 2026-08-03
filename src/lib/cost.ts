@@ -61,11 +61,15 @@ interface SearchUsageRecordBase {
 }
 
 export interface TavilyCreditUsageRecord extends SearchUsageRecordBase {
-  raw: { tavilyCredits: number }
+  raw: { tavilyCredits: number; tavilySearchCalls: number; tavilyExtractCalls: number }
 }
 
 export interface SonarSearchUsageRecord extends SearchUsageRecordBase {
   raw: { searchCalls: number; searchQueries: number }
+}
+
+export interface RenderUsageRecord extends SearchUsageRecordBase {
+  raw: { renders: number; failures: number; totalMs: number }
 }
 
 // Tavily bills by API credit, not by token — jamming a credit count into `input_tokens`/
@@ -77,10 +81,15 @@ export interface SonarSearchUsageRecord extends SearchUsageRecordBase {
 // `cost_usd` is left unset rather than guessed: unlike the DeepSeek token RATES above
 // (matched against argo's own ai-usage.ts table), no verified USD-per-credit rate for
 // Tavily exists anywhere in this repo, and Tavily's per-credit price varies by plan tier.
-// Inventing one would misrepresent spend on argo's cost dashboards.
+// Inventing one would misrepresent spend on argo's cost dashboards. It also could not be
+// computed even with a rate table: `tavilyExtractCalls` is what such a rate would have to
+// multiply, since extract's own per-call `usage.credits` is structurally unreadable (see
+// tools.ts's meterTavily comment for the measured 1/2/5-URL numbers behind that claim).
 export function buildTavilyCreditRecord(args: {
   jobId: string
   credits: number
+  searchCalls: number
+  extractCalls: number
   outcome?: 'ok' | 'error'
 }): TavilyCreditUsageRecord {
   return {
@@ -105,7 +114,11 @@ export function buildTavilyCreditRecord(args: {
     duration_ms: null,
     cost_usd: null,
     cost_source: 'none',
-    raw: { tavilyCredits: args.credits },
+    raw: {
+      tavilyCredits: args.credits,
+      tavilySearchCalls: args.searchCalls,
+      tavilyExtractCalls: args.extractCalls,
+    },
   }
 }
 
@@ -154,5 +167,42 @@ export function buildSonarSearchRecord(args: {
     cost_usd: args.costUsd,
     cost_source: 'reported',
     raw: { searchCalls: args.searchCalls, searchQueries: args.searchQueries },
+  }
+}
+
+// Fifth per-job record: lightpanda renders were previously visible only in container logs,
+// which don't survive a redeploy. `cost_usd: null` / `cost_source: 'none'` here for a
+// different reason than the Tavily record's — this isn't a missing rate table, it's that
+// lightpanda is a self-hosted sidecar (see fetch-chain.ts), so there is no marginal per-render
+// vendor cost to report at all. `duration_ms` carries the job's total render time; `raw`
+// carries the counts a future capacity/latency read would need.
+export function buildRenderRecord(args: {
+  jobId: string
+  renders: number
+  failures: number
+  totalMs: number
+  outcome?: 'ok' | 'error'
+}): RenderUsageRecord {
+  return {
+    source: 'research-gateway',
+    source_id: `${args.jobId}:render`,
+    grain: 'session',
+    model: null,
+    model_norm: null,
+    project: 'research-gateway',
+    workspace: 'private',
+    sub_tool: 'lightpanda',
+    machine: 'vps',
+    billing: 'iu',
+    outcome: args.outcome ?? 'ok',
+    input_tokens: 0,
+    output_tokens: 0,
+    cache_read_tokens: 0,
+    cache_write_tokens: 0,
+    reasoning_tokens: 0,
+    duration_ms: args.totalMs,
+    cost_usd: null,
+    cost_source: 'none',
+    raw: { renders: args.renders, failures: args.failures, totalMs: args.totalMs },
   }
 }

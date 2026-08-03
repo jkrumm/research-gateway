@@ -4,7 +4,7 @@ import { z } from 'zod'
 import { tavily } from '@tavily/core'
 import { env } from '../env.js'
 import { log } from '../lib/log.js'
-import { reportTavilyUsage, reportSonarUsage } from '../lib/usage.js'
+import { reportTavilyUsage, reportSonarUsage, reportRenderUsage } from '../lib/usage.js'
 import { capText, TEXT_CAP } from './extract.js'
 import { buildDirectSourceTools } from './direct-sources.js'
 import { sonarSearch, type SonarContextSize } from './sonar.js'
@@ -89,17 +89,52 @@ function createJobMeter<T>(args: {
   return { add, read }
 }
 
-// Credits a Tavily call actually billed — ground truth from the response's `usage.credits`
-// (see buildFetchPageTool below), not a hardcoded rate table that would drift the moment
-// Tavily repriced a tier.
-const meterTavily = createJobMeter<number>({
-  add: (prev, delta) => (prev ?? 0) + delta,
-  flush: (jobId, credits) => void reportTavilyUsage({ jobId, credits }),
+// `tavilyCredits` reads 0 for essentially all page extraction. This has been written up
+// repeatedly as a wrong-field bug in this repo's own notes. It is not one — `@tavily/core`
+// sends `include_usage: true` and surfaces `response.data.usage` correctly, and the zero
+// comes from the API. Measured directly against api.tavily.com from the VPS on 2026-08-03,
+// `@tavily/core@0.7.6`:
+//
+//   1 URL per extract call  -> usage.credits = 0   (4 separate calls, fresh and cached URLs)
+//   2 URLs per extract call -> usage.credits = 1
+//   5 URLs per extract call -> usage.credits = 1
+//   search (any)            -> usage.credits = 1   (correct)
+//
+// `fetchPage` extracts exactly ONE url per call, so `usage.credits` is structurally always 0
+// on that path, forever, no matter the volume. Ground truth exists at `GET
+// https://api.tavily.com/usage`, which reported `extract_usage: 75` against `search_usage:
+// 1064` at measurement time — extracts ARE billed, the per-response field just cannot see it
+// at our call shape. The fix is therefore not to change how credits are read, but to count
+// the thing we CAN count — extract calls — instead of letting one credit number imply it
+// covers extraction. The numbers above are the answer; re-measure only if Tavily reprices.
+const meterTavily = createJobMeter<{ credits: number; searchCalls: number; extractCalls: number }>({
+  add: (prev, delta) => ({
+    credits: (prev?.credits ?? 0) + delta.credits,
+    searchCalls: (prev?.searchCalls ?? 0) + delta.searchCalls,
+    extractCalls: (prev?.extractCalls ?? 0) + delta.extractCalls,
+  }),
+  flush: (jobId, total) =>
+    void reportTavilyUsage({
+      jobId,
+      credits: total.credits,
+      searchCalls: total.searchCalls,
+      extractCalls: total.extractCalls,
+    }),
 })
 
-function addTavilyCredits(jobId: string, credits: number): void {
+// Search path: `usage.credits` is correct here (see the table above), so a non-billing
+// response (credits <= 0) genuinely means nothing was billed and is skipped.
+function recordTavilySearch(jobId: string, credits: number): void {
   if (credits <= 0) return
-  meterTavily.add(jobId, credits)
+  meterTavily.add(jobId, { credits, searchCalls: 1, extractCalls: 0 })
+}
+
+// Extract path: 0 credits is the NORMAL case (single-URL calls, per the table above), so —
+// unlike recordTavilySearch — this must NOT early-return on credits <= 0. The call still
+// happened and still has to be counted, or extraction volume stays invisible exactly the way
+// this whole change exists to fix.
+function recordTavilyExtract(jobId: string, credits: number): void {
+  meterTavily.add(jobId, { credits, searchCalls: 0, extractCalls: 1 })
 }
 
 export interface SonarTotals {
@@ -124,6 +159,22 @@ const meterSonar = createJobMeter<SonarTotals>({
     void reportSonarUsage({ jobId, model: env.SONAR_MODEL, ...total }),
 })
 
+// Lightpanda renders were previously visible only in container logs (gone on redeploy). One
+// meter entry per render ATTEMPT, whether it succeeded, produced thin/parse-failure content,
+// or threw — see fetch-chain.ts's onRender call sites, which fire in all three cases.
+const meterRender = createJobMeter<{ renders: number; failures: number; totalMs: number }>({
+  add: (prev, delta) => ({
+    renders: (prev?.renders ?? 0) + delta.renders,
+    failures: (prev?.failures ?? 0) + delta.failures,
+    totalMs: (prev?.totalMs ?? 0) + delta.totalMs,
+  }),
+  flush: (jobId, total) => void reportRenderUsage({ jobId, ...total }),
+})
+
+export function readRenderStats(jobId: string): { renders: number; failures: number; totalMs: number } {
+  return meterRender.read(jobId) ?? { renders: 0, failures: 0, totalMs: 0 }
+}
+
 // Per-job search spend, readable when a job finishes so it can travel in the job's own
 // result instead of only reaching argo. Without this the only way to price a single run was
 // to difference argo's cumulative counter between jobs — which works exactly as long as no
@@ -132,14 +183,19 @@ export interface JobSearchSpend {
   sonarCostUsd: number
   sonarCalls: number
   tavilyCredits: number
+  tavilySearchCalls: number
+  tavilyExtractCalls: number
 }
 
 export function readSearchSpend(jobId: string): JobSearchSpend {
   const sonar = meterSonar.read(jobId)
+  const tavily = meterTavily.read(jobId)
   return {
     sonarCostUsd: sonar?.costUsd ?? 0,
     sonarCalls: sonar?.searchCalls ?? 0,
-    tavilyCredits: meterTavily.read(jobId) ?? 0,
+    tavilyCredits: tavily?.credits ?? 0,
+    tavilySearchCalls: tavily?.searchCalls ?? 0,
+    tavilyExtractCalls: tavily?.extractCalls ?? 0,
   }
 }
 
@@ -228,7 +284,7 @@ async function searchViaTavily(args: {
   // came back empty. A call that throws (never resolves) is NOT counted: whether Tavily
   // billed a request it never answered is unknown, and undercounting is the safer direction
   // for a cost figure.
-  addTavilyCredits(args.jobId, r.usage?.credits ?? 0)
+  recordTavilySearch(args.jobId, r.usage?.credits ?? 0)
   log('tool.searchWeb', {
     jobId: args.jobId,
     query: args.query,
@@ -413,7 +469,8 @@ function buildFetchPageTool(ledger: RetrievalLedger, jobId = '-'): AnyTool {
       const result = await runFetchChain(url, {
         ledger,
         jobId,
-        onTavilyCredits: (credits) => addTavilyCredits(jobId, credits),
+        onTavilyCredits: (credits) => recordTavilyExtract(jobId, credits),
+        onRender: (r) => meterRender.add(jobId, { renders: 1, failures: r.ok ? 0 : 1, totalMs: r.ms }),
       })
 
       if (result.text === null) return { url, error: result.error ?? 'fetch failed' }

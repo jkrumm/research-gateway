@@ -54,7 +54,14 @@ export const RunCost = z.object({
   searchCalls: z.number().describe('Billed search calls this run — cache hits excluded.'),
   tavilyCredits: z
     .number()
-    .describe('Tavily credits consumed (page extraction, plus any search that fell back). Not priced — no verified USD-per-credit rate exists.'),
+    .describe(
+      'Tavily credits consumed by search calls (and any fallback search). Does NOT cover page extraction — measured directly against the API, a one-URL extract call always reports 0 credits, so this number understates true Tavily usage whenever fetchPage falls back to Extract. Not priced — no verified USD-per-credit rate exists. See tavilyExtractCalls for the extraction signal.',
+    ),
+  tavilyExtractCalls: z
+    .number()
+    .describe(
+      'Tavily Extract calls made by fetchPage. Measured fact: a one-URL extract call reports usage.credits = 0, so this call count — not tavilyCredits — is the actual extraction-volume signal.',
+    ),
 })
 export type RunCost = z.infer<typeof RunCost>
 

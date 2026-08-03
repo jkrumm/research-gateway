@@ -66,6 +66,13 @@ export interface FetchChainOptions {
    * returned no content, because Tavily bills the attempt, not the outcome.
    */
   onTavilyCredits?: (credits: number) => void
+  /**
+   * Called for EVERY lightpanda attempt this chain makes — success, parse-failure, and
+   * thrown error alike — so renders are countable even though none of those three outcomes
+   * terminates the chain the same way. Not called when `env.LIGHTPANDA_URL` is unset, since
+   * then no attempt was made at all.
+   */
+  onRender?: (r: { ok: boolean; ms: number }) => void
 }
 
 const tvly = tavily({ apiKey: env.TAVILY_API_KEY })
@@ -102,18 +109,24 @@ async function safeFetch(startUrl: string, jobId = '-', maxHops = 3): Promise<Re
   }
 }
 
-/** Records one attempt and returns it, so a step reads as a single expression. */
+/**
+ * Records one attempt and returns its elapsed ms, so a step reads as a single expression AND
+ * callers that also need to report the timing elsewhere (onRender, below) use the exact same
+ * number rather than a second `performance.now()` call that could disagree with it.
+ */
 function attempt(
   attempts: FetchAttempt[],
   step: FetchStep,
   startedAt: number,
   outcome: { ok: boolean; chars?: number; error?: string },
-): void {
-  attempts.push({ step, ...outcome, ms: Math.round(performance.now() - startedAt) })
+): number {
+  const ms = Math.round(performance.now() - startedAt)
+  attempts.push({ step, ...outcome, ms })
+  return ms
 }
 
 export async function runFetchChain(url: string, opts: FetchChainOptions): Promise<FetchChainResult> {
-  const { ledger, onTavilyCredits } = opts
+  const { ledger, onTavilyCredits, onRender } = opts
   const jobId = opts.jobId ?? '-'
   const attempts: FetchAttempt[] = []
 
@@ -224,15 +237,18 @@ export async function runFetchChain(url: string, opts: FetchChainOptions): Promi
       const parsed = parseRenderResponse(res.status, await res.json().catch(() => null))
       if (parsed.ok) {
         const text = normalizeText(parsed.text)
-        attempt(attempts, 'lightpanda', t2, { ok: true, chars: text.length })
+        const ms = attempt(attempts, 'lightpanda', t2, { ok: true, chars: text.length })
+        onRender?.({ ok: true, ms })
         log('tool.fetchPage', { jobId, url, via: 'lightpanda', chars: text.length, rdReason, rdChars })
         return done('lightpanda', text)
       }
-      attempt(attempts, 'lightpanda', t2, { ok: false, error: parsed.error })
+      const ms = attempt(attempts, 'lightpanda', t2, { ok: false, error: parsed.error })
+      onRender?.({ ok: false, ms })
       log('tool.fetchPage', { jobId, url, via: 'lightpanda', error: parsed.error })
     } catch (err) {
       // Never fatal — the sidecar being down must degrade this step, not the job.
-      attempt(attempts, 'lightpanda', t2, { ok: false, error: String(err) })
+      const ms = attempt(attempts, 'lightpanda', t2, { ok: false, error: String(err) })
+      onRender?.({ ok: false, ms })
       log('tool.fetchPage', { jobId, url, via: 'lightpanda', error: String(err) })
     }
   }

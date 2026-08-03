@@ -3,7 +3,7 @@ import { describe, it, expect } from 'bun:test'
 // `reportUsage`'s ARGO_* gate), which parses `process.env` at import time and throws
 // without secrets. `cost.ts` has no such chain, so `computeCost` is testable with zero
 // env vars. `usage.ts` re-exports the same `computeCost` binding for compatibility.
-import { computeCost, buildTavilyCreditRecord, buildSonarSearchRecord } from './cost.js'
+import { computeCost, buildTavilyCreditRecord, buildSonarSearchRecord, buildRenderRecord } from './cost.js'
 
 describe('computeCost', () => {
   it('bills uncached input at the miss rate and cached input at the cache-read rate (deepseek-v4-pro)', () => {
@@ -80,15 +80,17 @@ describe('computeCost', () => {
 })
 
 describe('buildTavilyCreditRecord', () => {
+  const args = { jobId: 'job-123', credits: 42, searchCalls: 3, extractCalls: 12 }
+
   it('scopes source_id as `${jobId}:tavily` so it never collides with the lead/worker rows', () => {
-    const record = buildTavilyCreditRecord({ jobId: 'job-123', credits: 42 })
+    const record = buildTavilyCreditRecord(args)
     expect(record.source_id).toBe('job-123:tavily')
     expect(record.sub_tool).toBe('tavily')
   })
 
-  it('carries the credit count in `raw`, never in a token field', () => {
-    const record = buildTavilyCreditRecord({ jobId: 'job-123', credits: 42 })
-    expect(record.raw).toEqual({ tavilyCredits: 42 })
+  it('carries the credit count and both call counts in `raw`, never in a token field', () => {
+    const record = buildTavilyCreditRecord(args)
+    expect(record.raw).toEqual({ tavilyCredits: 42, tavilySearchCalls: 3, tavilyExtractCalls: 12 })
     expect(record.input_tokens).toBe(0)
     expect(record.output_tokens).toBe(0)
     expect(record.cache_read_tokens).toBe(0)
@@ -96,23 +98,68 @@ describe('buildTavilyCreditRecord', () => {
     expect(record.reasoning_tokens).toBe(0)
   })
 
+  it('carries extractCalls even when credits is 0 — the normal case for single-URL extracts', () => {
+    const record = buildTavilyCreditRecord({ jobId: 'job-123', credits: 0, searchCalls: 0, extractCalls: 5 })
+    expect(record.raw).toEqual({ tavilyCredits: 0, tavilySearchCalls: 0, tavilyExtractCalls: 5 })
+  })
+
   it('leaves cost_usd unset — no verified USD-per-credit rate exists to compute it honestly', () => {
-    const record = buildTavilyCreditRecord({ jobId: 'job-123', credits: 42 })
+    const record = buildTavilyCreditRecord(args)
     expect(record.cost_usd).toBeNull()
     expect(record.cost_source).toBe('none')
   })
 
   it('leaves model/model_norm unset — a Tavily call is not a model call', () => {
-    const record = buildTavilyCreditRecord({ jobId: 'job-123', credits: 42 })
+    const record = buildTavilyCreditRecord(args)
     expect(record.model).toBeNull()
     expect(record.model_norm).toBeNull()
   })
 
   it('defaults outcome to "ok" and honors an explicit "error"', () => {
-    expect(buildTavilyCreditRecord({ jobId: 'job-123', credits: 0 }).outcome).toBe('ok')
-    expect(buildTavilyCreditRecord({ jobId: 'job-123', credits: 0, outcome: 'error' }).outcome).toBe(
-      'error',
-    )
+    expect(buildTavilyCreditRecord({ ...args, credits: 0 }).outcome).toBe('ok')
+    expect(buildTavilyCreditRecord({ ...args, credits: 0, outcome: 'error' }).outcome).toBe('error')
+  })
+})
+
+describe('buildRenderRecord', () => {
+  const args = { jobId: 'job-123', renders: 8, failures: 2, totalMs: 45_231 }
+
+  it('scopes source_id as `${jobId}:render` so it never collides with the other four records', () => {
+    const record = buildRenderRecord(args)
+    expect(record.source_id).toBe('job-123:render')
+    expect(record.sub_tool).toBe('lightpanda')
+  })
+
+  it('carries renders/failures/totalMs in `raw`, and mirrors totalMs into duration_ms', () => {
+    const record = buildRenderRecord(args)
+    expect(record.raw).toEqual({ renders: 8, failures: 2, totalMs: 45_231 })
+    expect(record.duration_ms).toBe(45_231)
+  })
+
+  it('leaves cost_usd unset — lightpanda is self-hosted, so there is no marginal cost to report', () => {
+    const record = buildRenderRecord(args)
+    expect(record.cost_usd).toBeNull()
+    expect(record.cost_source).toBe('none')
+  })
+
+  it('leaves model/model_norm unset — a render is not a model call', () => {
+    const record = buildRenderRecord(args)
+    expect(record.model).toBeNull()
+    expect(record.model_norm).toBeNull()
+  })
+
+  it('zeroes every token field', () => {
+    const record = buildRenderRecord(args)
+    expect(record.input_tokens).toBe(0)
+    expect(record.output_tokens).toBe(0)
+    expect(record.cache_read_tokens).toBe(0)
+    expect(record.cache_write_tokens).toBe(0)
+    expect(record.reasoning_tokens).toBe(0)
+  })
+
+  it('defaults outcome to "ok" and honors an explicit "error"', () => {
+    expect(buildRenderRecord(args).outcome).toBe('ok')
+    expect(buildRenderRecord({ ...args, outcome: 'error' }).outcome).toBe('error')
   })
 })
 
@@ -131,7 +178,9 @@ describe('buildSonarSearchRecord', () => {
     const record = buildSonarSearchRecord(args)
     expect(record.source_id).toBe('job-123:sonar')
     expect(record.sub_tool).toBe('sonar')
-    expect(record.source_id).not.toBe(buildTavilyCreditRecord({ jobId: 'job-123', credits: 1 }).source_id)
+    expect(record.source_id).not.toBe(
+      buildTavilyCreditRecord({ jobId: 'job-123', credits: 1, searchCalls: 1, extractCalls: 0 }).source_id,
+    )
   })
 
   it('carries the vendor-reported USD verbatim and marks its provenance as "reported"', () => {
