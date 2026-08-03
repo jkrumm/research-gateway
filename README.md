@@ -294,26 +294,45 @@ successful render into "render timed out". `proc.signalCode` is the discriminato
 
 ### What the rendering stage actually recovers
 
-Measured against the real failure set — the URLs that were unverifiable across the 45
-benchmark runs — by replaying each through the deployed chain (2026-08-02):
+This table is **generated**, not hand-built — `bun run scripts/fetch-bench.ts` replays a
+fixed corpus through the deployed chain and prints it. Run 2026-08-03, 13 URLs, 21.0s, 0
+Tavily credits:
 
-| URL | raw bytes | rendered chars | |
+| url | terminated at | chars | chain |
 |-|-|-|-|
-| `techempower.com/benchmarks` | 2,003 | 4,626 | recovered |
-| `web-frameworks-benchmark.netlify.app` | 3,326 | 28,960 | recovered |
-| `x.com/…/status/…` | 4,285 | 5,497 | recovered |
-| `app.daily.dev/posts/…` | 169 | — | auth wall |
-| `medium.com/…` | 5,784 | — | paywall |
-| `justdigitaldrafts.com/…` | 87 | — | dead |
-| `devstract.site/…` | 0 | — | DNS dead |
+| reddit-thread | site-adapter | 30,538 | `site-adapter✓` |
+| reddit-old | site-adapter | 30,539 | `site-adapter✓` |
+| surfline-api | **raw** | 8,076 | `raw✓` |
+| surfline | readability | 825 | `readability✓` |
+| walmart | readability | 1,603 | `readability✓` |
+| daily-dev-auth | readability | 889 | `readability✓` |
+| techempower | lightpanda | 4,626 | `readability✗ → lightpanda✓` |
+| web-frameworks | lightpanda | 28,960 | `readability✗ → lightpanda✓` |
+| x-status | lightpanda | 7,375 | `readability✗ → lightpanda✓` |
+| ticketmaster | lightpanda | 30,400 | `readability✗ → lightpanda✓` |
+| medium-paywall | jina | 5,014 | `readability✗ → lightpanda✗ → jina✓` |
+| hard-404 | — | 0 | `readability✗` |
+| dead-domain | — | 0 | `(none)` — SSRF guard catches DNS failure in 9ms |
 
-**3 of 7 recovered.** The four that remain fail on authentication, a paywall and two dead
-domains — none of which any renderer fixes. That is the ceiling, not a shortfall.
+**11 of 13 recovered.** The two that do not are a hallucinated 404 and a dead domain, both
+of which are correct outcomes.
 
 This is deliberately a *fetch-level* measurement rather than another job-level A/B. The 45
 runs established that fetch-stage effects land below the job-level resolution floor
 (within-query citation cv 0.09–0.43), so a 15-run comparison could not have resolved this
 either way — while replaying the actual failing URLs answers it directly, in minutes.
+
+Two caveats worth carrying, because the corpus is small enough to over-read:
+
+- **`chars` is not a verdict.** `medium-paywall`'s 5,014 characters are Medium's navigation
+  and sign-in furniture, not the article — a success-shaped failure that clears every length
+  floor in the chain. The bench prints a `preview` for exactly this reason; read it before
+  calling a row a recovery.
+- **Not every row-to-row change is attributable to a code change.** Between the 2026-08-03
+  baseline and this run, `surfline` moved from a 10s step-1 timeout to a clean 825-char read
+  and `walmart` from 33 characters to 1,603 — neither is explained by anything in the chain.
+  Those origins vary. Three repeat runs put the new values at 825/825/825 and 1,603/1,603/1,603,
+  so the *current* readings are stable; the *baseline* was the anomaly.
 
 A 15-run `standard` benchmark on the deployed chain says the same thing from the other side.
 Counting what each step actually terminated (487 `fetchPage` outcomes):
@@ -326,9 +345,13 @@ Counting what each step actually terminated (487 `fetchPage` outcomes):
 | Jina, behind it | 8 | 32 (30 are 404s) |
 | Tavily Extract | 1 | 31 exhausted the chain |
 
-**Read the two renderer rows together — that is the argument for keeping both.** The
-self-hosted one carries the volume; Jina still recovers 8 pages it could not, which is the
-bot-blocked case its proxy pool is for. Deleting it would cost those 8.
+**That argued for keeping both renderers, and the fetch-level bench has since undercut it.**
+The self-hosted one carries the volume — unchanged. But Jina fell from 4 of 11 recoveries to
+1 of 11 once non-HTML bodies stopped being discarded (below), and that last one is Medium's
+sign-in chrome rather than the article. On the current corpus, disabling Jina costs no real
+content. That is a 13-URL corpus, not production traffic, so it is a strong prior and not yet
+a decision — `JINA_ENABLED` in the VPS `.env` makes it a one-line experiment with instant
+rollback.
 
 The job-level metrics moved as predicted, which is to say not resolvably: wall 354 → 328s,
 cost $0.0891 → $0.0887, fetch failure rate 10.8% → 11.3% (pagesFailed cv **1.00** — this
@@ -339,9 +362,11 @@ now terminates 1 fetch in 487.
 
 Two things the run surfaced that are not about rendering. `github.com` is now the top
 unverifiable host (16 of 26 across 15 runs), replacing Reddit as the site-adapter candidate.
-And a definitive **404 is still retried** through Jina and then Tavily — 30 of Jina's 32
-failures are 404s the renderer had already proven — so short-circuiting that status would
-remove two round trips and a billable call per hallucinated URL.
+And a definitive **404 was still retried** through Jina and then Tavily — 30 of Jina's 32
+failures were 404s the renderer had already proven. That is now fixed: 404 and 410
+short-circuit at step one (`response-kind.ts`), which took the benchmark's `hard-404` row
+from 10,543 ms and a billed Extract call to 365 ms and none. Deliberately not 401/403 —
+those mean "not to you, like this", and a different client often does get through.
 
 ### Sonar and Tavily are complementary, not interchangeable
 
