@@ -625,6 +625,20 @@ async function lookupOpenAlex(query: string, limit: number, ledger: RetrievalLed
 
   ledger.recordRetrieved(url)
   const results = (res.data.results ?? []).map(mapOpenAlexWork)
+  // Every URL a model can cite from this response must be on the ledger, or groundDigest
+  // strips the finding at the worker boundary before it ever reaches synthesis. MEASURED:
+  // recording only the query URL above cost 9 of 14 findings in one job — the worker cited
+  // works by DOI and landing page, neither of which the ledger had seen.
+  //
+  // `snippet`, not `retrieved`: this is a bibliographic record, not the paper. That is
+  // exactly the tier's definition ("seen, not read") and it caps such a claim at `medium`
+  // confidence in ground.ts, which is the honest ceiling for "OpenAlex says this paper has
+  // N citations" when nothing read the paper.
+  for (const r of results) {
+    if (r.landingPageUrl) ledger.recordSnippet(r.landingPageUrl)
+    if (r.doi) ledger.recordSnippet(r.doi)
+    if (r.openAccessUrl) ledger.recordSnippet(r.openAccessUrl)
+  }
   return {
     source: 'openalex',
     query,
@@ -676,7 +690,13 @@ async function lookupPubmed(query: string, limit: number, ledger: RetrievalLedge
     results.push(mapped)
     // Each result's own PubMed page is the URL a citation will name — record it directly,
     // not just the search/summary API endpoints.
-    ledger.recordRetrieved(mapped.url)
+    //
+    // `snippet`, not `retrieved`, and the distinction is load-bearing: esummary returns a
+    // bibliographic record, not the paper. `retrieved` would let a model assert `high`
+    // confidence about a study nothing in this run actually read. `snippet` caps it at
+    // `medium` in ground.ts, which is what "PubMed's index says so" is worth.
+    ledger.recordSnippet(mapped.url)
+    if (mapped.doi) ledger.recordSnippet(`https://doi.org/${mapped.doi}`)
   }
 
   return {
