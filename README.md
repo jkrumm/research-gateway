@@ -299,24 +299,24 @@ successful render into "render timed out". `proc.signalCode` is the discriminato
 ### What the rendering stage actually recovers
 
 This table is **generated**, not hand-built — `bun run scripts/fetch-bench.ts` replays a
-fixed corpus through the deployed chain and prints it. Run 2026-08-03, 13 URLs, 19.3s, 0
-Tavily credits:
+fixed corpus through the deployed chain and prints it. Run 2026-08-03 against the build that
+has no Jina step at all, 13 URLs, 22.0s, 0 Tavily credits:
 
 | url | terminated at | chars | chain |
 |-|-|-|-|
-| reddit-thread | site-adapter | 30,539 | `site-adapter✓` |
-| reddit-old | site-adapter | 30,540 | `site-adapter✓` |
+| reddit-thread | site-adapter | 30,509 | `site-adapter✓` |
+| reddit-old | site-adapter | 30,506 | `site-adapter✓` |
 | surfline-api | **raw** | 8,076 | `raw✓` |
 | surfline | readability | 825 | `readability✓` |
-| walmart | readability | 1,649 | `readability✓` |
-| daily-dev-auth | readability | 889 | `readability✓` |
+| walmart | readability | 1,632 | `readability✓` |
+| daily-dev-auth | readability | 4,595 | `readability✓` |
 | techempower | lightpanda | 4,626 | `readability✗ → lightpanda✓` |
 | web-frameworks | lightpanda | 28,960 | `readability✗ → lightpanda✓` |
-| x-status | lightpanda | 7,406 | `readability✗ → lightpanda✓` |
+| x-status | lightpanda | 7,408 | `readability✗ → lightpanda✓` |
 | ticketmaster | lightpanda | 28,504 | `readability✗ → lightpanda✓` |
 | medium-paywall | — | 0 | `readability✗ → lightpanda✗ → tavily-extract✗` |
 | hard-404 | — | 0 | `readability✗` |
-| dead-domain | — | 0 | `(none)` — SSRF guard catches DNS failure in 13ms |
+| dead-domain | — | 0 | `(none)` — SSRF guard catches DNS failure in 1ms |
 
 **10 of 13 recovered.** Three do not: a hallucinated 404 and a dead domain, both correct
 outcomes, and a Medium URL that no step in the chain can read.
@@ -333,11 +333,13 @@ Two caveats worth carrying, because the corpus is small enough to over-read:
   article. A success-shaped failure that clears every length floor in the chain reads as the
   best row in the table. The bench prints a `preview` for exactly this reason; read it before
   calling a row a recovery.
-- **Not every row-to-row change is attributable to a code change.** Between the 2026-08-03
-  baseline and this run, `surfline` moved from a 10s step-1 timeout to a clean 825-char read
-  and `walmart` from 33 characters to 1,649 — neither is explained by anything in the chain.
-  Those origins vary. Repeat runs put the current values within a few characters of each
-  other, so the *current* readings are stable; the *baseline* was the anomaly.
+- **Not every row-to-row change is attributable to a code change.** Three rows move on their
+  own. `surfline` went from a 10s step-1 timeout to a clean 825-char read; `walmart` from 33
+  characters to ~1,632, and once — mid-run, under concurrency 2 — down to a 243-char error
+  page that lightpanda then "recovered" above the 200-char floor; `daily-dev-auth` reads 889
+  or 4,595 depending on the run. Nothing in the chain explains any of it. Isolate a row with
+  `--only <name>` before attributing its movement to a change: three consecutive solo runs
+  put `walmart` at 1,632/1,632/1,632 while the full-corpus run beside them read 243.
 
 A 15-run `standard` benchmark on the deployed chain says the same thing from the other side.
 Counting what each step actually terminated (487 `fetchPage` outcomes):
@@ -375,13 +377,16 @@ The decision was one measurement, not an argument: run the 13-URL corpus against
 chain with `JINA_ENABLED=true`, flip it to `false` in the VPS `.env`, recreate the container,
 run the same corpus again.
 
-| | Jina on | Jina off |
-|-|-|-|
-| recovered | 11 / 13 | 10 / 13 |
-| wall | 21.0s | 19.3s |
-| Tavily credits | 0 | 0 |
-| terminated by lightpanda | 4 | 4 |
-| terminated by Jina | 1 | — |
+| | Jina on | Jina off | step deleted |
+|-|-|-|-|
+| recovered | 11 / 13 | 10 / 13 | 10 / 13 |
+| wall | 21.0s | 19.3s | 22.0s |
+| Tavily credits | 0 | 0 | 0 |
+| terminated by lightpanda | 4 | 4 | 4 |
+| terminated by Jina | 1 | — | — |
+
+(The wall-clock column is not a signal — the corpus is dominated by four ~5s renders and
+`medium-paywall` now walks to Tavily Extract instead of stopping at Jina.)
 
 **One row changed: `medium-paywall`.** Its 5,014 characters were Medium's navigation chrome,
 and its URL (`medium.com/@ai/some-post`) does not name a real post — so the row Jina "won" was
