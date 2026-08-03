@@ -367,6 +367,17 @@ property of the search call, not of a whole job, so it costs cents and minutes i
 should query **both** backends for roughly double the domain diversity, at the cost of Tavily
 credits on deep jobs — is a spending decision, not a measurement one.
 
+`deep` merges both backends on its first round, on that finding. Measured on the first live
+deep job after shipping it: 16 dual searches, both backends up on all 16, **31.2 merged
+results per search against a single-backend cap of 20** (+56% candidates), with 4–11
+cross-backend duplicates removed each time — matching the ~30% overlap above. That job
+returned 152 citations, 0 dropped, across 36 unique domains.
+
+Its Tavily bill was **56 credits**, of which ~16 are the dual searches and ~40 are
+`fetchPage`'s pre-existing Extract fallback. The dual-search half is double what was
+predicted before shipping ("8 workers x 1 search"); workers search more than once inside
+their budget. `maxSearches` is the lever if that bill needs cutting.
+
 ### The price of an answer
 
 From the 45 runs, pooled within-query cv is 0.235 (citations), 0.172 (cost), 0.372 (wall),

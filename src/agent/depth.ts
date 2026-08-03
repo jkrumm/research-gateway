@@ -42,8 +42,15 @@ export interface DepthProfile {
   // First round ONLY, and only on `deep`. Every dual search bills a Tavily credit against the
   // personal plan, which the Sonar migration existed to stop: a deep job issues ~60 searches,
   // so making them all dual would restore roughly the pre-migration Tavily bill. Round 1 is
-  // 8 workers x 1 search — about 8 credits — and it is where the source base is built; the
-  // gap round chases specific footnotes and does not need the extra breadth.
+  // where the source base is built; the gap round chases specific footnotes and does not need
+  // the extra breadth.
+  //
+  // MEASURED COST, correcting the estimate this was shipped on: round 1 issued **16** dual
+  // searches, not the 8 predicted from "8 workers x 1 search" — workers search more than once
+  // inside their budget. So the change costs ~16 credits per deep job, double the estimate.
+  // For context, that job's TOTAL was 56 credits: the other ~40 are `fetchPage`'s Tavily
+  // Extract fallback, which predates this and is unaffected by it. If deep's Tavily bill ever
+  // needs cutting, `maxSearches` below is the lever that moves both numbers.
   dualSearchFirstRound: boolean
   directive: string
 }
