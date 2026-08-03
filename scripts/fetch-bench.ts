@@ -91,7 +91,22 @@ const CORPUS: Case[] = [
   },
 
   // ── Walls that are the ceiling, not a gap ──
-  { name: 'medium-paywall', url: 'https://medium.com/@ai/some-post', expect: 'paywall — expected to fail' },
+  {
+    // A REAL member-only post. The URL this row used to carry (`medium.com/@ai/some-post`)
+    // named no post at all, so it tested a 404 dressed as a paywall — and for months it was
+    // the row that justified keeping a third-party renderer, on 5,014 chars of nav chrome.
+    //
+    // Measured 2026-08-03: step one terminates at ~1,068 chars — the lede, ABOVE the 200-char
+    // floor, so nothing in the chain calls it a failure. The full text is ~14,911 chars.
+    // That gap IS the row: this is a success-shaped failure the chain does not catch, not a
+    // clean miss. Read `chars`, not `via`.
+    //
+    // If this ever reports 0 chars, the post was deleted — replace the URL rather than
+    // reading it as a fixed paywall.
+    name: 'medium-paywall',
+    url: 'https://medium.com/skillstuff/tailwind-css-vs-css-why-so-many-developers-never-go-back-9db828aac70a',
+    expect: 'member-only post — step 1 returns ~1,068 chars of lede and STOPS; full text is ~14,911',
+  },
   { name: 'daily-dev-auth', url: 'https://app.daily.dev/', expect: 'auth wall — expected to fail' },
 
   // ── Definitive negatives: these should fail FAST and cheaply ──

@@ -300,26 +300,33 @@ successful render into "render timed out". `proc.signalCode` is the discriminato
 
 This table is **generated**, not hand-built — `bun run scripts/fetch-bench.ts` replays a
 fixed corpus through the deployed chain and prints it. Run 2026-08-03 against the build that
-has no Jina step at all, 13 URLs, 22.0s, 0 Tavily credits:
+has no Jina step at all, 13 URLs, 17.8s, 0 Tavily credits:
 
 | url | terminated at | chars | chain |
 |-|-|-|-|
 | reddit-thread | site-adapter | 30,509 | `site-adapter✓` |
-| reddit-old | site-adapter | 30,506 | `site-adapter✓` |
-| surfline-api | **raw** | 8,076 | `raw✓` |
-| surfline | readability | 825 | `readability✓` |
-| walmart | readability | 1,632 | `readability✓` |
-| daily-dev-auth | readability | 4,595 | `readability✓` |
+| reddit-old | site-adapter | 30,507 | `site-adapter✓` |
+| surfline-api | **raw** | 8,075 | `raw✓` |
+| surfline | readability | 826 | `readability✓` |
+| walmart | readability | 1,649 | `readability✓` |
+| daily-dev-auth | readability | 889 | `readability✓` |
+| medium-paywall | readability | **1,068** | `readability✓` — but see below |
 | techempower | lightpanda | 4,626 | `readability✗ → lightpanda✓` |
 | web-frameworks | lightpanda | 28,960 | `readability✗ → lightpanda✓` |
 | x-status | lightpanda | 7,408 | `readability✗ → lightpanda✓` |
 | ticketmaster | lightpanda | 28,504 | `readability✗ → lightpanda✓` |
-| medium-paywall | — | 0 | `readability✗ → lightpanda✗ → tavily-extract✗` |
 | hard-404 | — | 0 | `readability✗` |
 | dead-domain | — | 0 | `(none)` — SSRF guard catches DNS failure in 1ms |
 
-**10 of 13 recovered.** Three do not: a hallucinated 404 and a dead domain, both correct
-outcomes, and a Medium URL that no step in the chain can read.
+**11 of 13 by the counter. 10 in truth.** Two rows fail correctly — a hallucinated 404 and a
+dead domain. `medium-paywall` is the third, and the counter cannot see it: it is a real
+member-only post whose first 1,068 characters are the lede and whose full text runs 14,911.
+Step one returns the lede, clears the 200-char floor, and terminates the chain reporting
+success. Nothing downstream can tell that apart from an article that is simply short.
+
+That row used to point at `medium.com/@ai/some-post`, a URL naming no post at all — so the
+corpus tested a 404 dressed as a paywall, and on the strength of it a third-party renderer
+kept its place in the chain for months. It now points at a real one.
 
 This is deliberately a *fetch-level* measurement rather than another job-level A/B. The 45
 runs established that fetch-stage effects land below the job-level resolution floor
@@ -328,11 +335,12 @@ either way — while replaying the actual failing URLs answers it directly, in m
 
 Two caveats worth carrying, because the corpus is small enough to over-read:
 
-- **`chars` is not a verdict.** When Jina was still in the chain it terminated `medium-paywall`
-  at 5,014 characters — all of it Medium's navigation and sign-in furniture, none of it the
-  article. A success-shaped failure that clears every length floor in the chain reads as the
-  best row in the table. The bench prints a `preview` for exactly this reason; read it before
-  calling a row a recovery.
+- **`chars` is not a verdict, and neither is `via`.** `medium-paywall` reads `readability✓`
+  today on 7% of the article. Before that, with Jina in the chain, it read `jina✓` on 5,014
+  characters of Medium's navigation and sign-in furniture. Both are the same failure wearing
+  the table's success column, and no length floor separates either from a genuinely short
+  page. The bench prints a `preview` for exactly this reason; read it before calling a row a
+  recovery.
 - **Not every row-to-row change is attributable to a code change.** Three rows move on their
   own. `surfline` went from a 10s step-1 timeout to a clean 825-char read; `walmart` from 33
   characters to ~1,632, and once — mid-run, under concurrency 2 — down to a 243-char error
@@ -385,8 +393,9 @@ run the same corpus again.
 | terminated by lightpanda | 4 | 4 | 4 |
 | terminated by Jina | 1 | — | — |
 
-(The wall-clock column is not a signal — the corpus is dominated by four ~5s renders and
-`medium-paywall` now walks to Tavily Extract instead of stopping at Jina.)
+(The wall-clock column is not a signal — the corpus is dominated by four ~5s renders, and in
+the middle column `medium-paywall` walks to Tavily Extract instead of stopping at Jina. All
+three runs used the old corpus, whose Medium row is described below.)
 
 **One row changed: `medium-paywall`.** Its 5,014 characters were Medium's navigation chrome,
 and its URL (`medium.com/@ai/some-post`) does not name a real post — so the row Jina "won" was
@@ -400,12 +409,38 @@ the dead-key 402 handling go with it.
 Rolling back is a `git revert`, not an env var. That is the deliberate cost of the change,
 and it is affordable because the fallback below Jina — Tavily Extract — never moved.
 
-**Known gap this leaves open.** The corpus's Medium row tests a *nonexistent* post, so it
-never tested the paywall. Measured separately against four real Medium articles, the chain
-terminates at Readability on all of them, above the 200-char floor, with the member-only ones
-truncated to the lede: 1,068 and 1,206 characters where the full article runs 5,607 and
-14,911. That is a success-shaped failure the corpus does not currently catch, and no step
-Jina's removal touched would have caught it either.
+#### The Medium paywall, which this made visible
+
+Retiring Jina forced a look at the row it was winning, and the row was fake. Replacing it with
+a real member-only post exposed a gap no step in the chain addresses.
+
+Measured against four real Medium articles through the deployed chain, all four terminate at
+Readability above the 200-char floor. The member-only ones are truncated to the lede:
+
+| article | step 1 | full text |
+|-|-|-|
+| tailwind-css-vs-css | 1,068 | 14,911 |
+| throw-vs-throw-ex | 1,206 | 5,607 |
+| my-timeout-froze-the-queue | 8,754 | 7,887 |
+| wikipedia-fication | 2,659 | 2,906 |
+
+The bottom two are not paywalled — step one already has them, and the "full text" column is
+just a mirror reading the same page. The top two are the gap: **the chain hands a worker 7% of
+an article and reports success.**
+
+The `full text` column comes from `freedium-mirror.cfd`, and the deliberate decision is **not
+to wire it in**. It is a third-party proxy — precisely the exposure deleting Jina removed —
+and it is one unproxied IP with no CDN behind it. Trading a measured, documented ceiling for
+an unmeasured dependency on a hobby host is the wrong direction, and the same reasoning that
+retired Jina applies here.
+
+Two things worth recording for whoever revisits this. The `freedium.cfd` that every
+paywall-bypass guide names **no longer resolves anywhere** — NXDOMAIN from three networks;
+`freedium.io`, `scribe.rip` and `md.dhr.wtf` all fail too, and `freedium-mirror.cfd` was the
+only one of five that worked. And a paywall marker could not be found from outside the
+container: `curl` from the VPS gets a 5.8 KB consent interstitial where the gateway's own Bun
+fetch gets the article, so detecting "this is a lede, not an article" would need a debug
+affordance that returns raw HTML before it could need a heuristic.
 
 ### Sonar and Tavily are complementary, not interchangeable
 
