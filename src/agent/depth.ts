@@ -34,23 +34,24 @@ export interface DepthProfile {
   // returns, which the worker prompt already teaches a response to ("do NOT retry it in a
   // loop — work with the sources you already have"). No new behaviour to teach.
   maxSearches: number
-  // Query BOTH search backends on the FIRST round and merge, instead of using Tavily only as
-  // a fallback. Measured head-to-head on the benchmark query set: Sonar surfaced 36 unique
-  // domains, Tavily 45, only 14 shared — 2-3 per query out of 12 results each. They are
-  // complementary slices of the web, so merging roughly doubles the domain base.
+  // Query BOTH search backends on the first round and merge. Sonar and Tavily overlap only
+  // ~30% (36 vs 45 unique domains, 14 shared over the benchmark query set), so merging really
+  // does widen the candidate pool — measured live at 31.2 results per search against a
+  // single-backend cap of 20, +56%.
   //
-  // First round ONLY, and only on `deep`. Every dual search bills a Tavily credit against the
-  // personal plan, which the Sonar migration existed to stop: a deep job issues ~60 searches,
-  // so making them all dual would restore roughly the pre-migration Tavily bill. Round 1 is
-  // where the source base is built; the gap round chases specific footnotes and does not need
-  // the extra breadth.
+  // OFF EVERYWHERE, because that turned out to relieve a constraint that was not binding.
+  // Pages actually read across three deep jobs: 100 and 109 without it, 107 with it. The
+  // extra candidates produced no extra reading, because a worker's ceiling is
+  // `workerMaxSteps` (9), not candidate supply — it reads ~9 pages whether it was handed 20
+  // URLs or 31. Citations landed at 152, inside the 66-158 range the two runs without it
+  // already spanned. It cost 16 Tavily credits per deep job against the personal plan and
+  // bought nothing measurable.
   //
-  // MEASURED COST, correcting the estimate this was shipped on: round 1 issued **16** dual
-  // searches, not the 8 predicted from "8 workers x 1 search" — workers search more than once
-  // inside their budget. So the change costs ~16 credits per deep job, double the estimate.
-  // For context, that job's TOTAL was 56 credits: the other ~40 are `fetchPage`'s Tavily
-  // Extract fallback, which predates this and is unaffected by it. If deep's Tavily bill ever
-  // needs cutting, `maxSearches` below is the lever that moves both numbers.
+  // The mechanism to revisit is `workerMaxSteps`, not this: pages-read predicts citations at
+  // r=+0.78 while searches-issued manages +0.52. Widen the reading budget before widening the
+  // candidate list. (n=1 with it vs n=2 without, and deep's variance is large — but the
+  // asymmetry decides it: leaving it on spends real money on an unproven effect, and turning
+  // it back on is one boolean.)
   dualSearchFirstRound: boolean
   directive: string
 }
@@ -151,7 +152,7 @@ export const profiles: Record<Depth, DepthProfile> = {
     // Generous against the prompt's own "1-3", and still well under the ~6.7/worker
     // measured before this existed.
     maxSearches: 6,
-    dualSearchFirstRound: true,
+    dualSearchFirstRound: false,
     directive:
       'DEEP pass — be thorough. Read full pages across distinct domains, not just snippets. Consult library docs for any libraries involved. Cross-verify every material claim across 3+ independent sources, and surface disagreements and version caveats explicitly.',
   },

@@ -367,16 +367,20 @@ property of the search call, not of a whole job, so it costs cents and minutes i
 should query **both** backends for roughly double the domain diversity, at the cost of Tavily
 credits on deep jobs — is a spending decision, not a measurement one.
 
-`deep` merges both backends on its first round, on that finding. Measured on the first live
-deep job after shipping it: 16 dual searches, both backends up on all 16, **31.2 merged
-results per search against a single-backend cap of 20** (+56% candidates), with 4–11
-cross-backend duplicates removed each time — matching the ~30% overlap above. That job
-returned 152 citations, 0 dropped, across 36 unique domains.
+The merge was built, shipped and then **turned off**, which is the more useful result. It
+does widen the pool: measured live on a deep job, 16 dual searches produced 31.2 results each
+against a single-backend cap of 20 (+56%), with 4-11 cross-backend duplicates removed per
+search. But pages actually read across three deep jobs were 100, 109 (without) and 107
+(with) — the extra candidates produced no extra reading, because a worker's ceiling is
+`workerMaxSteps` (9), not candidate supply. Citations landed at 152, inside the 66-158 range
+the two runs without it already spanned. It cost 16 Tavily credits per deep job — double the
+pre-ship estimate, since workers search more than once inside their budget — and bought
+nothing measurable.
 
-Its Tavily bill was **56 credits**, of which ~16 are the dual searches and ~40 are
-`fetchPage`'s pre-existing Extract fallback. The dual-search half is double what was
-predicted before shipping ("8 workers x 1 search"); workers search more than once inside
-their budget. `maxSearches` is the lever if that bill needs cutting.
+The lever worth revisiting is therefore `workerMaxSteps`, not the candidate list:
+pages-read predicts citations at r=+0.78, searches-issued only +0.52. Widen the reading
+budget before widening what there is to read. The merge itself stays in the code behind
+`dualSearchFirstRound`, one boolean from returning.
 
 ### The price of an answer
 
