@@ -6,6 +6,7 @@ import { authGuard } from './lib/auth-guard.js'
 import { healthRoute } from './routes/health.js'
 import { researchRoutes } from './routes/research.js'
 import { mcpRoutes } from './routes/mcp.js'
+import { probeRoutes } from './routes/probe.js'
 import { log } from './lib/log.js'
 
 // ── Process-level diagnostics ────────────────────────────────────────────────
@@ -118,7 +119,7 @@ export const app = new Elysia()
       auth: {
         scheme: 'Bearer',
         header: 'Authorization: Bearer <API_SECRET>',
-        public: ['GET /', 'GET /health'],
+        public: ['GET /', 'GET /health', 'GET /health/render'],
       },
       endpoints: {
         submit: 'POST /research',
@@ -165,6 +166,7 @@ export const app = new Elysia()
   .use(authGuard)
   .use(mcpRoutes)
   .use(researchRoutes)
+  .use(probeRoutes)
   .listen({ port: env.PORT, idleTimeout: 255 })
 
 export type App = typeof app

@@ -2,18 +2,13 @@ import { tool } from 'ai'
 import type { Tool } from 'ai'
 import { z } from 'zod'
 import { tavily } from '@tavily/core'
-import { parseHTML } from 'linkedom'
-import { Readability } from '@mozilla/readability'
 import { env } from '../env.js'
-import { assertPublicHttpUrl } from '../lib/ssrf.js'
 import { log } from '../lib/log.js'
 import { reportTavilyUsage, reportSonarUsage } from '../lib/usage.js'
-import { normalizeText, capText, TEXT_CAP } from './extract.js'
+import { capText, TEXT_CAP } from './extract.js'
 import { buildDirectSourceTools } from './direct-sources.js'
 import { sonarSearch, type SonarContextSize } from './sonar.js'
-import { resolveSite } from './site-adapters.js'
-import { parseJinaResponse, jinaUrl } from './jina.js'
-import { parseRenderResponse, renderUrl } from './lightpanda.js'
+import { runFetchChain } from './fetch-chain.js'
 import { normalizeUrl, type RetrievalLedger } from './ledger.js'
 
 const tvly = tavily({ apiKey: env.TAVILY_API_KEY })
@@ -145,28 +140,6 @@ export function readSearchSpend(jobId: string): JobSearchSpend {
     sonarCostUsd: sonar?.costUsd ?? 0,
     sonarCalls: sonar?.searchCalls ?? 0,
     tavilyCredits: meterTavily.read(jobId) ?? 0,
-  }
-}
-
-async function safeFetch(startUrl: string, jobId = '-', maxHops = 3): Promise<Response> {
-  let current = startUrl
-  for (let hop = 0; ; hop++) {
-    await assertPublicHttpUrl(current) // re-validate EVERY hop (initial + each redirect target)
-    const res = await fetch(current, {
-      headers: { 'user-agent': 'research-gateway/0.1 (+research bot)' },
-      signal: AbortSignal.timeout(10_000),
-      redirect: 'manual',
-    })
-    if (res.status >= 300 && res.status < 400) {
-      const loc = res.headers.get('location')
-      if (!loc) return res
-      if (hop >= maxHops) throw new Error('too many redirects')
-      const next = new URL(loc, current).toString() // resolve relative redirects
-      log('tool.redirect', { jobId, from: current, to: next, status: res.status, hop: hop + 1 })
-      current = next
-      continue
-    }
-    return res
   }
 }
 
@@ -433,166 +406,23 @@ function buildFetchPageTool(ledger: RetrievalLedger, jobId = '-'): AnyTool {
         return { url, text: 'Already fetched earlier in this conversation — reuse the previous result for this URL.' }
       }
 
-      // Some hosts need a different address, a different reader, or both (site-adapters.ts).
-      // Everything below fetches `fetchUrl`; everything the ledger and the caller see stays
-      // `url`, because that is what a citation will name.
-      const site = resolveSite(url)
-      const fetchUrl = site.fetchUrl
-      if (fetchUrl !== url) log('tool.fetchPage', { jobId, url, via: 'rewrite', fetchUrl })
+      // The chain itself lives in fetch-chain.ts so it can be replayed and measured without
+      // an LLM in the loop (scripts/fetch-bench.ts). This tool owns only what is specific to
+      // being a tool: the per-run dedup above, and turning the result into a model-facing
+      // shape. The chain never throws and records the ledger itself.
+      const result = await runFetchChain(url, {
+        ledger,
+        jobId,
+        onTavilyCredits: (credits) => addTavilyCredits(jobId, credits),
+      })
 
-      // SSRF guard — refuse any non-public URL before making any fetch. Guards the address
-      // actually dialled, not the one asked for.
-      try {
-        await assertPublicHttpUrl(fetchUrl)
-      } catch (err) {
-        ledger.recordFailed(url, `refused: ${String(err)}`)
-        log('tool.fetchPage', { jobId, url, via: 'refused' })
-        return { url, error: `refused: ${String(err)}` }
-      }
-
-      // Primary: fetch + linkedom + readability
-      let rdReason: 'thin' | 'threw' = 'thin'
-      let rdChars = 0
-      try {
-        const res = await safeFetch(fetchUrl, jobId)
-        if (res.ok) {
-          const html = await res.text()
-          const { document } = parseHTML(html)
-          // A site adapter reads its own markup; anything else, and any adapter that does
-          // not recognise what it got, falls through to Readability unchanged.
-          const adapted = site.extract ? site.extract(document as never) : null
-          const article = adapted
-            ? null
-            : new Readability(document as unknown as ConstructorParameters<typeof Readability>[0]).parse()
-          const raw = adapted ?? article?.textContent?.trim()
-          const text = raw ? normalizeText(raw) : raw
-          rdChars = text?.length ?? 0
-          if (text && text.length >= 200) {
-            fetched.add(url)
-            ledger.recordRetrieved(url)
-            log('tool.fetchPage', { jobId, url, via: adapted ? 'site-adapter' : 'readability', chars: text.length })
-            return { url, text: capText(text, TEXT_CAP) }
-          }
-        }
-      } catch {
-        // fetch or linkedom failed — fall through to Tavily Extract
-        rdReason = 'threw'
-      }
-
-      // JavaScript-rendering step. Sits between Readability and Tavily Extract because it
-      // handles the one failure Tavily cannot — a page whose text simply is not in the HTML
-      // — while Tavily remains the better fallback for a page that IS static but whose
-      // structure Readability could not parse.
-      //
-      // Self-hosted first, Jina second. On the page this step exists for
-      // (techempower.com/benchmarks, which serves a 2,003-byte shell to a plain fetch) the
-      // sidecar returns 4,627 chars where Jina returns 1,030 — and it does it without
-      // showing a third party which URLs this service reads, and without a per-minute
-      // quota. Jina is kept behind it as the rollback rather than deleted: this renderer is
-      // beta software, and the cost of leaving a working fallback wired up is one `if`.
-      if (env.LIGHTPANDA_URL) {
-        try {
-          const res = await fetch(renderUrl(env.LIGHTPANDA_URL), {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ url: fetchUrl }),
-            // Generous on purpose: the sidecar's own budget is a 20s queue wait plus a 35s
-            // render, and it answers a saturated queue with a fast, explicit failure. This
-            // only has to outlast that, so a slow render is never cut off by the caller.
-            signal: AbortSignal.timeout(60_000),
-          })
-          const parsed = parseRenderResponse(res.status, await res.json().catch(() => null))
-          if (parsed.ok) {
-            const text = normalizeText(parsed.text)
-            fetched.add(url)
-            ledger.recordRetrieved(url)
-            log('tool.fetchPage', { jobId, url, via: 'lightpanda', chars: text.length, rdReason, rdChars })
-            return { url, text: capText(text, TEXT_CAP) }
-          }
-          log('tool.fetchPage', { jobId, url, via: 'lightpanda', error: parsed.error })
-        } catch (err) {
-          // Never fatal — this is a fallback inside a fallback chain, and the sidecar being
-          // down must degrade this step, not the job.
-          log('tool.fetchPage', { jobId, url, via: 'lightpanda', error: String(err) })
-        }
-      }
-
-      if (env.JINA_ENABLED) {
-        try {
-          // Force the full browser engine. Jina otherwise picks between a lightweight
-          // fetcher and headless Chrome, and the lightweight one returns exactly the shell
-          // this step exists to get past.
-          const headers: Record<string, string> = { 'x-engine': 'browser' }
-          if (env.JINA_API_KEY) headers['Authorization'] = `Bearer ${env.JINA_API_KEY}`
-
-          let res = await fetch(jinaUrl(fetchUrl), { headers, signal: AbortSignal.timeout(30_000) })
-
-          // A key on an account with no balance returns 402 on EVERY request, which would
-          // silently disable this whole step while anonymous access still works. Measured:
-          // a real key 402'd (`InsufficientBalanceError`) where no key returned 200. Retry
-          // once without it, and say so loudly — a dead key should be visible, not papered
-          // over forever.
-          if ((res.status === 402 || res.status === 401) && env.JINA_API_KEY) {
-            log('tool.fetchPage', { jobId, url, via: 'jina', error: `key rejected (HTTP ${res.status}) — retrying anonymously; recharge or unset JINA_API_KEY` })
-            delete headers['Authorization']
-            res = await fetch(jinaUrl(fetchUrl), { headers, signal: AbortSignal.timeout(30_000) })
-          }
-
-          if (res.ok) {
-            const parsed = parseJinaResponse(await res.text())
-            if (parsed.ok) {
-              const text = normalizeText(parsed.text)
-              fetched.add(url)
-              ledger.recordRetrieved(url)
-              log('tool.fetchPage', { jobId, url, via: 'jina', chars: text.length, rdReason, rdChars })
-              return { url, text: capText(text, TEXT_CAP) }
-            }
-            log('tool.fetchPage', { jobId, url, via: 'jina', error: parsed.error })
-          } else {
-            log('tool.fetchPage', { jobId, url, via: 'jina', error: `HTTP ${res.status}` })
-          }
-        } catch (err) {
-          // Never fatal — this is a fallback inside a fallback chain.
-          log('tool.fetchPage', { jobId, url, via: 'jina', error: String(err) })
-        }
-      }
-
-      // Fallback: Tavily Extract
-      try {
-        const ex = await tvly.extract([fetchUrl], {
-          extractDepth: 'basic',
-          format: 'markdown',
-          timeout: 30,
-          includeUsage: true,
-        })
-        // The call resolved — Tavily billed it — regardless of whether this URL ends
-        // up in `results` or `failedResults` below. This is what makes the 49
-        // failed-fetch case in a recent deep run count correctly: a failed *extraction*
-        // still billed the *call* that attempted it.
-        addTavilyCredits(jobId, ex.usage?.credits ?? 0)
-        const result = ex.results[0]
-        if (result) {
-          fetched.add(url)
-          ledger.recordRetrieved(url)
-          const text = normalizeText(result.rawContent)
-          log('tool.fetchPage', { jobId, url, via: 'tavily-extract', chars: text.length, rdReason, rdChars })
-          return { url, text: capText(text, TEXT_CAP) }
-        }
-        const failed = ex.failedResults[0]
-        const reason = failed?.error ?? 'Tavily extract returned no content'
-        // Both fetch paths are now exhausted — this URL is unverifiable for this run, and
-        // the ledger is what makes it structurally ineligible as a citation source.
-        ledger.recordFailed(url, reason)
-        log('tool.fetchPage', { jobId, url, via: 'error' })
-        return { url, error: reason }
-      } catch (err) {
-        ledger.recordFailed(url, String(err))
-        log('tool.fetchPage', { jobId, url, via: 'error' })
-        return { url, error: String(err) }
-      }
+      if (result.text === null) return { url, error: result.error ?? 'fetch failed' }
+      fetched.add(url)
+      return { url, text: result.text }
     },
   })
 }
+
 
 function buildLibraryDocsTool(ledger: RetrievalLedger, jobId = '-'): AnyTool | null {
   if (!env.CONTEXT7_API_KEY) return null
