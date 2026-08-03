@@ -14,7 +14,7 @@ import { sonarSearch, type SonarContextSize } from './sonar.js'
 import { resolveSite } from './site-adapters.js'
 import { parseJinaResponse, jinaUrl } from './jina.js'
 import { parseRenderResponse, renderUrl } from './lightpanda.js'
-import type { RetrievalLedger } from './ledger.js'
+import { normalizeUrl, type RetrievalLedger } from './ledger.js'
 
 const tvly = tavily({ apiKey: env.TAVILY_API_KEY })
 
@@ -283,10 +283,21 @@ function buildSearchWebTool(args: {
   contextSize: SonarContextSize
   maxResults: number
   maxSearches: number
+  /**
+   * Query BOTH backends and merge, instead of using Tavily only as a fallback. Measured on
+   * the 5-query benchmark set: Sonar surfaced 36 unique domains, Tavily 45, and only 14 were
+   * shared — 2-3 per query out of 12 results each. They are complementary slices of the web,
+   * not substitutes, so merging roughly doubles the domain base a worker gets to choose from.
+   *
+   * It is NOT free: every dual search bills a Tavily credit against the personal plan, which
+   * the Sonar migration existed to stop. That is why it is opt-in per round rather than a
+   * global setting — see DepthProfile.dualSearchFirstRound.
+   */
+  dualSearch: boolean
   ledger: RetrievalLedger
   jobId: string
 }): AnyTool {
-  const { searchDepth, contextSize, maxResults, maxSearches, ledger, jobId } = args
+  const { searchDepth, contextSize, maxResults, maxSearches, dualSearch, ledger, jobId } = args
 
   // Per-run search dedup, mirroring fetchPage's. Search is a metered resource on either
   // backend, and a re-issued identical query returns identical results — so it burns budget
@@ -318,7 +329,7 @@ function buildSearchWebTool(args: {
     // job must search deeply. Exposing it let the model silently downgrade and halve the
     // sources a deep pass found.
     execute: async ({ query }) => {
-      const cacheKey = `${searchDepth}:${contextSize}:${maxResults}:${query.trim().toLowerCase()}`
+      const cacheKey = `${searchDepth}:${contextSize}:${maxResults}:${dualSearch}:${query.trim().toLowerCase()}`
       const cached = searched.get(cacheKey)
       if (cached !== undefined) {
         log('tool.searchWeb', { jobId, query, via: 'cache' })
@@ -343,6 +354,47 @@ function buildSearchWebTool(args: {
       // A search failure must degrade to a tool-visible error, never throw: an uncaught
       // throw here propagates out of the agent loop and kills the whole worker, losing every
       // digest it had gathered. fetchPage/libraryDocs already follow this pattern.
+      if (dualSearch) {
+        // Both backends, merged. Settled rather than awaited in sequence: they are
+        // independent calls and one failing must not cost the other's results — a dual
+        // search that loses Tavily is still a perfectly good Sonar search, and vice versa.
+        const [sonar, tavily] = await Promise.allSettled([
+          searchViaSonar({ query, contextSize, maxResults, ledger, jobId }),
+          searchViaTavily({ query, searchDepth, maxResults, ledger, jobId }),
+        ])
+        const parts = [sonar, tavily].filter((r) => r.status === 'fulfilled').map((r) => r.value)
+        if (parts.length > 0) {
+          // Interleave rather than concatenate, so neither backend's tail outranks the
+          // other's head — the model reads this list top-down and the first entries are the
+          // ones it fetches. Dedup is by normalized URL (ledger.ts), which is what makes a
+          // `www.` variant from one backend collapse onto the other's plain host.
+          const seen = new Set<string>()
+          const merged: SearchOutput['results'] = []
+          for (let i = 0; i < maxResults; i++) {
+            for (const part of parts) {
+              const hit = part.results[i]
+              if (!hit) continue
+              const key = normalizeUrl(hit.url)
+              if (seen.has(key)) continue
+              seen.add(key)
+              merged.push(hit)
+            }
+          }
+          const out: SearchOutput = { answer: null, results: merged }
+          log('tool.searchWeb', {
+            jobId,
+            query,
+            via: 'dual',
+            backends: parts.length,
+            merged: merged.length,
+            deduped: parts.reduce((n, p) => n + p.results.length, 0) - merged.length,
+          })
+          searched.set(cacheKey, out)
+          return out
+        }
+        log('tool.searchWeb', { jobId, query, via: 'dual', error: 'both backends failed' })
+      }
+
       let lastError = 'no search backend configured'
       for (const backend of backends) {
         try {
@@ -600,8 +652,16 @@ export function buildTools(args: {
   contextSize?: SonarContextSize
   maxResults?: number
   maxSearches?: number
+  dualSearch?: boolean
 }): Record<string, AnyTool> {
-  const { ledger, searchDepth = 'basic', contextSize = 'low', maxResults = 5, maxSearches = 4 } = args
+  const {
+    ledger,
+    searchDepth = 'basic',
+    contextSize = 'low',
+    maxResults = 5,
+    maxSearches = 4,
+    dualSearch = false,
+  } = args
   const jid = args.jobId ?? '-'
   const tools: Record<string, AnyTool> = {
     searchWeb: buildSearchWebTool({
@@ -609,6 +669,7 @@ export function buildTools(args: {
       contextSize,
       maxResults,
       maxSearches,
+      dualSearch,
       ledger,
       jobId: jid,
     }),

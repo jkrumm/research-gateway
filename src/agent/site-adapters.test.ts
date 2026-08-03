@@ -74,3 +74,26 @@ describe('resolveSite', () => {
     expect(normalizeUrl(resolveSite(original).fetchUrl)).not.toBe(normalizeUrl(original))
   })
 })
+
+// ── Dual-backend merge ─────────────────────────────────────────────────────────────────
+// The merge lives in tools.ts (which imports env.ts and so cannot be loaded here), but the
+// property that makes it correct is normalizeUrl's: a `www.` variant from one backend must
+// collapse onto the other's plain host, or the merged list double-counts the same page and
+// spends a worker's fetch budget reading it twice.
+describe('dual-backend merge relies on normalizeUrl to dedupe across backends', () => {
+  it('collapses the www / non-www variants the two backends return for one page', () => {
+    expect(normalizeUrl('https://www.trigger.dev/blog/firebun')).toBe(
+      normalizeUrl('https://trigger.dev/blog/firebun'),
+    )
+  })
+
+  it('collapses a trailing slash and an http/https split', () => {
+    expect(normalizeUrl('http://bun.com/docs/api/http/')).toBe(normalizeUrl('https://bun.com/docs/api/http'))
+  })
+
+  it('keeps genuinely different pages on the same host apart', () => {
+    expect(normalizeUrl('https://bun.com/docs/a')).not.toBe(normalizeUrl('https://bun.com/docs/b'))
+    // Query strings are part of the identity — `?v=2` is usually a different document.
+    expect(normalizeUrl('https://x.dev/p?v=1')).not.toBe(normalizeUrl('https://x.dev/p?v=2'))
+  })
+})

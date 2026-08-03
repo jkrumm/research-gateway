@@ -34,6 +34,17 @@ export interface DepthProfile {
   // returns, which the worker prompt already teaches a response to ("do NOT retry it in a
   // loop — work with the sources you already have"). No new behaviour to teach.
   maxSearches: number
+  // Query BOTH search backends on the FIRST round and merge, instead of using Tavily only as
+  // a fallback. Measured head-to-head on the benchmark query set: Sonar surfaced 36 unique
+  // domains, Tavily 45, only 14 shared — 2-3 per query out of 12 results each. They are
+  // complementary slices of the web, so merging roughly doubles the domain base.
+  //
+  // First round ONLY, and only on `deep`. Every dual search bills a Tavily credit against the
+  // personal plan, which the Sonar migration existed to stop: a deep job issues ~60 searches,
+  // so making them all dual would restore roughly the pre-migration Tavily bill. Round 1 is
+  // 8 workers x 1 search — about 8 credits — and it is where the source base is built; the
+  // gap round chases specific footnotes and does not need the extra breadth.
+  dualSearchFirstRound: boolean
   directive: string
 }
 
@@ -70,6 +81,7 @@ export const profiles: Record<Depth, DepthProfile> = {
     maxSearchResults: 5,
     // One worker, 5 steps — a second search is already the wrong call here.
     maxSearches: 2,
+    dualSearchFirstRound: false,
     directive:
       'QUICK pass — answer directly and precisely. One focused search, read the most relevant page if the snippets are insufficient, then submit.',
   },
@@ -105,6 +117,7 @@ export const profiles: Record<Depth, DepthProfile> = {
     // is billed to the IU work key while report quality is the whole product. Spend the
     // cheap resource. Revisit only if IU spend ever becomes the binding constraint.
     maxSearches: 4,
+    dualSearchFirstRound: false,
     directive:
       'STANDARD pass — search, then read the 2-3 most relevant pages for your sub-question. Cross-verify across at least 2 independent sources.',
   },
@@ -131,6 +144,7 @@ export const profiles: Record<Depth, DepthProfile> = {
     // Generous against the prompt's own "1-3", and still well under the ~6.7/worker
     // measured before this existed.
     maxSearches: 6,
+    dualSearchFirstRound: true,
     directive:
       'DEEP pass — be thorough. Read full pages across distinct domains, not just snippets. Consult library docs for any libraries involved. Cross-verify every material claim across 3+ independent sources, and surface disagreements and version caveats explicitly.',
   },
