@@ -249,9 +249,10 @@ reach for them before searching.
 | is a project alive, latest release, archived | `githubRepo` | api.github.com |
 | which library for X | `findPackages` | npm search · GitHub search |
 | who published what, what year, how many citations | `academicSearch` + `openalex` / `pubmed` | api.openalex.org · eutils.ncbi.nlm.nih.gov |
+| what a practitioner said, at length, out loud | `findVideos` | youtube.com search page (keyless) |
 | current API surface of a library | `libraryDocs` | Context7 (needs `CONTEXT7_API_KEY`) |
 
-**Why that is eight tools and not twelve.** Tool definitions are re-sent in every step's
+**Why that is nine tools and not twelve.** Tool definitions are re-sent in every step's
 context, for every worker, on every job — 8 workers × 3 concurrent jobs. `workerMaxSteps` is
 5 / 7 / 9 (quick / standard / deep), so a `standard` worker gets **seven tool calls in total**.
 Putting twelve definitions in front of a seven-call budget spends context on options that
@@ -259,6 +260,41 @@ cannot all be taken. So crates.io, the Go proxy and Docker Hub are new *ecosyste
 existing `packageInfo` tool — zero new definitions — and the two literature indexes share one
 `academicSearch`, because they answer a different kind of question than a package registry
 does. Adding a source is cheap; adding a tool is not.
+
+### Spoken sources: video transcripts, and why podcasts needed no code
+
+`fetchPage` on a `youtube.com/watch?v=…` URL returns the video's full spoken transcript. That
+capability was always paid for and wired in — Tavily Extract, step 3 of the fetch chain, does
+it — but it was **unreachable**, and the way it failed is worth remembering.
+
+Steps 1-2 did not fail on a YouTube URL. They *succeeded*, with **1,731 characters of video
+player chrome** ("Tap to unmute", "If playback doesn't begin shortly"). That clears
+`MIN_USABLE_CHARS` and every other check in the chain, so the run recorded the URL as
+`retrieved` — meaning a worker could cite a video at `high` confidence having read the
+player's loading text and nothing else. A success-shaped failure is worse than an error,
+because nothing downstream can tell it apart from a real read. A site adapter now routes watch
+URLs straight to Extract, which returns 22k-218k chars of actual transcript.
+
+URL shape was measured, not assumed:
+
+| URL shape | Against Tavily Extract |
+|-|-|
+| `youtube.com/watch?v=<id>` | works |
+| `youtu.be/<id>` | fails — canonicalised to the watch form before dialling |
+| `youtube.com/shorts/<id>` | fails — adapter declines, falls through to the generic path |
+| `youtube.com/@channel` | 404 — adapter declines |
+
+**Podcasts needed no code at all**, and two measurements say why. Episode pages are ordinary
+web pages that step 1 already reads: `dwarkesh.com` returned 80,181 chars and
+`changelog.com/podcast/626` 65,547, both via Readability on the first try. And the
+Podcasting 2.0 `<podcast:transcript>` RSS tag — the obvious thing to build a discovery chain
+on — has **2 tags across ~3,000 episodes** of eight major tech and interview shows. Only
+Acquired publishes one. A discovery→RSS→VTT pipeline would have bought almost nothing.
+
+**Every video fetch is one billed Tavily Extract call**, because `skipToExtract` bypasses the
+two free steps. On an account already over plan (see `GET /health/tavily`) that is a
+pay-as-you-go credit per attempt — including per *failed* attempt. See the open items in
+`HANDOVER.md` before tuning this.
 
 Two shape decisions worth knowing before changing them:
 
