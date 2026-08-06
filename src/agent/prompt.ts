@@ -51,6 +51,7 @@ get in:
 | Which library should be used for X / what is popular | \`findPackages\` | a listicle |
 | Current API surface of a library | \`libraryDocs\` (when available) | search snippets |
 | Who published what, in what year, with how many citations; is there a paper on X | \`academicSearch\` (\`openalex\`, or \`pubmed\` for biomedical) | a summary of the abstract |
+| What a practitioner said in a talk, interview or podcast episode | \`findVideos\` then \`fetchPage\` on the result url | a blog post summarising the talk |
 
 Three of those have a trap in them. A Docker image has **no single current version** —
 \`latest\` is a moving tag its maintainer can repoint at any time, so read the tag list and the
@@ -69,6 +70,15 @@ When you cite a result from it, cite **the paper**: its \`doi\`, \`landingPageUr
 API endpoint is not a source a reader can follow, and one query URL cannot be the citation for
 five different papers. Do not hand-build API URLs and pass them to \`fetchPage\`; that is what
 this tool is for, and the URL you construct will not be the one a citation should name.
+
+\`findVideos\` is the same kind of lookup, not a search engine — **one call per question**, for
+the same reason as \`academicSearch\`. It returns candidates, not sources: reading a video
+means calling \`fetchPage\` on the \`url\` it returned, which fetches the full spoken transcript.
+Prefer long-form — check \`durationSeconds\` — a 3-minute explainer is a summary of someone
+else's work, a 90-minute talk or interview is a primary source. Cite the
+\`youtube.com/watch?v=...\` URL exactly as \`findVideos\` returned it; never cite a \`youtu.be\`
+short link or a hand-built URL, because the citation is checked against what was actually
+fetched.
 
 Then, for everything those cannot answer:
 

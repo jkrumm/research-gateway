@@ -13,10 +13,16 @@ import {
 // so can be unit-tested without booting the env-parsing chain.
 export { computeCost } from './cost.js'
 
-// Shared POST, used by both reportUsage (LLM/token records) and reportTavilyUsage
-// (credit records) — same endpoint, same idempotent upsert, same "never throw" contract.
-// No-ops when telemetry isn't configured, same as the individual reporters used to.
-async function postUsageRecord(record: Record<string, unknown>): Promise<void> {
+// Shared POST, used by every reporter in this file — reportUsage (LLM/token records),
+// reportTavilyUsage/reportSonarUsage/reportRenderUsage (credit/cost/render records) — same
+// endpoint, same idempotent upsert, same "never throw" contract. No-ops when telemetry isn't
+// configured, same as the individual reporters used to.
+//
+// Exported (not just used internally) so `lib/tavily-account.ts` can post its own record
+// through the same path rather than duplicating this fetch — that file needs `env.js` for the
+// Tavily bearer key anyway, so importing this from `usage.ts` (which already needs env.js for
+// ARGO_USAGE_URL/ARGO_API_SECRET) costs it nothing new.
+export async function postUsageRecord(record: Record<string, unknown>): Promise<void> {
   if (!env.ARGO_USAGE_URL || !env.ARGO_API_SECRET) return
 
   try {

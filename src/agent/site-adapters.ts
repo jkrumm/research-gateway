@@ -25,16 +25,56 @@
 // `rdChars` whenever Readability returned almost nothing and the Tavily-Extract fallback had
 // to run. Recurring hosts there are the candidates.
 //
+// YouTube is the third entry, and the evidence is a different SHAPE of failure than Reddit's.
+// Reddit's generic path returns almost nothing (an 8 KB JS shell); YouTube's returns a
+// SUCCESS-SHAPED FAILURE — measured 2026-08-06, `fetchPage` on a `watch?v=` URL terminates at
+// the lightpanda step with ~1,731 chars of player chrome ("Tap to unmute", "If playback
+// doesn't begin shortly"). That clears `MIN_USABLE_CHARS` (200) and every other success check
+// in fetch-chain.ts, so `ledger.recordRetrieved(url)` fires and a worker can cite a video at
+// `high` confidence having read the player's loading text, not the talk. This is a grounding
+// hazard independent of transcripts — it would matter even if step 3 never ran.
+//
+// Step 3 (Tavily Extract, already wired) is what actually reads YouTube: MEASURED against
+// `youtube.com/watch?v=...` — 23,265 chars for a 26-min talk, 218,361 for a 3h podcast, 22,035
+// for a 20-min video. It just never gets the chance, because steps 1-2 "succeed" first. Hence
+// `plan()` below: skip straight to Extract for any URL this module can turn into a watch URL,
+// rather than let a real transcript lose to 1.7 KB of chrome.
+//
+// URL shape matters and was measured, not assumed: `youtube.com/watch?v=<id>` works against
+// Extract; `youtu.be/<id>` and `youtube.com/shorts/<id>` both fail ("Error fetching content");
+// `youtube.com/@channel` 404s. So this adapter canonicalises to the one shape that works
+// (`youtube.ts`'s `canonicalYoutubeWatchUrl`) and only routes true watch URLs to Extract — a
+// shorts/channel/playlist/results URL declines (`plan` returns null) and falls through to the
+// generic path unchanged, exactly as if YouTube had no adapter at all.
+//
 // Dependency-free by design (no env/log/fetch import) so it stays unit-testable — same
 // convention as ledger.ts / extract.ts / cost.ts.
 
 import { extractRedditThread, type MinimalDocument } from './extract-reddit.js'
+import { canonicalYoutubeWatchUrl } from './youtube.js'
 
 export interface SiteAdapter {
   /** Rewrite the address actually dialled. The caller keeps the original for the ledger. */
   rewriteHost?: string
   /** Read the fetched document. Returns null to fall through to Readability. */
   extract?: (document: MinimalDocument) => string | null
+  /**
+   * Per-URL routing for hosts where the right handling depends on the path, not just the
+   * host — a watch URL needs Extract, a channel page must not be sent there. Returns null to
+   * decline — the URL then falls through to the generic path unchanged, exactly as if this
+   * host had no adapter.
+   */
+  plan?: (parsed: URL) => { fetchUrl: string; skipToExtract: boolean } | null
+}
+
+// One video URL can skip straight to Tavily Extract, bypassing the plain-fetch and
+// lightpanda steps entirely — see the header comment for why (a success-shaped failure at
+// ~1,731 chars of player chrome, not a thin-content miss those steps would otherwise catch).
+const youtubeAdapter: SiteAdapter = {
+  plan: (parsed) => {
+    const canonical = canonicalYoutubeWatchUrl(parsed.toString())
+    return canonical ? { fetchUrl: canonical, skipToExtract: true } : null
+  },
 }
 
 // Keyed by lowercase host of the ORIGINAL url.
@@ -44,6 +84,11 @@ const ADAPTERS: Record<string, SiteAdapter> = {
   // old.reddit.com may also be cited directly by a model, in which case there is nothing to
   // rewrite but the comment-tree extractor still applies.
   'old.reddit.com': { extract: extractRedditThread },
+  'youtube.com': youtubeAdapter,
+  'www.youtube.com': youtubeAdapter,
+  'm.youtube.com': youtubeAdapter,
+  'music.youtube.com': youtubeAdapter,
+  'youtu.be': youtubeAdapter,
 }
 
 export interface ResolvedSite {
@@ -51,6 +96,8 @@ export interface ResolvedSite {
   fetchUrl: string
   /** Site-specific reader, or null to use Readability. */
   extract: ((document: MinimalDocument) => string | null) | null
+  /** True when the fetch chain should skip straight to Tavily Extract (see youtubeAdapter). */
+  skipToExtract: boolean
 }
 
 export function resolveSite(raw: string): ResolvedSite {
@@ -58,12 +105,25 @@ export function resolveSite(raw: string): ResolvedSite {
   try {
     parsed = new URL(raw)
   } catch {
-    return { fetchUrl: raw, extract: null } // the SSRF guard rejects it downstream
+    return { fetchUrl: raw, extract: null, skipToExtract: false } // the SSRF guard rejects it downstream
   }
 
   const adapter = ADAPTERS[parsed.host.toLowerCase()]
-  if (!adapter) return { fetchUrl: raw, extract: null }
+  if (!adapter) return { fetchUrl: raw, extract: null, skipToExtract: false }
+
+  if (adapter.plan) {
+    try {
+      const planned = adapter.plan(parsed)
+      if (planned) {
+        return { fetchUrl: planned.fetchUrl, extract: adapter.extract ?? null, skipToExtract: planned.skipToExtract }
+      }
+      // null = decline (e.g. a shorts/channel/playlist/results URL) — fall through to
+      // rewriteHost/extract below exactly as if there were no `plan` at all.
+    } catch {
+      // A planning error must degrade to the generic path, not take the fetch down with it.
+    }
+  }
 
   if (adapter.rewriteHost) parsed.host = adapter.rewriteHost
-  return { fetchUrl: parsed.toString(), extract: adapter.extract ?? null }
+  return { fetchUrl: parsed.toString(), extract: adapter.extract ?? null, skipToExtract: false }
 }

@@ -3,7 +3,13 @@ import { describe, it, expect } from 'bun:test'
 // `reportUsage`'s ARGO_* gate), which parses `process.env` at import time and throws
 // without secrets. `cost.ts` has no such chain, so `computeCost` is testable with zero
 // env vars. `usage.ts` re-exports the same `computeCost` binding for compatibility.
-import { computeCost, buildTavilyCreditRecord, buildSonarSearchRecord, buildRenderRecord } from './cost.js'
+import {
+  computeCost,
+  buildTavilyCreditRecord,
+  buildSonarSearchRecord,
+  buildRenderRecord,
+  buildTavilyAccountRecord,
+} from './cost.js'
 
 describe('computeCost', () => {
   it('bills uncached input at the miss rate and cached input at the cache-read rate (deepseek-v4-pro)', () => {
@@ -220,5 +226,53 @@ describe('buildSonarSearchRecord', () => {
   it('defaults outcome to "ok" and honors an explicit "error"', () => {
     expect(buildSonarSearchRecord(args).outcome).toBe('ok')
     expect(buildSonarSearchRecord({ ...args, outcome: 'error' }).outcome).toBe('error')
+  })
+})
+
+describe('buildTavilyAccountRecord', () => {
+  // Measured shape, MEASURED live against GET https://api.tavily.com/usage on 2026-08-06.
+  const args = {
+    planUsage: 1145,
+    planLimit: 1000,
+    paygoUsage: 144,
+    paygoLimit: 3000,
+    keyUsage: 1145,
+    keyLimit: 5000,
+    searchUsage: 1065,
+    extractUsage: 80,
+    currentPlan: 'Researcher',
+  }
+
+  it('uses a FIXED, unscoped source_id — an account gauge, not a per-job counter', () => {
+    const record = buildTavilyAccountRecord(args)
+    expect(record.source_id).toBe('tavily-account')
+    expect(record.sub_tool).toBe('tavily-account')
+  })
+
+  it('carries every reported number in `raw`, never in a token or duration field', () => {
+    const record = buildTavilyAccountRecord(args)
+    expect(record.raw).toEqual(args)
+    expect(record.input_tokens).toBe(0)
+    expect(record.output_tokens).toBe(0)
+    expect(record.cache_read_tokens).toBe(0)
+    expect(record.cache_write_tokens).toBe(0)
+    expect(record.reasoning_tokens).toBe(0)
+    expect(record.duration_ms).toBeNull()
+  })
+
+  it('leaves cost_usd unset — no verified USD-per-credit rate exists to compute it honestly', () => {
+    const record = buildTavilyAccountRecord(args)
+    expect(record.cost_usd).toBeNull()
+    expect(record.cost_source).toBe('none')
+  })
+
+  it('leaves model/model_norm unset — an account-usage read is not a model call', () => {
+    const record = buildTavilyAccountRecord(args)
+    expect(record.model).toBeNull()
+    expect(record.model_norm).toBeNull()
+  })
+
+  it('always reports outcome "ok" — there is no per-call success/failure to distinguish', () => {
+    expect(buildTavilyAccountRecord(args).outcome).toBe('ok')
   })
 })

@@ -25,9 +25,10 @@ server-side. See [`PRD.md`](./PRD.md) for the full rationale and decisions.
   - *Source-of-truth lookups* — `packageInfo` (five registries: npm, PyPI, crates.io, the Go
     module proxy, Docker Hub), `githubFile` (a repo file verbatim), `githubRepo` (release,
     archived, last push), `findPackages` (discovery ranked by npm score / stars),
-    `academicSearch` (OpenAlex, PubMed), `libraryDocs` (Context7, when `CONTEXT7_API_KEY` is
-    set). These answer a question exactly instead of approximately, and workers are told to
-    reach for them first. See [Source-of-truth lookups](#source-of-truth-lookups).
+    `academicSearch` (OpenAlex, PubMed), `findVideos` (talks/interviews/podcast episodes on
+    YouTube, with duration), `libraryDocs` (Context7, when `CONTEXT7_API_KEY` is set). These
+    answer a question exactly instead of approximately, and workers are told to reach for
+    them first. See [Source-of-truth lookups](#source-of-truth-lookups).
   - *Open-web research* — `searchWeb` (Perplexity Sonar over the IU endpoint by default;
     Tavily as the per-call fallback), plus `fetchPage`, for everything the lookups cannot
     answer. See [Web search backend](#web-search-backend) and [Fetching pages](#fetching-pages).
@@ -43,6 +44,7 @@ server-side. See [`PRD.md`](./PRD.md) for the full rationale and decisions.
 | `GET /` | public | — | discovery (links to `/openapi`) |
 | `GET /health` | public | — | `{ status: "ok" }` |
 | `GET /health/render` | public | — | `{ renderer, active, queued, error }` — the sidecar. **Deliberately not part of `/health`**, which the container healthcheck and rollhook's rollout gate read: the renderer is optional, and a broken one must not block deploys of a gateway that is otherwise fine |
+| `GET /health/tavily` | public | — | `{ tavily, currentPlan, planUsage, planLimit, paygoUsage, paygoLimit, overPlan, planRemaining, error }` — live account state read from `api.tavily.com/usage`. A visibility probe only; nothing gates on it. Exists because crossing from the plan into pay-as-you-go was otherwise silent |
 | `POST /research` | bearer | `{ query, depth? }` (`depth`: `quick \| standard \| deep`) | `{ jobId, status }` (async) |
 | `GET /research/:jobId` | bearer | — | `{ status, result?, error? }` |
 | `POST /probe/fetch` | bearer | `{ url }` | one URL through the real fetch chain, no LLM — which step terminated it, chars and ms per step. Drives `scripts/fetch-bench.ts` |

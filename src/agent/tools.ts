@@ -5,6 +5,7 @@ import { tavily } from '@tavily/core'
 import { env } from '../env.js'
 import { log } from '../lib/log.js'
 import { reportTavilyUsage, reportSonarUsage, reportRenderUsage } from '../lib/usage.js'
+import { reportTavilyAccountUsage } from '../lib/tavily-account.js'
 import { capText, TEXT_CAP } from './extract.js'
 import { buildDirectSourceTools } from './direct-sources.js'
 import { sonarSearch, type SonarContextSize } from './sonar.js'
@@ -113,13 +114,19 @@ const meterTavily = createJobMeter<{ credits: number; searchCalls: number; extra
     searchCalls: (prev?.searchCalls ?? 0) + delta.searchCalls,
     extractCalls: (prev?.extractCalls ?? 0) + delta.extractCalls,
   }),
-  flush: (jobId, total) =>
+  flush: (jobId, total) => {
     void reportTavilyUsage({
       jobId,
       credits: total.credits,
       searchCalls: total.searchCalls,
       extractCalls: total.extractCalls,
-    }),
+    })
+    // Piggybacks the account-level `GET /usage` read onto every job-scoped flush, so it
+    // happens near real spend instead of on a fixed schedule — see tavily-account.ts for the
+    // internal 10-min throttle that makes this safe to call on every flush. `void`: an
+    // account-usage read must never delay or fail the job-scoped flush it rides in on.
+    void reportTavilyAccountUsage()
+  },
 })
 
 // Search path: `usage.credits` is correct here (see the table above), so a non-billing
@@ -452,7 +459,7 @@ function buildFetchPageTool(ledger: RetrievalLedger, jobId = '-'): AnyTool {
 
   return tool({
     description:
-      'Fetch the main text content of a URL. Uses Mozilla Readability for clean article extraction; falls back to Tavily Extract if readability fails or returns thin content.',
+      'Fetch the main text content of a URL. Uses Mozilla Readability for clean article extraction; falls back to a JavaScript renderer and then Tavily Extract if readability fails or returns thin content. For a YouTube video URL this returns the full spoken transcript of the video.',
     inputSchema: z.object({
       url: z.string().describe('The URL to fetch'),
     }),

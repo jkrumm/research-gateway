@@ -11,6 +11,7 @@ describe('resolveSite', () => {
       const site = resolveSite(`https://${host}/r/bun/comments/abc/title/`)
       expect(site.fetchUrl).toBe('https://old.reddit.com/r/bun/comments/abc/title/')
       expect(site.extract).not.toBeNull()
+      expect(site.skipToExtract).toBe(false)
     }
   })
 
@@ -19,6 +20,7 @@ describe('resolveSite', () => {
     const site = resolveSite(url)
     expect(site.fetchUrl).toBe(url)
     expect(site.extract).not.toBeNull()
+    expect(site.skipToExtract).toBe(false)
   })
 
   it('preserves path, query and fragment through a rewrite', () => {
@@ -41,11 +43,12 @@ describe('resolveSite', () => {
       const site = resolveSite(url)
       expect(site.fetchUrl).toBe(url)
       expect(site.extract).toBeNull()
+      expect(site.skipToExtract).toBe(false)
     }
   })
 
   it('returns unparseable input unchanged rather than throwing', () => {
-    expect(resolveSite('not a url')).toEqual({ fetchUrl: 'not a url', extract: null })
+    expect(resolveSite('not a url')).toEqual({ fetchUrl: 'not a url', extract: null, skipToExtract: false })
   })
 
   it('keys the adapter on the ORIGINAL host, not on whether a rewrite happened', () => {
@@ -72,6 +75,40 @@ describe('resolveSite', () => {
     // would leave every honest Reddit citation ungrounded.
     const original = 'https://www.reddit.com/r/bun/comments/abc/title/'
     expect(normalizeUrl(resolveSite(original).fetchUrl)).not.toBe(normalizeUrl(original))
+  })
+
+  it('routes a watch URL straight to Extract, canonical fetchUrl included', () => {
+    const site = resolveSite('https://www.youtube.com/watch?v=dQw4w9WgXcQ')
+    expect(site.fetchUrl).toBe('https://www.youtube.com/watch?v=dQw4w9WgXcQ')
+    expect(site.skipToExtract).toBe(true)
+    expect(site.extract).toBeNull()
+  })
+
+  it('rewrites a youtu.be short link to the canonical watch URL and skips to Extract', () => {
+    const site = resolveSite('https://youtu.be/dQw4w9WgXcQ')
+    expect(site.fetchUrl).toBe('https://www.youtube.com/watch?v=dQw4w9WgXcQ')
+    expect(site.skipToExtract).toBe(true)
+  })
+
+  it('canonicalises m.youtube.com and music.youtube.com watch URLs and skips to Extract', () => {
+    for (const host of ['m.youtube.com', 'music.youtube.com']) {
+      const site = resolveSite(`https://${host}/watch?v=dQw4w9WgXcQ`)
+      expect(site.fetchUrl).toBe('https://www.youtube.com/watch?v=dQw4w9WgXcQ')
+      expect(site.skipToExtract).toBe(true)
+    }
+  })
+
+  it('leaves shorts, channel, results and playlist URLs unchanged with skipToExtract: false', () => {
+    for (const url of [
+      'https://www.youtube.com/shorts/dQw4w9WgXcQ',
+      'https://www.youtube.com/@SomeChannel',
+      'https://www.youtube.com/results?search_query=bun',
+      'https://www.youtube.com/playlist?list=PL123',
+    ]) {
+      const site = resolveSite(url)
+      expect(site.fetchUrl).toBe(url)
+      expect(site.skipToExtract).toBe(false)
+    }
   })
 })
 

@@ -170,6 +170,69 @@ export function buildSonarSearchRecord(args: {
   }
 }
 
+export interface TavilyAccountUsageRecord extends SearchUsageRecordBase {
+  raw: {
+    planUsage: number
+    planLimit: number
+    paygoUsage: number
+    paygoLimit: number
+    keyUsage: number
+    keyLimit: number
+    searchUsage: number
+    extractUsage: number
+    currentPlan: string
+  }
+}
+
+// Sixth telemetry record, and the only ACCOUNT-level one — every builder above is scoped to
+// one job (`source_id: ${jobId}:...`), but `GET /usage` reports Tavily's whole-account state,
+// which has no job to attach to and would just report the same numbers under a different job
+// id on every poll if it copied that pattern. `source_id: 'tavily-account'` is a fixed,
+// unscoped key instead: argo's upsert on (source, source_id, machine) means this always
+// overwrites the SAME row rather than growing a new one — a gauge, not a per-job counter. This
+// closes the gap HANDOVER.md flagged as "nothing reads GET /usage", which is how the account
+// crossed from its Researcher plan into pay-as-you-go silently (measured 2026-08-06:
+// plan_usage 1145 against plan_limit 1000, paygo_usage 144).
+//
+// `cost_usd`/`cost_source` follow the Tavily credit record's reasoning immediately above: no
+// verified USD-per-credit rate exists anywhere in this repo, so nothing here is guessed.
+// Every number Tavily reports travels in `raw`, same as the other Tavily/render records —
+// none of it is token or duration data, so none of it belongs in those fields.
+export function buildTavilyAccountRecord(args: {
+  planUsage: number
+  planLimit: number
+  paygoUsage: number
+  paygoLimit: number
+  keyUsage: number
+  keyLimit: number
+  searchUsage: number
+  extractUsage: number
+  currentPlan: string
+}): TavilyAccountUsageRecord {
+  return {
+    source: 'research-gateway',
+    source_id: 'tavily-account',
+    grain: 'session',
+    model: null,
+    model_norm: null,
+    project: 'research-gateway',
+    workspace: 'private',
+    sub_tool: 'tavily-account',
+    machine: 'vps',
+    billing: 'iu',
+    outcome: 'ok',
+    input_tokens: 0,
+    output_tokens: 0,
+    cache_read_tokens: 0,
+    cache_write_tokens: 0,
+    reasoning_tokens: 0,
+    duration_ms: null,
+    cost_usd: null,
+    cost_source: 'none',
+    raw: { ...args },
+  }
+}
+
 // Fifth per-job record: lightpanda renders were previously visible only in container logs,
 // which don't survive a redeploy. `cost_usd: null` / `cost_source: 'none'` here for a
 // different reason than the Tavily record's — this isn't a missing rate table, it's that

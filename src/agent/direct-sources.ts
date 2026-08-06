@@ -16,6 +16,7 @@ import {
 import type { RetrievalLedger } from './ledger.js'
 import { mapOpenAlexWork, mapPubmedRecord, parsePubmedIds } from './academic.js'
 import type { OpenAlexWork, PubmedEsearchResult, PubmedResult, PubmedSummaryRecord } from './academic.js'
+import { parseYoutubeSearch } from './youtube.js'
 
 // Direct source-of-truth tools: fixed, well-known APIs that answer a question EXACTLY
 // rather than approximately. Search-then-read is an inference chain — "which page ranks,
@@ -100,6 +101,28 @@ async function getJson<T>(url: string, headers: Record<string, string>): Promise
       return { ok: false, error: `HTTP ${res.status} ${res.statusText}` }
     }
     return { ok: true, data: (await res.json()) as T }
+  } catch (err) {
+    return { ok: false, error: String(err) }
+  }
+}
+
+interface TextResult {
+  ok: boolean
+  data?: string
+  error?: string
+}
+
+// Sibling to getJson, for the one lookup that returns HTML rather than JSON (findVideos, the
+// YouTube search page). Kept as its own function rather than a `getJson<string>` overload
+// because the response is not JSON.parse'd at all — `parseYoutubeSearch` regex-extracts the
+// embedded `ytInitialData` blob itself.
+async function getText(url: string, headers: Record<string, string>): Promise<TextResult> {
+  try {
+    const res = await fetch(url, { headers, signal: AbortSignal.timeout(TIMEOUT_MS) })
+    if (!res.ok) {
+      return { ok: false, error: `HTTP ${res.status} ${res.statusText}` }
+    }
+    return { ok: true, data: await res.text() }
   } catch (err) {
     return { ok: false, error: String(err) }
   }
@@ -780,6 +803,88 @@ function buildAcademicSearchTool(ledger: RetrievalLedger, jobId: string): AnyToo
   }) as AnyTool
 }
 
+// ── findVideos ───────────────────────────────────────────────────────────────
+// Ninth tool, and the same kind of case academicSearch earned #8: a different KIND of
+// question — spoken, long-form primary sources (conference talks, interviews, podcast
+// episodes) — that no existing tool's shape expresses. `packageInfo`/`githubFile`/`githubRepo`
+// answer "what does the code/registry say"; `academicSearch` answers "what does the literature
+// say"; nothing here answers "what did a practitioner actually SAY, at length, out loud".
+//
+// The concrete signal only this tool returns, and the decisive one: duration. A 2:46
+// explainer is someone else's summary; a 1:48:20 talk or interview is worth reading in full.
+// MEASURED 2026-08-06, keyless, from the VPS: `GET youtube.com/results?search_query=...&hl=en`
+// with a browser UA returns ~1.6 MB of HTML containing `var ytInitialData = {...};</script>`;
+// walking it for `videoRenderer` nodes yielded 19 results, each carrying videoId, title,
+// channel, duration, publish date and view count — no API key, no quota.
+//
+// This is a candidate list, not a read source: results go on the ledger as `recordSnippet`,
+// never `recordRetrieved` — see the comment on that call below, and the identical reasoning
+// already established for lookupOpenAlex/lookupPubmed above. Reading a video is a SEPARATE
+// step: `fetchPage` on the result's `url`, which — via the YouTube site adapter added
+// alongside this tool (site-adapters.ts) — routes straight to Tavily Extract and returns the
+// full transcript (measured 22k-218k chars), skipping the player-chrome success-shaped
+// failure that step 1/2 of the generic chain would otherwise produce for this host.
+
+// This lookup uses the SAME bot UA as every other tool in this file, and that is a measured
+// choice rather than an oversight. MEASURED 2026-08-06 from the VPS, the two UAs side by side
+// on the same query: the bot UA returned HTTP 200, 1,396,988 bytes, `ytInitialData` present,
+// 19 `videoRenderer` nodes; a current desktop Chrome UA returned 200, 1,468,147 bytes, 20
+// nodes. YouTube does not differentiate here today, so there is nothing to buy by pretending
+// to be a browser. If it ever starts to, a browser UA scoped to this one call is the lever —
+// but do not add it speculatively.
+
+function buildFindVideosTool(ledger: RetrievalLedger, jobId: string): AnyTool {
+  return tool({
+    description:
+      "Find candidate videos on YouTube — conference talks, interviews, podcast episodes — and return their duration, channel, publish date and view count. Prefer long-form results over short explainer clips: check durationSeconds before choosing what to read. This is a CANDIDATE list, not a source you may cite directly — call fetchPage on a result's url to read its full transcript before citing it, and cite that url exactly as returned.",
+    inputSchema: z.object({
+      query: z.string().describe('What to search for, e.g. "Rich Hickey clojure design talk"'),
+      limit: z.number().int().min(1).max(10).default(5).describe('Max results to return'),
+    }),
+    execute: async ({ query, limit }) => {
+      try {
+        const q = query.trim()
+        if (q.length < 2) return { error: 'query too short' }
+
+        // Deliberately NOT recorded on the ledger — this is the search page itself, not a
+        // source. Recording a query URL as `retrieved` is the exact pattern HANDOVER.md
+        // flags as an open concern for the academic tools (a single query URL standing in
+        // as the citation for several different results); do not repeat it here.
+        const searchUrl = `https://www.youtube.com/results?search_query=${encodeURIComponent(q)}&hl=en`
+        const res = await getText(searchUrl, {
+          'user-agent': UA,
+          'accept-language': 'en-US,en;q=0.9',
+        })
+        if (!res.ok || res.data === undefined) {
+          log('tool.findVideos', { jobId, query: q, results: 0, ok: false })
+          return { error: `YouTube search failed: ${res.error ?? 'no results'}` }
+        }
+
+        const results = parseYoutubeSearch(res.data, limit)
+        // `recordSnippet`, NOT `recordRetrieved` — mirrors lookupOpenAlex/lookupPubmed's
+        // reasoning above exactly: a search hit is a candidate seen in a listing, not a
+        // video actually watched. `medium` confidence (ground.ts) is the honest ceiling for
+        // "this video appears to be about X" until fetchPage has actually read the
+        // transcript and can back `high`.
+        for (const v of results) ledger.recordSnippet(v.url)
+
+        log('tool.findVideos', { jobId, query: q, results: results.length, ok: true })
+        if (results.length === 0) {
+          return { query: q, results, note: 'No YouTube results for this query.' }
+        }
+        return {
+          query: q,
+          results,
+          note: "Candidates only. Call fetchPage on a result's url to read its full transcript before citing it — do not cite a result from this list directly. Prefer long-form (check durationSeconds) over short explainer clips.",
+        }
+      } catch (err) {
+        log('tool.findVideos', { jobId, query, results: 0, ok: false })
+        return { error: `findVideos failed: ${String(err)}` }
+      }
+    },
+  }) as AnyTool
+}
+
 export function buildDirectSourceTools(ledger: RetrievalLedger, jobId: string): Record<string, AnyTool> {
   return {
     packageInfo: buildPackageInfoTool(ledger, jobId),
@@ -790,10 +895,14 @@ export function buildDirectSourceTools(ledger: RetrievalLedger, jobId: string): 
     // (8 workers x 3 concurrent jobs measured) against a workerMaxSteps of 5/7/9 (depth.ts) —
     // a `standard` worker can make 7 tool calls total, so 12 tool definitions in front of a
     // 7-call budget is the wrong trade. That is why crates/go/docker above are three new
-    // `packageInfo` ecosystems rather than three new tools: zero extra definitions. This is
-    // the one genuinely new tool, because OpenAlex/PubMed answer a different KIND of
-    // question — literature, not package registries — that packageInfo's shape cannot
-    // express. Total after this change: 8 tool definitions, not 12.
+    // `packageInfo` ecosystems rather than three new tools: zero extra definitions.
+    // academicSearch and findVideos below are the two genuinely new tools added on top of that
+    // baseline, because each answers a different KIND of question that no existing tool's
+    // shape can express — literature (OpenAlex/PubMed) and spoken long-form primary sources
+    // (YouTube talks/interviews/podcasts), neither of which is a package registry. Total
+    // across the whole gateway (this file plus searchWeb/fetchPage/libraryDocs in tools.ts):
+    // 9 tool definitions, up from 8 before findVideos.
     academicSearch: buildAcademicSearchTool(ledger, jobId),
+    findVideos: buildFindVideosTool(ledger, jobId),
   }
 }
