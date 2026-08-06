@@ -7,7 +7,9 @@ of **parallel workers** researches them (web search + page fetch + curated libra
 returns a compact digest each, and the lead synthesizes one cited report from the digests.
 
 Consolidates and replaces the sideclaw `/research` MCP tool, with provider keys centralized
-server-side. See [`PRD.md`](./PRD.md) for the full rationale and decisions.
+server-side. See [`PRD.md`](./PRD.md) for the full rationale and decisions, and
+[`docs/field-notes.md`](./docs/field-notes.md) for dated observations from the calling side —
+what real consumer sessions hit, and the improvement backlog that came out of them.
 
 ## Stack
 
