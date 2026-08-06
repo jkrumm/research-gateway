@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test'
-import { canonicalYoutubeWatchUrl, parseDurationSeconds, parseYoutubeSearch } from './youtube.js'
+import { canonicalYoutubeWatchUrl, parseDurationSeconds } from './youtube.js'
 
 describe('canonicalYoutubeWatchUrl', () => {
   it('accepts a plain watch URL unchanged in shape', () => {
@@ -111,102 +111,5 @@ describe('parseDurationSeconds', () => {
   it('returns null for non-numeric / live-stream text', () => {
     expect(parseDurationSeconds('LIVE')).toBeNull()
     expect(parseDurationSeconds('garbage')).toBeNull()
-  })
-})
-
-// Hand-written ytInitialData fixture: one entry with a `runs`-style title, one with a
-// `simpleText` title and no lengthText (a livestream/premiere shape), and enough nesting to
-// exercise the recursive walk rather than a flat top-level array.
-const FIXTURE_DATA = {
-  contents: {
-    twoColumnSearchResultsRenderer: {
-      primaryContents: {
-        sectionListRenderer: {
-          contents: [
-            {
-              itemSectionRenderer: {
-                contents: [
-                  {
-                    videoRenderer: {
-                      videoId: 'dQw4w9WgXcQ',
-                      title: { runs: [{ text: 'A ' }, { text: 'Long Talk' }] },
-                      ownerText: { runs: [{ text: 'Some Channel' }] },
-                      lengthText: { simpleText: '1:48:20' },
-                      publishedTimeText: { simpleText: '3 years ago' },
-                      viewCountText: { simpleText: '1,234,567 views' },
-                    },
-                  },
-                  {
-                    videoRenderer: {
-                      videoId: 'abcdefghijk',
-                      title: { simpleText: 'A Live Premiere' },
-                      ownerText: { simpleText: 'Another Channel' },
-                      publishedTimeText: { simpleText: 'Streamed 2 days ago' },
-                      viewCountText: { simpleText: '42 watching' },
-                    },
-                  },
-                ],
-              },
-            },
-          ],
-        },
-      },
-    },
-  },
-}
-
-function fixtureHtml(data: unknown): string {
-  return `<html><script>var ytInitialData = ${JSON.stringify(data)};</script></html>`
-}
-
-describe('parseYoutubeSearch', () => {
-  it('extracts a runs-style title, channel, duration, published and views', () => {
-    const results = parseYoutubeSearch(fixtureHtml(FIXTURE_DATA), 10)
-    const first = results.find((r) => r.videoId === 'dQw4w9WgXcQ')
-    expect(first).toEqual({
-      videoId: 'dQw4w9WgXcQ',
-      title: 'A Long Talk',
-      channel: 'Some Channel',
-      durationText: '1:48:20',
-      durationSeconds: 6500,
-      publishedText: '3 years ago',
-      viewsText: '1,234,567 views',
-      url: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ',
-    })
-  })
-
-  it('handles an entry with no lengthText (durationText/durationSeconds both null)', () => {
-    const results = parseYoutubeSearch(fixtureHtml(FIXTURE_DATA), 10)
-    const second = results.find((r) => r.videoId === 'abcdefghijk')
-    expect(second?.title).toBe('A Live Premiere')
-    expect(second?.durationText).toBeNull()
-    expect(second?.durationSeconds).toBeNull()
-  })
-
-  it('caps results at the given limit', () => {
-    expect(parseYoutubeSearch(fixtureHtml(FIXTURE_DATA), 1)).toHaveLength(1)
-  })
-
-  it('dedupes by videoId', () => {
-    const duped = {
-      contents: [{ videoRenderer: FIXTURE_DATA.contents.twoColumnSearchResultsRenderer.primaryContents.sectionListRenderer.contents[0]!.itemSectionRenderer.contents[0]!.videoRenderer }, { videoRenderer: FIXTURE_DATA.contents.twoColumnSearchResultsRenderer.primaryContents.sectionListRenderer.contents[0]!.itemSectionRenderer.contents[0]!.videoRenderer }],
-    }
-    expect(parseYoutubeSearch(fixtureHtml(duped), 10)).toHaveLength(1)
-  })
-
-  it('returns [] for malformed HTML with no ytInitialData', () => {
-    expect(parseYoutubeSearch('<html><body>nothing here</body></html>', 10)).toEqual([])
-  })
-
-  it('returns [] when ytInitialData is present but not valid JSON', () => {
-    expect(parseYoutubeSearch('<script>var ytInitialData = {not json};</script>', 10)).toEqual([])
-  })
-
-  // The loop pushes before it checks the limit, so a non-positive limit would otherwise
-  // return one result. The tool's zod schema enforces min(1), but this is exported as
-  // general-purpose pure logic.
-  it('returns [] for a limit of 0 or a negative limit', () => {
-    expect(parseYoutubeSearch(fixtureHtml(FIXTURE_DATA), 0)).toEqual([])
-    expect(parseYoutubeSearch(fixtureHtml(FIXTURE_DATA), -1)).toEqual([])
   })
 })

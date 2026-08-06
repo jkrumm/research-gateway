@@ -41,3 +41,9 @@ ARGO_USAGE_URL=http://argo-api:4000/usage/records
 ARGO_API_SECRET=op://common/api/SECRET
 
 RESEARCH_MAX_CONCURRENCY=3
+
+# yt-dlp (video transcripts + search). Bundled into the image at build time — nothing to
+# seed here. Working defaults (path /usr/local/bin/yt-dlp, concurrency 2, timeout 45s);
+# uncomment only to override.
+# YTDLP_MAX_CONCURRENCY=2
+# YTDLP_TIMEOUT_MS=45000

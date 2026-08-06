@@ -9,6 +9,7 @@ import {
   buildSonarSearchRecord,
   buildRenderRecord,
   buildTavilyAccountRecord,
+  buildYtdlpRecord,
 } from './cost.js'
 
 describe('computeCost', () => {
@@ -166,6 +167,48 @@ describe('buildRenderRecord', () => {
   it('defaults outcome to "ok" and honors an explicit "error"', () => {
     expect(buildRenderRecord(args).outcome).toBe('ok')
     expect(buildRenderRecord({ ...args, outcome: 'error' }).outcome).toBe('error')
+  })
+})
+
+describe('buildYtdlpRecord', () => {
+  const args = { jobId: 'job-123', calls: 5, failures: 1, totalMs: 18_432 }
+
+  it('scopes source_id as `${jobId}:ytdlp` so it never collides with the other records', () => {
+    const record = buildYtdlpRecord(args)
+    expect(record.source_id).toBe('job-123:ytdlp')
+    expect(record.sub_tool).toBe('ytdlp')
+  })
+
+  it('carries calls/failures/totalMs in `raw`, and mirrors totalMs into duration_ms', () => {
+    const record = buildYtdlpRecord(args)
+    expect(record.raw).toEqual({ calls: 5, failures: 1, totalMs: 18_432 })
+    expect(record.duration_ms).toBe(18_432)
+  })
+
+  it('leaves cost_usd unset — yt-dlp is a bundled binary, so there is no marginal cost to report', () => {
+    const record = buildYtdlpRecord(args)
+    expect(record.cost_usd).toBeNull()
+    expect(record.cost_source).toBe('none')
+  })
+
+  it('leaves model/model_norm unset — a yt-dlp call is not a model call', () => {
+    const record = buildYtdlpRecord(args)
+    expect(record.model).toBeNull()
+    expect(record.model_norm).toBeNull()
+  })
+
+  it('zeroes every token field', () => {
+    const record = buildYtdlpRecord(args)
+    expect(record.input_tokens).toBe(0)
+    expect(record.output_tokens).toBe(0)
+    expect(record.cache_read_tokens).toBe(0)
+    expect(record.cache_write_tokens).toBe(0)
+    expect(record.reasoning_tokens).toBe(0)
+  })
+
+  it('defaults outcome to "ok" and honors an explicit "error"', () => {
+    expect(buildYtdlpRecord(args).outcome).toBe('ok')
+    expect(buildYtdlpRecord({ ...args, outcome: 'error' }).outcome).toBe('error')
   })
 })
 

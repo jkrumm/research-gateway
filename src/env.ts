@@ -76,6 +76,17 @@ const Env = z.object({
   // resolves against the process CWD: the repo root in local dev, /app (the Dockerfile
   // WORKDIR) in the container, where deploy/compose.yml mounts a named volume at /app/data.
   JOB_DB_PATH: z.string().default('./data/jobs.sqlite'),
+  // yt-dlp binary path — bundled into the image at build time (Dockerfile), pinned to a
+  // specific release. See agent/ytdlp.ts.
+  YTDLP_PATH: z.string().default('/usr/local/bin/yt-dlp'),
+  // MEASURED 2026-08-06 from the VPS: YouTube rate-limits this datacenter IP under burst
+  // (`HTTP Error 429` on a `--sub-langs` glob expansion). Bounded on purpose, not a tuning
+  // default — raising it trades a slower queue for a higher chance of a 429 mid-job.
+  YTDLP_MAX_CONCURRENCY: z.coerce.number().default(2),
+  // MEASURED 2026-08-06: a `-J` extraction + caption fetch completed in 3.6-4.2s per video
+  // (three-video sample). 45s leaves headroom for a slow one without lingering forever on a
+  // wedged process.
+  YTDLP_TIMEOUT_MS: z.coerce.number().default(45_000),
 })
 
 export const env = Env.parse(process.env)

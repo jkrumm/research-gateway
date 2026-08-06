@@ -1,4 +1,4 @@
-// Pure YouTube helpers — URL canonicalisation, keyless search-page parsing, duration parsing.
+// Pure YouTube helpers — URL canonicalisation and duration parsing.
 //
 // Dependency-free by design (no env/fetch/log import) so this stays unit-testable without
 // booting the env-parsing chain — same convention as ledger.ts / extract.ts / academic.ts.
@@ -8,25 +8,15 @@
 // three test videos); `youtu.be/<id>` and `youtube.com/shorts/<id>` both fail outright
 // ("Error fetching content"), and `youtube.com/@channel` 404s. A model routinely cites the
 // short form or a channel/shorts link it found in search results — this module is what turns
-// any of those into the one shape that actually works, or tells the caller it can't.
+// any of those into the one shape that actually works, or tells the caller it can't. That
+// canonical shape is also the ledger key both the yt-dlp transcript step and yt-dlp video
+// search (agent/ytdlp.ts) are checked against.
 //
-// Why search parsing exists at all: `GET youtube.com/results?search_query=...&hl=en` with a
-// browser UA returns ~1.6 MB of HTML containing `var ytInitialData = {...};</script>` —
-// keyless, no API key, no quota. Walking it for `videoRenderer` nodes is the only way to get
-// candidate videos (with duration — the decisive signal, see direct-sources.ts) without one.
-
-export interface YoutubeVideo {
-  videoId: string
-  title: string
-  channel: string | null
-  durationText: string | null
-  durationSeconds: number | null
-  publishedText: string | null
-  viewsText: string | null
-  /** Always the canonical `https://www.youtube.com/watch?v=<id>` — the one URL shape that
-   *  Tavily Extract can actually read (see the header comment above). */
-  url: string
-}
+// Search parsing used to live here too — a keyless scrape of youtube.com's search-results
+// HTML, walking the embedded `ytInitialData` blob for `videoRenderer` nodes. It is gone:
+// `findVideos` (direct-sources.ts) now calls `searchYoutube` (ytdlp.ts), which asks
+// `yt-dlp --flat-playlist -J` for the same fields directly — 9,795 bytes in 2,712 ms
+// (MEASURED 2026-08-06) versus ~1.3 MB of undocumented, regularly-reshuffled HTML.
 
 // Hosts that carry a video id in the `v` query param on a `/watch` path. Anything else on
 // these hosts — `/shorts/<id>`, `/@channel`, `/results`, `/playlist`, a bare host — is
@@ -85,83 +75,4 @@ export function parseDurationSeconds(text: string | null): number | null {
   if (parts.some((p) => !Number.isFinite(p))) return null
 
   return parts.reduce((seconds, part) => seconds * 60 + part, 0)
-}
-
-// `ytInitialData` renders every text field as either `{ simpleText }` or `{ runs: [{ text }] }`
-// — never both — so this is the one place that needs to know which.
-function runText(run: unknown): string {
-  if (!run || typeof run !== 'object') return ''
-  const text = (run as Record<string, unknown>)['text']
-  return typeof text === 'string' ? text : ''
-}
-
-function textOf(node: unknown): string | null {
-  if (!node || typeof node !== 'object') return null
-  const obj = node as Record<string, unknown>
-  if (typeof obj['simpleText'] === 'string') return obj['simpleText']
-  if (Array.isArray(obj['runs'])) {
-    const joined = obj['runs'].map(runText).join('')
-    return joined.length > 0 ? joined : null
-  }
-  return null
-}
-
-// `ytInitialData` is a deeply nested, undocumented render tree — a `videoRenderer` can sit at
-// any depth under any key. Walking every value rather than pattern-matching a known path is
-// what survives YouTube reshuffling the tree around it, which it does routinely.
-function collectVideoRenderers(node: unknown, out: unknown[]): void {
-  if (!node || typeof node !== 'object') return
-  if (Array.isArray(node)) {
-    for (const item of node) collectVideoRenderers(item, out)
-    return
-  }
-  const obj = node as Record<string, unknown>
-  if ('videoRenderer' in obj) out.push(obj['videoRenderer'])
-  for (const value of Object.values(obj)) collectVideoRenderers(value, out)
-}
-
-export function parseYoutubeSearch(html: string, limit: number): YoutubeVideo[] {
-  // The tool's zod schema enforces min(1), but this is exported as general-purpose pure logic
-  // like everything else in this file — and the loop below pushes before it checks, so a
-  // limit of 0 would otherwise return one result.
-  if (limit <= 0) return []
-
-  const match = /var ytInitialData = (\{.*?\});<\/script>/s.exec(html)
-  if (!match) return []
-
-  let data: unknown
-  try {
-    data = JSON.parse(match[1] as string)
-  } catch {
-    return []
-  }
-
-  const renderers: unknown[] = []
-  collectVideoRenderers(data, renderers)
-
-  const seen = new Set<string>()
-  const results: YoutubeVideo[] = []
-  for (const renderer of renderers) {
-    if (!renderer || typeof renderer !== 'object') continue
-    const v = renderer as Record<string, unknown>
-    const videoId = typeof v['videoId'] === 'string' ? v['videoId'] : null
-    if (!videoId || seen.has(videoId)) continue
-    seen.add(videoId)
-
-    const durationText = textOf(v['lengthText'])
-    results.push({
-      videoId,
-      title: textOf(v['title']) ?? '',
-      channel: textOf(v['ownerText']),
-      durationText,
-      durationSeconds: parseDurationSeconds(durationText),
-      publishedText: textOf(v['publishedTimeText']),
-      viewsText: textOf(v['viewCountText']),
-      url: `https://www.youtube.com/watch?v=${videoId}`,
-    })
-
-    if (results.length >= limit) break
-  }
-
-  return results
 }

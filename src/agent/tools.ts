@@ -4,7 +4,7 @@ import { z } from 'zod'
 import { tavily } from '@tavily/core'
 import { env } from '../env.js'
 import { log } from '../lib/log.js'
-import { reportTavilyUsage, reportSonarUsage, reportRenderUsage } from '../lib/usage.js'
+import { reportTavilyUsage, reportSonarUsage, reportRenderUsage, reportYtdlpUsage } from '../lib/usage.js'
 import { reportTavilyAccountUsage } from '../lib/tavily-account.js'
 import { capText, TEXT_CAP } from './extract.js'
 import { buildDirectSourceTools } from './direct-sources.js'
@@ -180,6 +180,23 @@ const meterRender = createJobMeter<{ renders: number; failures: number; totalMs:
 
 export function readRenderStats(jobId: string): { renders: number; failures: number; totalMs: number } {
   return meterRender.read(jobId) ?? { renders: 0, failures: 0, totalMs: 0 }
+}
+
+// yt-dlp calls were previously visible only in container logs. Mirrors meterRender exactly —
+// one entry per call ATTEMPT (transcript fetch or video search), whether it succeeded or
+// failed, fired from the two call sites that actually spawn the binary: fetchPage's
+// skipToExtract step (fetch-chain.ts's onYtdlp) and findVideos (direct-sources.ts's onYtdlp).
+const meterYtdlp = createJobMeter<{ calls: number; failures: number; totalMs: number }>({
+  add: (prev, delta) => ({
+    calls: (prev?.calls ?? 0) + delta.calls,
+    failures: (prev?.failures ?? 0) + delta.failures,
+    totalMs: (prev?.totalMs ?? 0) + delta.totalMs,
+  }),
+  flush: (jobId, total) => void reportYtdlpUsage({ jobId, ...total }),
+})
+
+export function readYtdlpStats(jobId: string): { calls: number; failures: number; totalMs: number } {
+  return meterYtdlp.read(jobId) ?? { calls: 0, failures: 0, totalMs: 0 }
 }
 
 // Per-job search spend, readable when a job finishes so it can travel in the job's own
@@ -478,6 +495,7 @@ function buildFetchPageTool(ledger: RetrievalLedger, jobId = '-'): AnyTool {
         jobId,
         onTavilyCredits: (credits) => recordTavilyExtract(jobId, credits),
         onRender: (r) => meterRender.add(jobId, { renders: 1, failures: r.ok ? 0 : 1, totalMs: r.ms }),
+        onYtdlp: (r) => meterYtdlp.add(jobId, { calls: 1, failures: r.ok ? 0 : 1, totalMs: r.ms }),
       })
 
       if (result.text === null) return { url, error: result.error ?? 'fetch failed' }
@@ -570,7 +588,9 @@ export function buildTools(args: {
     fetchPage: buildFetchPageTool(ledger, jid),
     // Deterministic source-of-truth lookups (registries, GitHub). Registered before the
     // optional libraryDocs tool so tools/list order stays stable across configurations.
-    ...buildDirectSourceTools(ledger, jid),
+    ...buildDirectSourceTools(ledger, jid, (r) =>
+      meterYtdlp.add(jid, { calls: 1, failures: r.ok ? 0 : 1, totalMs: r.ms }),
+    ),
   }
 
   const libraryDocsTool = buildLibraryDocsTool(ledger, jid)

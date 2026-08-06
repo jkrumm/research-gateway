@@ -16,7 +16,7 @@ import {
 import type { RetrievalLedger } from './ledger.js'
 import { mapOpenAlexWork, mapPubmedRecord, parsePubmedIds } from './academic.js'
 import type { OpenAlexWork, PubmedEsearchResult, PubmedResult, PubmedSummaryRecord } from './academic.js'
-import { parseYoutubeSearch } from './youtube.js'
+import { searchYoutube } from './ytdlp.js'
 
 // Direct source-of-truth tools: fixed, well-known APIs that answer a question EXACTLY
 // rather than approximately. Search-then-read is an inference chain — "which page ranks,
@@ -101,28 +101,6 @@ async function getJson<T>(url: string, headers: Record<string, string>): Promise
       return { ok: false, error: `HTTP ${res.status} ${res.statusText}` }
     }
     return { ok: true, data: (await res.json()) as T }
-  } catch (err) {
-    return { ok: false, error: String(err) }
-  }
-}
-
-interface TextResult {
-  ok: boolean
-  data?: string
-  error?: string
-}
-
-// Sibling to getJson, for the one lookup that returns HTML rather than JSON (findVideos, the
-// YouTube search page). Kept as its own function rather than a `getJson<string>` overload
-// because the response is not JSON.parse'd at all — `parseYoutubeSearch` regex-extracts the
-// embedded `ytInitialData` blob itself.
-async function getText(url: string, headers: Record<string, string>): Promise<TextResult> {
-  try {
-    const res = await fetch(url, { headers, signal: AbortSignal.timeout(TIMEOUT_MS) })
-    if (!res.ok) {
-      return { ok: false, error: `HTTP ${res.status} ${res.statusText}` }
-    }
-    return { ok: true, data: await res.text() }
   } catch (err) {
     return { ok: false, error: String(err) }
   }
@@ -812,26 +790,22 @@ function buildAcademicSearchTool(ledger: RetrievalLedger, jobId: string): AnyToo
 //
 // The concrete signal only this tool returns, and the decisive one: duration. A 2:46
 // explainer is someone else's summary; a 1:48:20 talk or interview is worth reading in full.
-// MEASURED 2026-08-06, keyless, from the VPS: `GET youtube.com/results?search_query=...&hl=en`
-// with a browser UA returns ~1.6 MB of HTML containing `var ytInitialData = {...};</script>`;
-// walking it for `videoRenderer` nodes yielded 19 results, each carrying videoId, title,
-// channel, duration, publish date and view count — no API key, no quota.
+//
+// This used to be a keyless HTML scrape of youtube.com's search page (~1.3 MB per call, and
+// what the ~1.6 MB corpus of `ytInitialData` blobs it walked was measured against). It is now
+// `searchYoutube` (agent/ytdlp.ts), `yt-dlp --flat-playlist -J "ytsearch<n>:<query>"`.
+// MEASURED 2026-08-06 from the VPS: **9,795 bytes in 2,712 ms** — a 134x payload reduction —
+// returning `id`/`title`/`duration` (numeric seconds)/`view_count`/`channel` per entry
+// directly, which also retires the `ytInitialData` regex as a breakage surface: that blob's
+// undocumented shape was the reason `parseYoutubeSearch` existed at all (see youtube.ts).
 //
 // This is a candidate list, not a read source: results go on the ledger as `recordSnippet`,
 // never `recordRetrieved` — see the comment on that call below, and the identical reasoning
 // already established for lookupOpenAlex/lookupPubmed above. Reading a video is a SEPARATE
-// step: `fetchPage` on the result's `url`, which — via the YouTube site adapter added
-// alongside this tool (site-adapters.ts) — routes straight to Tavily Extract and returns the
-// full transcript (measured 22k-218k chars), skipping the player-chrome success-shaped
-// failure that step 1/2 of the generic chain would otherwise produce for this host.
-
-// This lookup uses the SAME bot UA as every other tool in this file, and that is a measured
-// choice rather than an oversight. MEASURED 2026-08-06 from the VPS, the two UAs side by side
-// on the same query: the bot UA returned HTTP 200, 1,396,988 bytes, `ytInitialData` present,
-// 19 `videoRenderer` nodes; a current desktop Chrome UA returned 200, 1,468,147 bytes, 20
-// nodes. YouTube does not differentiate here today, so there is nothing to buy by pretending
-// to be a browser. If it ever starts to, a browser UA scoped to this one call is the lever —
-// but do not add it speculatively.
+// step: `fetchPage` on the result's `url`, which — via the YouTube site adapter (site-adapters.ts)
+// and the yt-dlp step in the fetch chain (fetch-chain.ts) — returns the full transcript
+// (measured 20k-80k chars in 3.6-4.2s), skipping the player-chrome success-shaped failure
+// that step 1/2 of the generic chain would otherwise produce for this host.
 
 // Per-WORKER call budget, enforced in code rather than asked for in the prompt — the same
 // shape as searchWeb's `maxSearches`, and for a reason that was measured rather than assumed.
@@ -840,9 +814,10 @@ function buildAcademicSearchTool(ledger: RetrievalLedger, jobId: string): AnyToo
 // one `standard` job with 4 sub-questions made 13 findVideos calls, the queries plainly
 // reworded retries of each other ("Bun in production JavaScript runtime podcast interview",
 // "Bun podcast interview JavaScript runtime", "Bun JavaScript runtime talk", "Bun JSConf
-// talk"). That is the academicSearch over-call pattern, but it costs far more here: a YouTube
-// search page is ~1.3 MB, so 13 calls pull ~17 MB of HTML into a container that then pinned at
-// 510.1 MiB of its 512 MiB limit and lost its HTTP listener under two concurrent jobs.
+// talk"). That is the academicSearch over-call pattern, and it is why the budget stays even
+// though each call is now 134x cheaper — the failure mode being guarded against is wasted
+// tool-call budget and a stuck worker re-querying the same index with different words, not
+// only the payload size that originally forced the container's memory limit up.
 //
 // 3 is deliberately above the prompt's "one per question" so a genuinely multi-part
 // sub-question is not cut off, and far below the observed 13. Unlike searchWeb's budget this
@@ -850,13 +825,17 @@ function buildAcademicSearchTool(ledger: RetrievalLedger, jobId: string): AnyToo
 // transcripts, not by re-querying the same index with different words.
 const MAX_FIND_VIDEOS_CALLS = 3
 
-function buildFindVideosTool(ledger: RetrievalLedger, jobId: string): AnyTool {
+function buildFindVideosTool(
+  ledger: RetrievalLedger,
+  jobId: string,
+  onYtdlp?: (r: { ok: boolean; ms: number }) => void,
+): AnyTool {
   // One closure per worker (buildTools is called per worker), mirroring searchWeb's `spent`.
   let spent = 0
 
   return tool({
     description:
-      "Find candidate videos on YouTube — conference talks, interviews, podcast episodes — and return their duration, channel, publish date and view count. Prefer long-form results over short explainer clips: check durationSeconds before choosing what to read. This is a CANDIDATE list, not a source you may cite directly — call fetchPage on a result's url to read its full transcript before citing it, and cite that url exactly as returned. Budgeted: a few calls per sub-question, so make each query count rather than rewording it.",
+      "Find candidate videos on YouTube — conference talks, interviews, podcast episodes — and return their duration, channel and view count. Prefer long-form results over short explainer clips: check durationSeconds before choosing what to read. This is a CANDIDATE list, not a source you may cite directly — call fetchPage on a result's url to read its full transcript before citing it, and cite that url exactly as returned. Budgeted: a few calls per sub-question, so make each query count rather than rewording it.",
     inputSchema: z.object({
       query: z.string().describe('What to search for, e.g. "Rich Hickey clojure design talk"'),
       limit: z.number().int().min(1).max(10).default(5).describe('Max results to return'),
@@ -878,21 +857,14 @@ function buildFindVideosTool(ledger: RetrievalLedger, jobId: string): AnyTool {
         // unlimited retries.
         spent++
 
-        // Deliberately NOT recorded on the ledger — this is the search page itself, not a
-        // source. Recording a query URL as `retrieved` is the exact pattern HANDOVER.md
-        // flags as an open concern for the academic tools (a single query URL standing in
-        // as the citation for several different results); do not repeat it here.
-        const searchUrl = `https://www.youtube.com/results?search_query=${encodeURIComponent(q)}&hl=en`
-        const res = await getText(searchUrl, {
-          'user-agent': UA,
-          'accept-language': 'en-US,en;q=0.9',
-        })
-        if (!res.ok || res.data === undefined) {
+        const started = performance.now()
+        const results = await searchYoutube(q, limit, { jobId })
+        onYtdlp?.({ ok: results !== null, ms: Math.round(performance.now() - started) })
+        if (results === null) {
           log('tool.findVideos', { jobId, query: q, results: 0, ok: false })
-          return { error: `YouTube search failed: ${res.error ?? 'no results'}` }
+          return { error: 'YouTube search failed' }
         }
 
-        const results = parseYoutubeSearch(res.data, limit)
         // `recordSnippet`, NOT `recordRetrieved` — mirrors lookupOpenAlex/lookupPubmed's
         // reasoning above exactly: a search hit is a candidate seen in a listing, not a
         // video actually watched. `medium` confidence (ground.ts) is the honest ceiling for
@@ -917,7 +889,11 @@ function buildFindVideosTool(ledger: RetrievalLedger, jobId: string): AnyTool {
   }) as AnyTool
 }
 
-export function buildDirectSourceTools(ledger: RetrievalLedger, jobId: string): Record<string, AnyTool> {
+export function buildDirectSourceTools(
+  ledger: RetrievalLedger,
+  jobId: string,
+  onYtdlp?: (r: { ok: boolean; ms: number }) => void,
+): Record<string, AnyTool> {
   return {
     packageInfo: buildPackageInfoTool(ledger, jobId),
     githubFile: buildGithubFileTool(ledger, jobId),
@@ -935,6 +911,6 @@ export function buildDirectSourceTools(ledger: RetrievalLedger, jobId: string): 
     // across the whole gateway (this file plus searchWeb/fetchPage/libraryDocs in tools.ts):
     // 9 tool definitions, up from 8 before findVideos.
     academicSearch: buildAcademicSearchTool(ledger, jobId),
-    findVideos: buildFindVideosTool(ledger, jobId),
+    findVideos: buildFindVideosTool(ledger, jobId, onYtdlp),
   }
 }

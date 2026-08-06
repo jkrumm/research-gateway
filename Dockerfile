@@ -18,6 +18,20 @@ RUN apk add --no-cache curl ca-certificates \
   && addgroup -S app && adduser -S app -G app \
   && mkdir -p /app/data && chown app:app /app/data
 
+# yt-dlp — a binary in the image, not an npm dependency (agent/ytdlp.ts spawns it directly).
+# Pinned, not `latest`, so a bump is deliberate and one line to change.
+ARG YTDLP_VERSION=2026.07.04
+# MUST be the `_musllinux` asset: this image is `oven/bun:1.3-alpine` (musl libc), and the
+# glibc `yt-dlp_linux` build does not run on it. Verified on the VPS 2026-08-06: the
+# musllinux binary's `--version` works inside this exact base image and produced 55,067
+# bytes of subtitles; the shape of the failure a glibc binary would hit here was not
+# re-derived because the working asset made it moot.
+RUN curl -fsSL -o /usr/local/bin/yt-dlp \
+  "https://github.com/yt-dlp/yt-dlp/releases/download/${YTDLP_VERSION}/yt-dlp_musllinux" \
+  && chmod 0755 /usr/local/bin/yt-dlp \
+  # Fails the BUILD on a broken/incompatible binary, not every request at runtime.
+  && /usr/local/bin/yt-dlp --version
+
 COPY --from=builder --chown=app:app /app/node_modules /app/node_modules
 COPY --from=builder --chown=app:app /app/src /app/src
 COPY --from=builder --chown=app:app /app/package.json /app/package.json

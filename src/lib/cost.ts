@@ -72,6 +72,10 @@ export interface RenderUsageRecord extends SearchUsageRecordBase {
   raw: { renders: number; failures: number; totalMs: number }
 }
 
+export interface YtdlpUsageRecord extends SearchUsageRecordBase {
+  raw: { calls: number; failures: number; totalMs: number }
+}
+
 // Tavily bills by API credit, not by token — jamming a credit count into `input_tokens`/
 // `output_tokens` would misrepresent it as LLM usage on argo's token dashboards. This
 // builds a deliberately separate, non-token record instead: `model`/`model_norm` stay
@@ -267,5 +271,42 @@ export function buildRenderRecord(args: {
     cost_usd: null,
     cost_source: 'none',
     raw: { renders: args.renders, failures: args.failures, totalMs: args.totalMs },
+  }
+}
+
+// Sixth per-job record, alongside `lead`/`worker`/`tavily`/`sonar`/`render` — yt-dlp calls
+// (both the transcript step and findVideos search) were previously visible only in container
+// logs. `cost_usd: null` / `cost_source: 'none'` for the same reason as the render record:
+// yt-dlp is a binary bundled into this image (see the Dockerfile), not a vendor call — it is
+// free, that is the entire point of replacing Tavily Extract with it, and there is no
+// marginal per-call cost to report.
+export function buildYtdlpRecord(args: {
+  jobId: string
+  calls: number
+  failures: number
+  totalMs: number
+  outcome?: 'ok' | 'error'
+}): YtdlpUsageRecord {
+  return {
+    source: 'research-gateway',
+    source_id: `${args.jobId}:ytdlp`,
+    grain: 'session',
+    model: null,
+    model_norm: null,
+    project: 'research-gateway',
+    workspace: 'private',
+    sub_tool: 'ytdlp',
+    machine: 'vps',
+    billing: 'iu',
+    outcome: args.outcome ?? 'ok',
+    input_tokens: 0,
+    output_tokens: 0,
+    cache_read_tokens: 0,
+    cache_write_tokens: 0,
+    reasoning_tokens: 0,
+    duration_ms: args.totalMs,
+    cost_usd: null,
+    cost_source: 'none',
+    raw: { calls: args.calls, failures: args.failures, totalMs: args.totalMs },
   }
 }

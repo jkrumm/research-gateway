@@ -8,18 +8,27 @@ import { normalizeText, capText, TEXT_CAP } from './extract.js'
 import { resolveSite } from './site-adapters.js'
 import { isRawContentType, isDefinitivelyMissing } from './response-kind.js'
 import { parseRenderResponse, renderUrl } from './lightpanda.js'
+import { fetchYoutubeTranscript } from './ytdlp.js'
 import type { RetrievalLedger } from './ledger.js'
 
 // The page-fetch chain, extracted from the `fetchPage` tool so it can be RUN AND MEASURED
 // without an LLM in the loop.
 //
-// The chain is normally steps 1 -> 2 -> 3 (plain fetch/site-adapter/Readability, lightpanda,
-// Tavily Extract). One class of URL skips straight to step 3: when `resolveSite` (via a site
-// adapter's `plan()`) marks `skipToExtract`, steps 1-2 are never attempted at all. YouTube is
-// the case that forced this — steps 1-2 don't fail on a `watch?v=` URL, they SUCCEED with
-// ~1,731 chars of video-player chrome ("Tap to unmute"), which clears every quality check in
-// this file and gets recorded as `retrieved`. Only step 3 reads the actual transcript
-// (measured 22k-218k chars). See site-adapters.ts's header comment for the full numbers.
+// The chain has two shapes. For most URLs it is steps 1 -> 2 -> 3 (plain fetch/site-adapter/
+// Readability, lightpanda, Tavily Extract). One class of URL skips straight to a fourth,
+// YouTube-only step: when `resolveSite` (via a site adapter's `plan()`) marks `skipToExtract`,
+// steps 1-2 are never attempted at all. YouTube is the case that forced this — steps 1-2
+// don't fail on a `watch?v=` URL, they SUCCEED with ~1,731 chars of video-player chrome ("Tap
+// to unmute"), which clears every quality check in this file and gets recorded as `retrieved`.
+// See site-adapters.ts's header comment for the full numbers.
+//
+// That fourth step is yt-dlp (agent/ytdlp.ts), tried FIRST: one `-J` metadata extraction plus
+// one direct GET of the caption track it names, both spawned/fetched locally rather than
+// billed to Tavily. MEASURED 2026-08-06 against three videos (see ytdlp.ts's header): 3.6-4.2s
+// end to end, 20k-80k chars. Tavily Extract remains the fallback for when yt-dlp fails (no
+// caption track, a rate limit, a binary error) — it still recovers a video's description and
+// metadata even when a transcript is unavailable, which is why the chain still ends in step 3
+// for this URL class too rather than failing outright.
 //
 // Why it lives on its own: the chain has four steps that each recover a different failure,
 // and until now the only record of which one fired was a log line inside a job. That made
@@ -41,7 +50,7 @@ import type { RetrievalLedger } from './ledger.js'
 //   - The ledger always hears about the ORIGINAL url, never the rewritten one, because the
 //     original is what a citation will name (site-adapters.test.ts guards this).
 
-export type FetchStep = 'raw' | 'site-adapter' | 'readability' | 'lightpanda' | 'tavily-extract'
+export type FetchStep = 'raw' | 'site-adapter' | 'readability' | 'lightpanda' | 'yt-dlp' | 'tavily-extract'
 
 export interface FetchAttempt {
   step: FetchStep
@@ -81,6 +90,12 @@ export interface FetchChainOptions {
    * then no attempt was made at all.
    */
   onRender?: (r: { ok: boolean; ms: number }) => void
+  /**
+   * Called for EVERY yt-dlp transcript attempt this chain makes (skipToExtract URLs only) —
+   * success and failure alike, mirroring `onRender` above exactly. Not called for non-video
+   * URLs, since no attempt was made at all.
+   */
+  onYtdlp?: (r: { ok: boolean; ms: number }) => void
 }
 
 const tvly = tavily({ apiKey: env.TAVILY_API_KEY })
@@ -134,7 +149,7 @@ function attempt(
 }
 
 export async function runFetchChain(url: string, opts: FetchChainOptions): Promise<FetchChainResult> {
-  const { ledger, onTavilyCredits, onRender } = opts
+  const { ledger, onTavilyCredits, onRender, onYtdlp } = opts
   const jobId = opts.jobId ?? '-'
   const attempts: FetchAttempt[] = []
 
@@ -181,6 +196,28 @@ export async function runFetchChain(url: string, opts: FetchChainOptions): Promi
 
   if (site.skipToExtract) {
     log('tool.fetchPage', { jobId, url, via: 'skip-to-extract', fetchUrl })
+
+    // ── Step yt-dlp: the real read for a video URL, tried before the paid fallback ──
+    const tY = performance.now()
+    const ytResult = await fetchYoutubeTranscript(fetchUrl, { jobId })
+    if (ytResult) {
+      const ms = attempt(attempts, 'yt-dlp', tY, { ok: true, chars: ytResult.chars })
+      onYtdlp?.({ ok: true, ms })
+      log('tool.fetchPage', {
+        jobId,
+        url,
+        via: 'yt-dlp',
+        chars: ytResult.chars,
+        source: ytResult.source,
+        lang: ytResult.lang,
+      })
+      return done('yt-dlp', ytResult.text)
+    }
+    const ms = attempt(attempts, 'yt-dlp', tY, { ok: false, error: 'no transcript available' })
+    onYtdlp?.({ ok: false, ms })
+    log('tool.fetchPage', { jobId, url, via: 'yt-dlp', error: 'no transcript available — falling back to tavily-extract' })
+    // Falls through to Step 3 (Tavily Extract) below — it still recovers a video's
+    // description/metadata even when yt-dlp found no transcript.
   } else {
     // ── Step 1: plain fetch + linkedom + Readability (or a site adapter's own reader) ──
     const t1 = performance.now()

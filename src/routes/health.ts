@@ -3,6 +3,20 @@ import { z } from 'zod'
 import { env } from '../env.js'
 import { fetchTavilyUsage } from '../lib/tavily-account.js'
 
+async function readYtdlpVersion(): Promise<string> {
+  const proc = Bun.spawn([env.YTDLP_PATH, '--version'], {
+    stdout: 'pipe',
+    stderr: 'pipe',
+    timeout: 5_000,
+    killSignal: 'SIGKILL',
+  })
+  const stdout = await new Response(proc.stdout).text()
+  const code = await proc.exited
+  if (proc.signalCode) throw new Error('yt-dlp --version timed out')
+  if (code !== 0) throw new Error(`yt-dlp --version exited ${code}`)
+  return stdout.trim()
+}
+
 export const healthRoute = new Elysia()
   .get('/health', () => ({ status: 'ok' as const }), {
     response: z.object({ status: z.literal('ok') }),
@@ -133,6 +147,35 @@ export const healthRoute = new Elysia()
         summary: 'Tavily account-usage probe',
         description:
           'Reports live Tavily account usage via `GET https://api.tavily.com/usage`: plan usage/limit, pay-as-you-go usage/limit, and derived `overPlan`/`planRemaining`. No auth required, matching /health/render. NOTHING gates on this — it is a visibility probe.',
+      },
+    },
+  )
+  // Same posture as `/health/render`/`/health/tavily`: public, and nothing gates on it. This
+  // is how a deploy gets verified — the Dockerfile already fails the BUILD on a broken binary
+  // (`RUN yt-dlp --version`), but a runtime regression (a base image swap, a volume mount
+  // that shadows /usr/local/bin) would otherwise only surface as every video fetch quietly
+  // falling back to Tavily Extract.
+  .get(
+    '/health/ytdlp',
+    async () => {
+      try {
+        const version = await readYtdlpVersion()
+        return { ytdlp: 'ok' as const, version, error: null }
+      } catch (err) {
+        return { ytdlp: 'down' as const, version: null, error: String(err) }
+      }
+    },
+    {
+      response: z.object({
+        ytdlp: z.enum(['ok', 'down']),
+        version: z.string().nullable(),
+        error: z.string().nullable(),
+      }),
+      detail: {
+        tags: ['System'],
+        summary: 'yt-dlp binary probe',
+        description:
+          'Runs `yt-dlp --version` inside the container and reports the result. No auth required. NOTHING gates on this — yt-dlp failing degrades video transcripts/search to the Tavily Extract fallback, not the service.',
       },
     },
   )

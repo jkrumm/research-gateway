@@ -26,7 +26,8 @@ server-side. See [`PRD.md`](./PRD.md) for the full rationale and decisions.
     module proxy, Docker Hub), `githubFile` (a repo file verbatim), `githubRepo` (release,
     archived, last push), `findPackages` (discovery ranked by npm score / stars),
     `academicSearch` (OpenAlex, PubMed), `findVideos` (talks/interviews/podcast episodes on
-    YouTube, with duration), `libraryDocs` (Context7, when `CONTEXT7_API_KEY` is set). These
+    YouTube, with duration — via a bundled `yt-dlp` binary, not a scrape), `libraryDocs`
+    (Context7, when `CONTEXT7_API_KEY` is set). These
     answer a question exactly instead of approximately, and workers are told to reach for
     them first. See [Source-of-truth lookups](#source-of-truth-lookups).
   - *Open-web research* — `searchWeb` (Perplexity Sonar over the IU endpoint by default;
@@ -45,6 +46,7 @@ server-side. See [`PRD.md`](./PRD.md) for the full rationale and decisions.
 | `GET /health` | public | — | `{ status: "ok" }` |
 | `GET /health/render` | public | — | `{ renderer, active, queued, error }` — the sidecar. **Deliberately not part of `/health`**, which the container healthcheck and rollhook's rollout gate read: the renderer is optional, and a broken one must not block deploys of a gateway that is otherwise fine |
 | `GET /health/tavily` | public | — | `{ tavily, currentPlan, planUsage, planLimit, paygoUsage, paygoLimit, overPlan, planRemaining, error }` — live account state read from `api.tavily.com/usage`. A visibility probe only; nothing gates on it. Exists because crossing from the plan into pay-as-you-go was otherwise silent |
+| `GET /health/ytdlp` | public | — | `{ ytdlp, version, error }` — runs `yt-dlp --version` inside the container. A visibility probe only; nothing gates on it. The Dockerfile already fails the *build* on a broken binary, this is how a running deploy is verified |
 | `POST /research` | bearer | `{ query, depth? }` (`depth`: `quick \| standard \| deep`) | `{ jobId, status }` (async) |
 | `GET /research/:jobId` | bearer | — | `{ status, result?, error? }` |
 | `POST /probe/fetch` | bearer | `{ url }` | one URL through the real fetch chain, no LLM — which step terminated it, chars and ms per step. Drives `scripts/fetch-bench.ts` |
@@ -249,7 +251,7 @@ reach for them before searching.
 | is a project alive, latest release, archived | `githubRepo` | api.github.com |
 | which library for X | `findPackages` | npm search · GitHub search |
 | who published what, what year, how many citations | `academicSearch` + `openalex` / `pubmed` | api.openalex.org · eutils.ncbi.nlm.nih.gov |
-| what a practitioner said, at length, out loud | `findVideos` | youtube.com search page (keyless) |
+| what a practitioner said, at length, out loud | `findVideos` | `yt-dlp` video search (bundled binary, keyless) |
 | current API surface of a library | `libraryDocs` | Context7 (needs `CONTEXT7_API_KEY`) |
 
 **Why that is nine tools and not twelve.** Tool definitions are re-sent in every step's
@@ -263,21 +265,48 @@ does. Adding a source is cheap; adding a tool is not.
 
 ### Spoken sources: video transcripts, and why podcasts needed no code
 
-`fetchPage` on a `youtube.com/watch?v=…` URL returns the video's full spoken transcript. That
-capability was always paid for and wired in — Tavily Extract, step 3 of the fetch chain, does
-it — but it was **unreachable**, and the way it failed is worth remembering.
+`fetchPage` on a `youtube.com/watch?v=…` URL returns the video's full spoken transcript. Both
+YouTube code paths — this one and `findVideos` — now run on a `yt-dlp` binary bundled into the
+image (pinned in the Dockerfile), not a Tavily Extract call or an HTML scrape.
 
-Steps 1-2 did not fail on a YouTube URL. They *succeeded*, with **1,731 characters of video
-player chrome** ("Tap to unmute", "If playback doesn't begin shortly"). That clears
-`MIN_USABLE_CHARS` and every other check in the chain, so the run recorded the URL as
-`retrieved` — meaning a worker could cite a video at `high` confidence having read the
-player's loading text and nothing else. A success-shaped failure is worse than an error,
-because nothing downstream can tell it apart from a real read. A site adapter now routes watch
-URLs straight to Extract, which returns 22k-218k chars of actual transcript.
+The shape that works, MEASURED 2026-08-06 against three videos from the VPS: **one `-J`
+metadata extraction plus one direct GET of the caption track it names**.
 
-URL shape was measured, not assumed:
+| Video | Track | Extract | Caption fetch | Total | Chars |
+|-|-|-|-|-|-|
+| `8aGhZQkoFbQ` | manual `en` | 3,989ms | 182ms | 4,171ms | 22,147 |
+| `ELYfRiF-424` | auto `de` | 3,427ms | 198ms | 3,625ms | 80,411 |
+| `-PHXi7NTB8k` | manual `en` | 3,837ms | 93ms | 3,930ms | 19,967 |
 
-| URL shape | Against Tavily Extract |
+`-PHXi7NTB8k` is a video Tavily Extract failed on in production — yt-dlp read it fine. The
+crux is the caption URL itself: the `baseUrl` scraped from the watch page's HTML returns HTTP
+200 with **zero bytes** (PO-token gated), but the URL `-J` returns for the same track carries
+the params that make a plain GET actually work.
+
+**Track selection is deliberate, not "whatever yt-dlp defaults to".** Manual captions outrank
+auto ones — MEASURED on the same video, same moment: manual reads "- Today, we are finally
+gonna bring everyone out there up to speed on how to use a flash.", auto reads "today we are
+finally going to bring everyone out there up to speed on how to use a flash" — same words,
+unpunctuated. `agent/youtube-captions.ts` picks the video's own language first (manual, then
+auto), falling back to English only when that language has no track at all, and the resulting
+transcript text says explicitly when it came from auto-generated captions.
+
+Two flag traps this was built around, both measured: `--extractor-args
+"youtube:player_skip=webpage,configs"` triggers `ERROR: Sign in to confirm you're not a bot`
+on every video — never add it. `--sub-langs "en.*"` is a glob that expands to ~157
+auto-translated tracks and causes `HTTP Error 429: Too Many Requests`; even two exact codes
+downloads a useless machine-translated track. That is why this reads `-J`'s own metadata and
+picks one track itself rather than using `--write-subs` at all.
+
+**Tavily Extract remains the fallback**, tried when yt-dlp finds no usable track (a rate
+limit, a video truly without captions, a binary error) — it still recovers a video's
+description and metadata even when a transcript is unavailable. `YTDLP_MAX_CONCURRENCY`
+(default 2) bounds concurrent yt-dlp processes, because YouTube rate-limits this datacenter IP
+under burst — the same trap the `--sub-langs` glob hit above.
+
+URL shape still matters and was measured, not assumed:
+
+| URL shape | Against yt-dlp / Tavily Extract |
 |-|-|
 | `youtube.com/watch?v=<id>` | works |
 | `youtu.be/<id>` | fails — canonicalised to the watch form before dialling |
@@ -291,10 +320,12 @@ Podcasting 2.0 `<podcast:transcript>` RSS tag — the obvious thing to build a d
 on — has **2 tags across ~3,000 episodes** of eight major tech and interview shows. Only
 Acquired publishes one. A discovery→RSS→VTT pipeline would have bought almost nothing.
 
-**Every video fetch is one billed Tavily Extract call**, because `skipToExtract` bypasses the
-two free steps. On an account already over plan (see `GET /health/tavily`) that is a
-pay-as-you-go credit per attempt — including per *failed* attempt. See the open items in
-`HANDOVER.md` before tuning this.
+**`findVideos` search is now the same binary, not a scrape.** `yt-dlp --flat-playlist -J
+"ytsearch<n>:<query>"` returned **9,795 bytes in 2,712 ms** (MEASURED 2026-08-06) — a 134x
+reduction against the ~1.3 MB HTML search page it replaces — with `id`/`title`/`duration`
+(numeric seconds)/`view_count`/`channel` per entry, directly. It also retires the
+`ytInitialData` regex as a breakage surface: that undocumented blob's shape was the entire
+reason the old scraper existed.
 
 Two shape decisions worth knowing before changing them:
 
@@ -647,12 +678,12 @@ is the product. `maxSearches` stayed at 4. Revisit if IU spend ever becomes bind
 ## Telemetry
 
 Each job reports spend to argo `POST /usage/records` as `source: "research-gateway"`,
-`billing: "iu"` — **up to five records per job**: two LLM records, one per model bucket
+`billing: "iu"` — **up to six records per job**: two LLM records, one per model bucket
 (`sub_tool: lead | worker`), since the two run on different models; one search record per
-backend the job actually used (`sub_tool: sonar` and/or `sub_tool: tavily`); and one render
-record (`sub_tool: lightpanda`). argo upserts on `(source, source_id, machine)`, so `source_id`
-is scoped `${jobId}:lead` / `:worker` / `:sonar` / `:tavily` / `:render` or a later record
-would overwrite an earlier one.
+backend the job actually used (`sub_tool: sonar` and/or `sub_tool: tavily`); one render record
+(`sub_tool: lightpanda`); and one yt-dlp record (`sub_tool: ytdlp`). argo upserts on `(source,
+source_id, machine)`, so `source_id` is scoped `${jobId}:lead` / `:worker` / `:sonar` /
+`:tavily` / `:render` / `:ytdlp` or a later record would overwrite an earlier one.
 
 The `cost_source` values are distinct provenances, not decoration:
 
@@ -662,6 +693,7 @@ The `cost_source` values are distinct provenances, not decoration:
 | `sonar` | `reported` | Perplexity prices the call and returns the USD; pricing it from its token counts would under-report by ~100x, since the cost is almost entirely a per-request search fee |
 | `tavily` | `none` | credit count travels in `raw` — no verified USD-per-credit rate exists to convert it honestly, and for extraction no per-call credit count exists at all (below) |
 | `lightpanda` | `none` | a different reason from Tavily's: the sidecar is self-hosted, so there is no marginal per-render cost to report. `raw` carries `{ renders, failures, totalMs }` |
+| `ytdlp` | `none` | same reason as lightpanda: yt-dlp is a binary bundled into this image, not a vendor call — there is no marginal per-call cost. `raw` carries `{ calls, failures, totalMs }` |
 
 Search records are debounced per job (a deep run makes 100+ billed calls that all upsert the
 same row), so argo sees one trailing cumulative POST rather than a flood. Telemetry failure

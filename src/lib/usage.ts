@@ -6,6 +6,7 @@ import {
   buildTavilyCreditRecord,
   buildSonarSearchRecord,
   buildRenderRecord,
+  buildYtdlpRecord,
 } from './cost.js'
 
 // Re-exported for compatibility — callers importing `computeCost` from `usage.ts` keep
@@ -205,5 +206,21 @@ export async function reportRenderUsage(args: {
 }): Promise<void> {
   const now = new Date().toISOString()
   const record = { ...buildRenderRecord(args), ts: now, ingested_at: now }
+  await postUsageRecord(record)
+}
+
+// Sixth per-job record, alongside `lead`/`worker`/`tavily`/`sonar`/`render` — yt-dlp calls
+// were previously visible only in container logs. Same cumulative-snapshot contract as the
+// others: the counts are the job's running totals, and argo's upsert on (source, source_id,
+// machine) overwrites rather than accumulates duplicate rows.
+export async function reportYtdlpUsage(args: {
+  jobId: string
+  calls: number
+  failures: number
+  totalMs: number
+  outcome?: 'ok' | 'error'
+}): Promise<void> {
+  const now = new Date().toISOString()
+  const record = { ...buildYtdlpRecord(args), ts: now, ingested_at: now }
   await postUsageRecord(record)
 }
