@@ -833,10 +833,30 @@ function buildAcademicSearchTool(ledger: RetrievalLedger, jobId: string): AnyToo
 // to be a browser. If it ever starts to, a browser UA scoped to this one call is the lever —
 // but do not add it speculatively.
 
+// Per-WORKER call budget, enforced in code rather than asked for in the prompt — the same
+// shape as searchWeb's `maxSearches`, and for a reason that was measured rather than assumed.
+//
+// The worker prompt already says "one call per question". MEASURED 2026-08-06, it was ignored:
+// one `standard` job with 4 sub-questions made 13 findVideos calls, the queries plainly
+// reworded retries of each other ("Bun in production JavaScript runtime podcast interview",
+// "Bun podcast interview JavaScript runtime", "Bun JavaScript runtime talk", "Bun JSConf
+// talk"). That is the academicSearch over-call pattern, but it costs far more here: a YouTube
+// search page is ~1.3 MB, so 13 calls pull ~17 MB of HTML into a container that then pinned at
+// 510.1 MiB of its 512 MiB limit and lost its HTTP listener under two concurrent jobs.
+//
+// 3 is deliberately above the prompt's "one per question" so a genuinely multi-part
+// sub-question is not cut off, and far below the observed 13. Unlike searchWeb's budget this
+// is not depth-scaled: findVideos is a lookup, and a deep job earns more DEPTH by reading more
+// transcripts, not by re-querying the same index with different words.
+const MAX_FIND_VIDEOS_CALLS = 3
+
 function buildFindVideosTool(ledger: RetrievalLedger, jobId: string): AnyTool {
+  // One closure per worker (buildTools is called per worker), mirroring searchWeb's `spent`.
+  let spent = 0
+
   return tool({
     description:
-      "Find candidate videos on YouTube — conference talks, interviews, podcast episodes — and return their duration, channel, publish date and view count. Prefer long-form results over short explainer clips: check durationSeconds before choosing what to read. This is a CANDIDATE list, not a source you may cite directly — call fetchPage on a result's url to read its full transcript before citing it, and cite that url exactly as returned.",
+      "Find candidate videos on YouTube — conference talks, interviews, podcast episodes — and return their duration, channel, publish date and view count. Prefer long-form results over short explainer clips: check durationSeconds before choosing what to read. This is a CANDIDATE list, not a source you may cite directly — call fetchPage on a result's url to read its full transcript before citing it, and cite that url exactly as returned. Budgeted: a few calls per sub-question, so make each query count rather than rewording it.",
     inputSchema: z.object({
       query: z.string().describe('What to search for, e.g. "Rich Hickey clojure design talk"'),
       limit: z.number().int().min(1).max(10).default(5).describe('Max results to return'),
@@ -845,6 +865,18 @@ function buildFindVideosTool(ledger: RetrievalLedger, jobId: string): AnyTool {
       try {
         const q = query.trim()
         if (q.length < 2) return { error: 'query too short' }
+
+        if (spent >= MAX_FIND_VIDEOS_CALLS) {
+          log('tool.findVideos', { jobId, query: q, via: 'budget', spent, max: MAX_FIND_VIDEOS_CALLS })
+          return {
+            error: `findVideos budget exhausted (${MAX_FIND_VIDEOS_CALLS} calls used). Do not search for videos again — read the most promising results you already have with fetchPage, and report anything still unresolved in openGaps.`,
+            results: [],
+          }
+        }
+        // Counted before the request, so a failing call cannot be retried without limit — the
+        // same reasoning as searchWeb's, where not charging failures hands a stuck worker
+        // unlimited retries.
+        spent++
 
         // Deliberately NOT recorded on the ledger — this is the search page itself, not a
         // source. Recording a query URL as `retrieved` is the exact pattern HANDOVER.md
