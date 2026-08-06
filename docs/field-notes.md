@@ -121,11 +121,72 @@ ends up interleaving waits by hand.
 → **`job_wait_all({ jobIds })`** returning as each completes, or a single call
 that blocks until all are done, would collapse that.
 
+### Follow-up the same day: one `depth=deep` run, and a new failure class
+
+A single `depth=deep` job on "does a structured Wild Rift item/rune data source
+exist" ran **650s for $0.47** — 1.6× the wall time and 3.6× the cost of the
+median `standard` run, with 59 search calls, 106 pages retrieved and **51 page
+fetches failed**. The report was broad and genuinely useful. It was also wrong
+in a way the `standard` runs never were.
+
+**A failed fetch became a fact about the world.** Two claims, both
+`confidence: high`, both false when probed by hand from the same machine minutes
+later:
+
+- *"The lrlib CDN hosts only static image assets… the naming patterns suggest
+  this CDN serves a card/hero collection game, not Wild Rift."* It hosts the live
+  141-champion Wild Rift roster as JSON and every champion's official head icon.
+  The run reasoned from a **sparse Wayback CDX listing** because the direct fetch
+  failed, and concluded the resource doesn't exist.
+- *"`mlol.qt.qq.com` … is geo-restricted to mainland China (connection refused
+  from outside)."* It answers fine; I pulled 353 KB from it that day. One failed
+  fetch became a geographic claim.
+
+This is worse than an unsourced guess, because it arrives with high confidence
+and a citation to the *evidence of absence* (a 404 probe, an archive query). With
+51 failed fetches in one run, the odds of at least one turning into a false
+negative are high.
+
+→ **Never promote a fetch failure to a negative claim.** If the only evidence for
+"X does not exist" is that retrieval failed, it belongs in `unverified` as
+"could not retrieve", not in the report as a finding. The distinction the run
+needs is *retrieved-and-empty* vs *not-retrieved*, and it already tracks both.
+
+**It also reasoned about a document it admitted it couldn't read.** The report
+declared the wiki's item module stale and unusable for the current patch, while
+its own `unverified` block says the module *"is too large to fetch — 121 KB"*.
+The staleness verdict came from a revision timestamp alone. Worse, it checked the
+**wrong host**: the same module title exists on the Fandom mirror (last edited
+2025-09-17) and on the official migrated wiki (last edited two days before the
+run). Reading the second one — 144 KB via `action=query&rvprop=content`, which
+works fine — reversed the verdict.
+
+→ **If a claim rests on a document that landed in `unverified`, the claim should
+degrade with it.** And a "site is stale" conclusion should survive a check for
+the same content on a sibling domain.
+
+**What deep bought that standard didn't:** the whole third-party landscape —
+which sites actually measure builds (two: wrchina.gg reading the CN in-game
+leaderboard, and RiftGG), which are editorial, which are dead. That is real
+value, and it was cheaper than doing it by hand.
+
+→ The lesson isn't "don't use deep". It is that **breadth raises the failed-fetch
+count, and failed fetches are the input to this failure mode** — so the guard
+matters more at `deep` than anywhere else.
+
 ### Ranked, if only some get built
 
-1. Internal-consistency pass (**#1**) — it produced a wrong fact in a published
-   note, and the fix needs no new retrieval.
-2. `context` parameter (**#5**) — biggest cost lever, smallest surface.
-3. Strip `unverified` sources from the body (**#2**) — small, purely additive safety.
-4. Claim-type tag (**#4**) — changes how a consumer reads every report.
-5. Phase in `job_status` (**#6**) and `job_wait_all` (**#7**) — ergonomics, not correctness.
+1. **Never promote a fetch failure to a negative claim** — the deep run stated two
+   false facts at `confidence: high` off failed retrievals. Highest severity: a
+   confident wrong answer costs more than no answer.
+2. **A claim whose source is in `unverified` must degrade with it** — same run
+   declared a 121 KB document stale without reading it.
+3. Internal-consistency pass — it produced a wrong fact in a published note, and
+   the fix needs no new retrieval.
+4. `context` parameter — biggest cost lever, smallest surface.
+5. Strip `unverified` sources from the body — small, purely additive safety.
+6. Claim-type tag (`measured` / `editorial`) — changes how a consumer reads every report.
+7. Phase in `job_status` and `job_wait_all` — ergonomics, not correctness.
+
+The first two are the same bug wearing two hats: **the pipeline treats "we
+couldn't get it" as "it isn't there."** Fixing that one idea fixes both.
