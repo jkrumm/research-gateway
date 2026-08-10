@@ -12,6 +12,12 @@ export function normalizeModel(raw: string): string {
 const RATES: Record<string, { input: number; cachedInput: number; output: number }> = {
   'deepseek-v4-flash': { input: 0.14, cachedInput: 0.0028, output: 0.28 },
   'deepseek-v4-pro': { input: 0.435, cachedInput: 0.0145, output: 0.87 },
+  // input/output are OpenRouter's reference pricing — the best available, but NOT confirmed
+  // as IU's actual billed rate. cachedInput is set equal to input rather than a guessed
+  // discount: live-probed 2026-08-10, gpt-5.6-luna reports `cached_tokens: 0` through IU on
+  // repeated identical prefixes across 6 separate test calls, so assuming a cache-read
+  // discount here would silently under-bill.
+  'gpt-5.6-luna': { input: 0.1, cachedInput: 0.1, output: 0.6 },
 }
 
 export function computeCost(
