@@ -10,14 +10,17 @@ const Env = z.object({
   // and was still set to DeepSeek-V4-Pro in the deployed .env, which read as if the lead
   // were Pro long after it was not. Nothing consumed it; removed rather than corrected.)
   //
-  // Flash leads as well as works. Measured live against the IU endpoint, Flash decodes
-  // ~2x faster than Pro and matches it on multi-step tool-calling (3/3 tools, args valid,
-  // 7.8s vs 14.1s — modelpick's 2026-07 bake-off). The lead's two jobs, planning and
-  // synthesis, are both tool-calls, and synthesis is the wall-clock long pole of every
-  // job — so the faster model cuts both latency and cost where it matters most. Revert
-  // to DeepSeek-V4-Pro here if report quality regresses; nothing else depends on it.
-  IU_LEAD_MODEL: z.string().default('DeepSeek-V4-Flash'),
-  IU_WORKER_MODEL: z.string().default('DeepSeek-V4-Flash'),
+  // Luna leads as well as works. Measured live against the IU endpoint (5 throughput runs,
+  // 4 tool-calling runs), gpt-5.6-luna is 3-8x faster to first token than DeepSeek-V4-Flash
+  // (TTFT 779-954ms vs 2.4-5.4s, the latter also producing a reasoning-token-inflation
+  // outlier that spiked to 11.5s) and more stable, with both models 100% reliable on
+  // tool-calling and comparable report quality — modelpick's bake-off (docs/decisions/
+  // hermes-brain.md there). The lead's two jobs, planning and synthesis, are both
+  // tool-calls, and synthesis is the wall-clock long pole of every job — so the faster,
+  // more stable model cuts both latency and cost where it matters most. Revert to
+  // DeepSeek-V4-Flash here if report quality regresses; nothing else depends on it.
+  IU_LEAD_MODEL: z.string().default('gpt-5.6-luna'),
+  IU_WORKER_MODEL: z.string().default('gpt-5.6-luna'),
   WORKER_MAX_CONCURRENCY: z.coerce.number().default(8),
   // Which backend `searchWeb` uses. Sonar is the default: it runs over IU_BASE_URL on the
   // work key, costs about the same per call as a Tavily basic search, and returns ~20 dated
