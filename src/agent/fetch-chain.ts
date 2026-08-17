@@ -354,7 +354,14 @@ export async function runFetchChain(url: string, opts: FetchChainOptions): Promi
 
     const tW = performance.now()
     try {
-      const res = await safeFetch(waybackLookupUrl(fetchUrl), jobId)
+      // A wayback lookup needs a bigger redirect budget than a live fetch, because the archive
+      // REPLAYS the origin's own canonicalisation redirects on top of its own snapshot-resolution
+      // one. MEASURED on a Cloudy Nights topic URL: 302 (9999 -> snapshot), 301 (origin drops
+      // `index.php?`), 302 (re-resolve), 301 (origin lowercases the slug), 302 (re-resolve), 200
+      // — five hops, where the chain's default of 3 failed the whole rescue with "too many
+      // redirects". Every hop is still re-validated against the SSRF guard inside safeFetch, so
+      // this widens the budget, not the trust.
+      const res = await safeFetch(waybackLookupUrl(fetchUrl), jobId, 8)
       if (!res.ok) {
         attempt(attempts, 'wayback', tW, { ok: false, error: `HTTP ${res.status}` })
         return fail(originalReason)
