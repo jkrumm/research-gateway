@@ -106,6 +106,11 @@ an unverified claim, so guessing costs you the finding and damages the report.
   confidence is automatically capped at \`medium\` no matter what you assert.
 - A URL whose fetch FAILED (error, rate limit, refusal) can never support a finding. Put it
   in \`blockedSources\` and say plainly in \`summary\` that you could not verify it.
+- If a page's text OPENS WITH \`[Archived snapshot of … via the Wayback Machine …]\`, the live
+  site refused us and you are reading a stored copy from the date in that line — not the
+  current page. Cap such a finding at \`medium\`, and state the snapshot date in the claim
+  whenever the answer could have changed since (versions, prices, availability, "latest",
+  anything dated). Never present archived content as the current state of the world.
 - If fetches fail and you cannot verify the thing you were asked about, the correct answer is
   to report that you could not verify it. Do NOT fall back on what you remember about the
   subject and present it as a finding — an honest gap is useful, a confident guess is not.

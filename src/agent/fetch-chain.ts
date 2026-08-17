@@ -9,6 +9,7 @@ import { resolveSite } from './site-adapters.js'
 import { isRawContentType, isDefinitivelyMissing } from './response-kind.js'
 import { parseRenderResponse, renderUrl } from './lightpanda.js'
 import { fetchYoutubeTranscript } from './ytdlp.js'
+import { waybackLookupUrl, isArchiveUrl, parseSnapshotDate, archiveBanner } from './archive.js'
 import type { RetrievalLedger } from './ledger.js'
 
 // The page-fetch chain, extracted from the `fetchPage` tool so it can be RUN AND MEASURED
@@ -43,6 +44,20 @@ import type { RetrievalLedger } from './ledger.js'
 // log lines are byte-identical to what they were inside the tool, so anything that read
 // them still reads them.
 //
+// A fifth step, the Wayback Machine, runs ONLY after step 3 (Tavily Extract) has already
+// terminally failed — it is a rescue for origins that refuse this crawler outright, not a
+// general alternative to fetching live. MEASURED 2026-08-17: a dpreview forum thread 403s a
+// plain fetch, 403s lightpanda, AND fails Tavily Extract ("Failed to fetch url") — every step
+// above fails. The same URL through `https://web.archive.org/web/9999/<url>` (see archive.ts)
+// 302s to a 2023 snapshot that reads with plain Readability: 20,076 chars, 0 Tavily credits.
+// It is skipped for `skipToExtract` URLs (a YouTube watch page's archived copy is player
+// chrome, not a transcript — the failure Wayback exists to rescue does not apply there) and
+// for URLs that are already archive.org addresses (no recursion). It does NOT run ahead of the
+// `isDefinitivelyMissing` early return — a 404 origin still stops before Tavily as it does
+// today; recovering dead links from the archive is a deliberate follow-up, not this change.
+// A page recovered this way is recorded `retrieved`, not a new ledger tier, because it
+// genuinely was read; staleness travels in-band via `archiveBanner` instead.
+//
 // Contract, unchanged from the tool it came from and load-bearing:
 //   - It NEVER throws. Every step is a fallback inside a fallback chain; the sidecar being
 //     down or Tavily rejecting must degrade this call, not kill the worker (which would lose
@@ -50,7 +65,7 @@ import type { RetrievalLedger } from './ledger.js'
 //   - The ledger always hears about the ORIGINAL url, never the rewritten one, because the
 //     original is what a citation will name (site-adapters.test.ts guards this).
 
-export type FetchStep = 'raw' | 'site-adapter' | 'readability' | 'lightpanda' | 'yt-dlp' | 'tavily-extract'
+export type FetchStep = 'raw' | 'site-adapter' | 'readability' | 'lightpanda' | 'yt-dlp' | 'tavily-extract' | 'wayback'
 
 export interface FetchAttempt {
   step: FetchStep
@@ -129,6 +144,17 @@ async function safeFetch(startUrl: string, jobId = '-', maxHops = 3): Promise<Re
       continue
     }
     return res
+  }
+}
+
+// Lowercase host of a URL, or '' if it does not parse — used only for the `tool.fetchPage`
+// error log (Part 2 below), so recurring blocked hosts are greppable/aggregatable. That
+// aggregation is how site-adapters.ts picks its next entry (see that file's header).
+function hostOf(u: string): string {
+  try {
+    return new URL(u).hostname.toLowerCase()
+  } catch {
+    return ''
   }
 }
 
@@ -318,6 +344,44 @@ export async function runFetchChain(url: string, opts: FetchChainOptions): Promi
     }
   }
 
+  // ── Step wayback (rescue): the Wayback Machine — only reached once Tavily Extract has
+  // terminally failed. See the header comment for the measured evidence and the two
+  // deliberate exclusions.
+  const tryWayback = async (originalReason: string): Promise<FetchChainResult> => {
+    // No parse/protocol re-check here: `assertPublicHttpUrl(fetchUrl)` at the top of the chain
+    // already threw on anything that is not a parseable, public http(s) URL.
+    if (site.skipToExtract || isArchiveUrl(fetchUrl)) return fail(originalReason)
+
+    const tW = performance.now()
+    try {
+      const res = await safeFetch(waybackLookupUrl(fetchUrl), jobId)
+      if (!res.ok) {
+        attempt(attempts, 'wayback', tW, { ok: false, error: `HTTP ${res.status}` })
+        return fail(originalReason)
+      }
+      const body = await res.text()
+      const { document } = parseHTML(body)
+      const article = new Readability(document as unknown as ConstructorParameters<typeof Readability>[0]).parse()
+      const raw = article?.textContent?.trim()
+      const text = raw ? normalizeText(raw) : raw
+      if (!text || text.length < MIN_USABLE_CHARS) {
+        attempt(attempts, 'wayback', tW, { ok: false, chars: text?.length ?? 0, error: `thin (${text?.length ?? 0} chars)` })
+        return fail(originalReason)
+      }
+      const isoDate = parseSnapshotDate({
+        memento: res.headers.get('memento-datetime'),
+        contentLocation: res.headers.get('content-location') ?? res.url,
+      })
+      const withBanner = archiveBanner(url, isoDate) + text
+      attempt(attempts, 'wayback', tW, { ok: true, chars: withBanner.length })
+      log('tool.fetchPage', { jobId, url, via: 'wayback', chars: withBanner.length, snapshot: isoDate })
+      return done('wayback', withBanner)
+    } catch (err) {
+      attempt(attempts, 'wayback', tW, { ok: false, error: String(err) })
+      return fail(originalReason)
+    }
+  }
+
   // ── Step 3: Tavily Extract — the only paid step, and therefore the last ──
   const t3 = performance.now()
   try {
@@ -350,16 +414,18 @@ export async function runFetchChain(url: string, opts: FetchChainOptions): Promi
     }
     const failed = ex.failedResults[0]
     const reason = failed?.error ?? 'Tavily extract returned no content'
-    // Every fetch path is now exhausted — this URL is unverifiable for this run, and the
-    // ledger is what makes it structurally ineligible as a citation source.
+    // Every step of the paid path is now exhausted — the Wayback Machine gets one rescue
+    // attempt below before this URL is unverifiable for this run, and the ledger is what
+    // makes it structurally ineligible as a citation source.
     attempt(attempts, 'tavily-extract', t3, { ok: false, error: reason })
     ledger.recordFailed(url, reason)
-    log('tool.fetchPage', { jobId, url, via: 'error' })
-    return fail(reason)
+    log('tool.fetchPage', { jobId, url, via: 'error', reason, host: hostOf(fetchUrl) })
+    return await tryWayback(reason)
   } catch (err) {
-    attempt(attempts, 'tavily-extract', t3, { ok: false, error: String(err) })
-    ledger.recordFailed(url, String(err))
-    log('tool.fetchPage', { jobId, url, via: 'error' })
-    return fail(String(err))
+    const reason = String(err)
+    attempt(attempts, 'tavily-extract', t3, { ok: false, error: reason })
+    ledger.recordFailed(url, reason)
+    log('tool.fetchPage', { jobId, url, via: 'error', reason, host: hostOf(fetchUrl) })
+    return await tryWayback(reason)
   }
 }

@@ -388,10 +388,16 @@ failures were invisible to unit tests and to the corpus, and both showed up in t
 | 2. site adapter | pages the generic path structurally cannot read | `site-adapters.ts`; Reddit today |
 | 3. lightpanda sidecar | pages whose text is not in the HTML at all | self-hosted browser; on when `LIGHTPANDA_URL` is set |
 | 4. Tavily Extract | static pages Readability could not parse | costs a credit |
+| 5. Wayback Machine | origins that refuse this crawler outright, once every step above has failed | `archive.ts`; free, and only a rescue — never tried ahead of a live fetch |
 
 The ordering is the point. A site adapter runs first because it is deterministic and free.
 Rendering sits ahead of Tavily because it handles the one failure Tavily cannot — text that was
 never sent — while Tavily remains better for a page that *is* static but awkwardly structured.
+The Wayback Machine runs last, and only after Tavily has terminally failed: MEASURED
+2026-08-17, a dpreview forum thread 403s a plain fetch AND lightpanda AND fails Tavily Extract
+("Failed to fetch url") — every step above fails on the live origin. The same page through
+`https://web.archive.org/web/9999/<url>` redirects to a 2023 snapshot that reads with plain
+Readability: **20,076 chars, 0 Tavily credits.**
 
 ### Rendering JavaScript
 

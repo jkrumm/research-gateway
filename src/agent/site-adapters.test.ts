@@ -110,6 +110,43 @@ describe('resolveSite', () => {
       expect(site.skipToExtract).toBe(false)
     }
   })
+
+  it('rewrites a dpreview forum slug URL to the numeric thread URL, for both hosts', () => {
+    for (const host of ['www.dpreview.com', 'dpreview.com']) {
+      const site = resolveSite(
+        `https://${host}/forums/threads/opinions-on-the-xf-16mm-f-2-8-astrophotography-specifically.4455495`,
+      )
+      expect(site.fetchUrl).toBe('https://www.dpreview.com/forums/thread/4455495')
+      expect(site.skipToExtract).toBe(false)
+      expect(site.extract).toBeNull()
+    }
+  })
+
+  it('rewrites a dpreview slug URL carrying a trailing slash', () => {
+    const site = resolveSite('https://www.dpreview.com/forums/threads/some-thread.4455495/')
+    expect(site.fetchUrl).toBe('https://www.dpreview.com/forums/thread/4455495')
+  })
+
+  it('declines a dpreview URL that is not a forum thread — falls through unchanged', () => {
+    const url = 'https://www.dpreview.com/reviews/some-camera-review'
+    const site = resolveSite(url)
+    expect(site.fetchUrl).toBe(url)
+    expect(site.skipToExtract).toBe(false)
+  })
+
+  it('declines a dpreview forum slug with no trailing numeric id — falls through unchanged', () => {
+    const url = 'https://www.dpreview.com/forums/threads/no-id-here'
+    const site = resolveSite(url)
+    expect(site.fetchUrl).toBe(url)
+    expect(site.skipToExtract).toBe(false)
+  })
+
+  it('the dpreview adapter does not pick up Reddit\'s comment-tree extractor', () => {
+    const site = resolveSite(
+      'https://www.dpreview.com/forums/threads/opinions-on-the-xf-16mm-f-2-8-astrophotography-specifically.4455495',
+    )
+    expect(site.extract).toBeNull()
+  })
 })
 
 // ── Dual-backend merge ─────────────────────────────────────────────────────────────────

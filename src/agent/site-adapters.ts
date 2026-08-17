@@ -67,6 +67,25 @@ export interface SiteAdapter {
   plan?: (parsed: URL) => { fetchUrl: string; skipToExtract: boolean } | null
 }
 
+// dpreview forum threads are cited by their slug URL, and the slug URL is unreadable: MEASURED
+// 2026-08-17 on the astrophotography XF 16mm thread, `www.dpreview.com/forums/threads/<slug>.
+// 4455495` answers 403 to plain fetch, 403 to lightpanda, AND fails Tavily Extract ("Failed to
+// fetch url") — every generic-path step fails. The NUMERIC form of the same thread,
+// `dpreview.com/forums/thread/<id>` (singular "thread", no slug), succeeds via Tavily Extract
+// at 80,181 chars; a nonexistent id (`/forums/thread/4300000`) returns nothing, so this is a
+// real per-thread route, not a generic shell that would "succeed" on any id. The trailing
+// dot-number in the slug URL IS that id, so this adapter rewrites rather than looks anything
+// up. The live rewrite is preferred over the Wayback rescue below for this host because it
+// returns CURRENT content — the archived snapshot of this exact thread is from 2023.
+const dpreviewAdapter: SiteAdapter = {
+  plan: (parsed) => {
+    // A trailing slash is tolerated because models cite both forms of the same thread.
+    const match = /^\/forums\/threads\/.+\.(\d+)\/?$/.exec(parsed.pathname)
+    if (!match?.[1]) return null // non-forum URL, or a slug with no trailing numeric id
+    return { fetchUrl: `https://www.dpreview.com/forums/thread/${match[1]}`, skipToExtract: false }
+  },
+}
+
 // One video URL can skip straight to Tavily Extract, bypassing the plain-fetch and
 // lightpanda steps entirely — see the header comment for why (a success-shaped failure at
 // ~1,731 chars of player chrome, not a thin-content miss those steps would otherwise catch).
@@ -89,6 +108,8 @@ const ADAPTERS: Record<string, SiteAdapter> = {
   'm.youtube.com': youtubeAdapter,
   'music.youtube.com': youtubeAdapter,
   'youtu.be': youtubeAdapter,
+  'dpreview.com': dpreviewAdapter,
+  'www.dpreview.com': dpreviewAdapter,
 }
 
 export interface ResolvedSite {
