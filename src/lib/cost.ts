@@ -76,6 +76,10 @@ export interface YtdlpUsageRecord extends SearchUsageRecordBase {
   raw: { calls: number; failures: number; totalMs: number }
 }
 
+export interface ArchiveUsageRecord extends SearchUsageRecordBase {
+  raw: { rescues: number; failures: number; totalMs: number; oldestSnapshotDays: number | null }
+}
+
 // Tavily bills by API credit, not by token — jamming a credit count into `input_tokens`/
 // `output_tokens` would misrepresent it as LLM usage on argo's token dashboards. This
 // builds a deliberately separate, non-token record instead: `model`/`model_norm` stay
@@ -308,5 +312,51 @@ export function buildYtdlpRecord(args: {
     cost_usd: null,
     cost_source: 'none',
     raw: { calls: args.calls, failures: args.failures, totalMs: args.totalMs },
+  }
+}
+
+// Seventh per-job record, alongside `lead`/`worker`/`tavily`/`sonar`/`render`/`ytdlp` — Wayback
+// rescues (fetch-chain.ts's `tryWayback`) were previously visible only in container logs, gone
+// on redeploy. `cost_usd: null` / `cost_source: 'none'` for the same reason as render/ytdlp:
+// the Internet Archive is a free public service, not a metered vendor call — there is no
+// marginal cost to report. `oldestSnapshotDays` carries the MAXIMUM snapshot age seen in the
+// job, not a sum (see tools.ts's meterArchive for why summing ages is meaningless) — it is the
+// signal that says how stale the rescued content actually was, which is what would decide
+// whether a future site adapter is worth writing for the host that forced the rescue.
+export function buildArchiveRecord(args: {
+  jobId: string
+  rescues: number
+  failures: number
+  totalMs: number
+  /** Null when no rescue in the job carried a parseable snapshot date — see tools.ts. */
+  oldestSnapshotDays: number | null
+  outcome?: 'ok' | 'error'
+}): ArchiveUsageRecord {
+  return {
+    source: 'research-gateway',
+    source_id: `${args.jobId}:archive`,
+    grain: 'session',
+    model: null,
+    model_norm: null,
+    project: 'research-gateway',
+    workspace: 'private',
+    sub_tool: 'wayback',
+    machine: 'vps',
+    billing: 'iu',
+    outcome: args.outcome ?? 'ok',
+    input_tokens: 0,
+    output_tokens: 0,
+    cache_read_tokens: 0,
+    cache_write_tokens: 0,
+    reasoning_tokens: 0,
+    duration_ms: args.totalMs,
+    cost_usd: null,
+    cost_source: 'none',
+    raw: {
+      rescues: args.rescues,
+      failures: args.failures,
+      totalMs: args.totalMs,
+      oldestSnapshotDays: args.oldestSnapshotDays,
+    },
   }
 }

@@ -87,6 +87,18 @@ const Env = z.object({
   // (three-video sample). 45s leaves headroom for a slow one without lingering forever on a
   // wedged process.
   YTDLP_TIMEOUT_MS: z.coerce.number().default(45_000),
+  // 'development' matches argo's NODE_ENV default (Env.ts) — only prod compose sets this to
+  // 'production'. Feeds `deployment.environment` on every OTel log record (lib/otel-logs.ts).
+  NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
+  // ClickStack/HyperDX OTLP collector base URL — prod uses http://clickstack:4319, the
+  // UNAUTHED receiver bound to the docker bridge (:4318 enforces bearertokenauth). See
+  // lib/otel-logs.ts. Deliberately optional with NO default (unlike argo's
+  // OTEL_EXPORTER_OTLP_ENDPOINT, which defaults to a local collector sidecar argo's compose
+  // always runs): this service has no such sidecar, only prod's compose sets this var, and an
+  // unset value must make log export inert rather than fail-open to some assumed endpoint —
+  // that is what keeps local dev and every test console-only with zero configuration.
+  OTEL_EXPORTER_OTLP_ENDPOINT: z.url().optional(),
+  OTEL_SERVICE_NAME: z.string().default('research-gateway'),
 })
 
 export const env = Env.parse(process.env)

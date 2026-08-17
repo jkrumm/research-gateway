@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test'
-import { waybackLookupUrl, isArchiveUrl, parseSnapshotDate, archiveBanner } from './archive.js'
+import { waybackLookupUrl, isArchiveUrl, parseSnapshotDate, archiveBanner, snapshotAgeDays } from './archive.js'
 
 describe('waybackLookupUrl', () => {
   it('builds the partial-timestamp lookup form that redirects to the nearest snapshot', () => {
@@ -71,5 +71,27 @@ describe('archiveBanner', () => {
     const banner = archiveBanner('https://example.com/a', null)
     expect(banner).toContain('date unknown')
     expect(banner).toContain('https://example.com/a')
+  })
+})
+
+describe('snapshotAgeDays', () => {
+  it('returns null when the snapshot date is null', () => {
+    expect(snapshotAgeDays(null, new Date('2026-08-17T12:00:00Z'))).toBeNull()
+  })
+
+  it('returns null when the snapshot date does not parse', () => {
+    expect(snapshotAgeDays('not-a-date', new Date('2026-08-17T12:00:00Z'))).toBeNull()
+  })
+
+  it('is 0 for a same-day snapshot', () => {
+    expect(snapshotAgeDays('2026-08-17', new Date('2026-08-17T23:00:00Z'))).toBe(0)
+  })
+
+  it('computes whole days elapsed for an old snapshot', () => {
+    expect(snapshotAgeDays('2023-04-08', new Date('2026-08-17T00:00:00Z'))).toBe(1227)
+  })
+
+  it('clamps a future snapshot date to 0 rather than a negative age', () => {
+    expect(snapshotAgeDays('2026-08-20', new Date('2026-08-17T00:00:00Z'))).toBe(0)
   })
 })

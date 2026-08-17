@@ -77,3 +77,22 @@ export function archiveBanner(originalUrl: string, isoDate: string | null): stri
   const when = isoDate ?? 'date unknown'
   return `[Archived snapshot of ${originalUrl} taken ${when} via the Wayback Machine — this is not the live page and may be out of date.]\n\n`
 }
+
+const MS_PER_DAY = 24 * 60 * 60 * 1000
+
+/**
+ * Whole days between a snapshot's ISO (`YYYY-MM-DD`) date and `now`. `now` is a parameter
+ * rather than `new Date()` inline, so this stays exactly reproducible in tests — same
+ * clock-injection convention as the rest of this dependency-free module.
+ *
+ * Null in, null out: a missing or unparseable snapshot date leaves the rescue's age
+ * unmeasured rather than guessed. Never negative — a snapshot dated "today" can still read
+ * as fractionally in the future once timezones/clock skew enter, and a negative age would
+ * corrupt the max-merge tools.ts's meterArchive does across a job's rescues — clamped to 0.
+ */
+export function snapshotAgeDays(isoDate: string | null, now: Date): number | null {
+  if (!isoDate) return null
+  const snapshot = new Date(isoDate)
+  if (Number.isNaN(snapshot.getTime())) return null
+  return Math.max(0, Math.floor((now.getTime() - snapshot.getTime()) / MS_PER_DAY))
+}

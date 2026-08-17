@@ -10,6 +10,7 @@ import {
   buildRenderRecord,
   buildTavilyAccountRecord,
   buildYtdlpRecord,
+  buildArchiveRecord,
 } from './cost.js'
 
 describe('computeCost', () => {
@@ -209,6 +210,51 @@ describe('buildYtdlpRecord', () => {
   it('defaults outcome to "ok" and honors an explicit "error"', () => {
     expect(buildYtdlpRecord(args).outcome).toBe('ok')
     expect(buildYtdlpRecord({ ...args, outcome: 'error' }).outcome).toBe('error')
+  })
+})
+
+describe('buildArchiveRecord', () => {
+  const args = { jobId: 'job-123', rescues: 2, failures: 1, totalMs: 4_812, oldestSnapshotDays: 1227 }
+
+  it('scopes source_id as `${jobId}:archive` so it never collides with the other records', () => {
+    const record = buildArchiveRecord(args)
+    expect(record.source_id).toBe('job-123:archive')
+    expect(record.sub_tool).toBe('wayback')
+  })
+
+  it('carries the rescue counters in `raw`, and mirrors totalMs into duration_ms', () => {
+    const record = buildArchiveRecord(args)
+    expect(record.raw).toEqual({ rescues: 2, failures: 1, totalMs: 4_812, oldestSnapshotDays: 1227 })
+    expect(record.duration_ms).toBe(4_812)
+  })
+
+  // "No rescue in this job carried a readable snapshot date" is a different fact from "the
+  // stalest snapshot was from today", and argo must be able to tell them apart.
+  it('keeps an unknown snapshot age as null rather than reporting it as same-day', () => {
+    expect(buildArchiveRecord({ ...args, oldestSnapshotDays: null }).raw.oldestSnapshotDays).toBeNull()
+    expect(buildArchiveRecord({ ...args, oldestSnapshotDays: 0 }).raw.oldestSnapshotDays).toBe(0)
+  })
+
+  it('leaves cost_usd unset — the Wayback Machine bills nothing, unlike the step it rescues', () => {
+    const record = buildArchiveRecord(args)
+    expect(record.cost_usd).toBeNull()
+    expect(record.cost_source).toBe('none')
+  })
+
+  it('leaves model/model_norm unset and zeroes every token field', () => {
+    const record = buildArchiveRecord(args)
+    expect(record.model).toBeNull()
+    expect(record.model_norm).toBeNull()
+    expect(record.input_tokens).toBe(0)
+    expect(record.output_tokens).toBe(0)
+    expect(record.cache_read_tokens).toBe(0)
+    expect(record.cache_write_tokens).toBe(0)
+    expect(record.reasoning_tokens).toBe(0)
+  })
+
+  it('defaults outcome to "ok" and honors an explicit "error"', () => {
+    expect(buildArchiveRecord(args).outcome).toBe('ok')
+    expect(buildArchiveRecord({ ...args, outcome: 'error' }).outcome).toBe('error')
   })
 })
 

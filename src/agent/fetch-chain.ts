@@ -9,7 +9,7 @@ import { resolveSite } from './site-adapters.js'
 import { isRawContentType, isDefinitivelyMissing } from './response-kind.js'
 import { parseRenderResponse, renderUrl } from './lightpanda.js'
 import { fetchYoutubeTranscript } from './ytdlp.js'
-import { waybackLookupUrl, isArchiveUrl, parseSnapshotDate, archiveBanner } from './archive.js'
+import { waybackLookupUrl, isArchiveUrl, parseSnapshotDate, archiveBanner, snapshotAgeDays } from './archive.js'
 import type { RetrievalLedger } from './ledger.js'
 
 // The page-fetch chain, extracted from the `fetchPage` tool so it can be RUN AND MEASURED
@@ -111,6 +111,16 @@ export interface FetchChainOptions {
    * URLs, since no attempt was made at all.
    */
   onYtdlp?: (r: { ok: boolean; ms: number }) => void
+  /**
+   * Called for EVERY Wayback rescue attempt `tryWayback` makes — a non-ok HTTP status, a
+   * thin-content miss, a thrown error, and success alike — mirroring `onRender`/`onYtdlp`
+   * above exactly. NOT called when the step was skipped entirely (a `skipToExtract` URL, an
+   * already-archived URL, or the chain terminating before Tavily Extract even fails), since
+   * then no archive request was ever made. `snapshotAgeDays` is null on every failure path and
+   * on a success whose snapshot date didn't parse — only a successful rescue with a readable
+   * `Memento-Datetime`/path date carries a number.
+   */
+  onArchive?: (r: { ok: boolean; ms: number; snapshotAgeDays: number | null }) => void
 }
 
 const tvly = tavily({ apiKey: env.TAVILY_API_KEY })
@@ -175,7 +185,7 @@ function attempt(
 }
 
 export async function runFetchChain(url: string, opts: FetchChainOptions): Promise<FetchChainResult> {
-  const { ledger, onTavilyCredits, onRender, onYtdlp } = opts
+  const { ledger, onTavilyCredits, onRender, onYtdlp, onArchive } = opts
   const jobId = opts.jobId ?? '-'
   const attempts: FetchAttempt[] = []
 
@@ -363,7 +373,8 @@ export async function runFetchChain(url: string, opts: FetchChainOptions): Promi
       // this widens the budget, not the trust.
       const res = await safeFetch(waybackLookupUrl(fetchUrl), jobId, 8)
       if (!res.ok) {
-        attempt(attempts, 'wayback', tW, { ok: false, error: `HTTP ${res.status}` })
+        const ms = attempt(attempts, 'wayback', tW, { ok: false, error: `HTTP ${res.status}` })
+        onArchive?.({ ok: false, ms, snapshotAgeDays: null })
         return fail(originalReason)
       }
       const body = await res.text()
@@ -372,7 +383,8 @@ export async function runFetchChain(url: string, opts: FetchChainOptions): Promi
       const raw = article?.textContent?.trim()
       const text = raw ? normalizeText(raw) : raw
       if (!text || text.length < MIN_USABLE_CHARS) {
-        attempt(attempts, 'wayback', tW, { ok: false, chars: text?.length ?? 0, error: `thin (${text?.length ?? 0} chars)` })
+        const ms = attempt(attempts, 'wayback', tW, { ok: false, chars: text?.length ?? 0, error: `thin (${text?.length ?? 0} chars)` })
+        onArchive?.({ ok: false, ms, snapshotAgeDays: null })
         return fail(originalReason)
       }
       const isoDate = parseSnapshotDate({
@@ -380,11 +392,13 @@ export async function runFetchChain(url: string, opts: FetchChainOptions): Promi
         contentLocation: res.headers.get('content-location') ?? res.url,
       })
       const withBanner = archiveBanner(url, isoDate) + text
-      attempt(attempts, 'wayback', tW, { ok: true, chars: withBanner.length })
+      const ms = attempt(attempts, 'wayback', tW, { ok: true, chars: withBanner.length })
+      onArchive?.({ ok: true, ms, snapshotAgeDays: snapshotAgeDays(isoDate, new Date()) })
       log('tool.fetchPage', { jobId, url, via: 'wayback', chars: withBanner.length, snapshot: isoDate })
       return done('wayback', withBanner)
     } catch (err) {
-      attempt(attempts, 'wayback', tW, { ok: false, error: String(err) })
+      const ms = attempt(attempts, 'wayback', tW, { ok: false, error: String(err) })
+      onArchive?.({ ok: false, ms, snapshotAgeDays: null })
       return fail(originalReason)
     }
   }

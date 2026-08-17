@@ -8,6 +8,7 @@ import { researchRoutes } from './routes/research.js'
 import { mcpRoutes } from './routes/mcp.js'
 import { probeRoutes } from './routes/probe.js'
 import { log } from './lib/log.js'
+import { flushOtelLogs } from './lib/otel-logs.js'
 
 // ── Process-level diagnostics ────────────────────────────────────────────────
 // On 2026-07-31 the container exited with code 0, mid-flight, during a deep job,
@@ -30,7 +31,16 @@ for (const signal of ['SIGTERM', 'SIGINT'] as const) {
     // A deploy or `docker stop` lands here — that must be distinguishable from a
     // mystery exit, which is exactly what could not be told apart on 2026-07-31.
     log('process.signal', { signal })
-    process.exit(0)
+    // Force-flush pending OTel log records before exiting — the batch processor's normal
+    // export interval would otherwise lose the last records of exactly the deploy this
+    // signal represents. No-op when OTEL_EXPORTER_OTLP_ENDPOINT is unset; never rejects.
+    //
+    // Racing a 2s deadline is load-bearing, not defensive dressing: forceFlush's own timeout
+    // is 30s and Docker SIGKILLs at the default 10s grace period, so an unreachable collector
+    // would turn every deploy into a hard kill — the exact scenario this feature exists to
+    // survive. Whichever finishes first, the process exits.
+    const flushDeadline = new Promise<void>((resolve) => setTimeout(resolve, 2_000))
+    void Promise.race([flushOtelLogs(), flushDeadline]).finally(() => process.exit(0))
   })
 }
 process.on('uncaughtException', (err) => {

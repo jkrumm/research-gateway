@@ -133,6 +133,8 @@ bun test           # pure-function tests; needs no secrets
 | `CONTEXT7_API_KEY` | no | enables the `libraryDocs` tool when set. Free, and the best source for library questions |
 | `GITHUB_TOKEN` | no | the `githubFile`/`githubRepo`/`findPackages` tools work without it, but anonymous GitHub is **60 req/h per IP** shared across all jobs; a no-scope token raises it to 5000/h |
 | `ARGO_USAGE_URL` / `ARGO_API_SECRET` | no | telemetry → argo `POST /usage/records`; no-op if unset |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | no (off) | ClickStack/HyperDX collector base URL, e.g. `http://clickstack:4318`. Unset keeps `log()` console-only — see [Telemetry](#telemetry) |
+| `OTEL_SERVICE_NAME` | no (`research-gateway`) | `service.name` resource attribute on exported log records |
 | `RESEARCH_MAX_CONCURRENCY` | no (3) | concurrent *jobs* |
 | `WORKER_MAX_CONCURRENCY` | no (8) | concurrent *workers within one job* |
 
@@ -686,12 +688,13 @@ is the product. `maxSearches` stayed at 4. Revisit if IU spend ever becomes bind
 ## Telemetry
 
 Each job reports spend to argo `POST /usage/records` as `source: "research-gateway"`,
-`billing: "iu"` — **up to six records per job**: two LLM records, one per model bucket
+`billing: "iu"` — **up to seven records per job**: two LLM records, one per model bucket
 (`sub_tool: lead | worker`), since the two run on different models; one search record per
 backend the job actually used (`sub_tool: sonar` and/or `sub_tool: tavily`); one render record
-(`sub_tool: lightpanda`); and one yt-dlp record (`sub_tool: ytdlp`). argo upserts on `(source,
-source_id, machine)`, so `source_id` is scoped `${jobId}:lead` / `:worker` / `:sonar` /
-`:tavily` / `:render` / `:ytdlp` or a later record would overwrite an earlier one.
+(`sub_tool: lightpanda`); one yt-dlp record (`sub_tool: ytdlp`); and one Wayback rescue record
+(`sub_tool: wayback`). argo upserts on `(source, source_id, machine)`, so `source_id` is scoped
+`${jobId}:lead` / `:worker` / `:sonar` / `:tavily` / `:render` / `:ytdlp` / `:archive` or a
+later record would overwrite an earlier one.
 
 The `cost_source` values are distinct provenances, not decoration:
 
@@ -702,6 +705,7 @@ The `cost_source` values are distinct provenances, not decoration:
 | `tavily` | `none` | credit count travels in `raw` — no verified USD-per-credit rate exists to convert it honestly, and for extraction no per-call credit count exists at all (below) |
 | `lightpanda` | `none` | a different reason from Tavily's: the sidecar is self-hosted, so there is no marginal per-render cost to report. `raw` carries `{ renders, failures, totalMs }` |
 | `ytdlp` | `none` | same reason as lightpanda: yt-dlp is a binary bundled into this image, not a vendor call — there is no marginal per-call cost. `raw` carries `{ calls, failures, totalMs }` |
+| `wayback` | `none` | the Internet Archive is a free public service, not a metered vendor call. `raw` carries `{ rescues, failures, totalMs, oldestSnapshotDays }` — the last field is the MAX snapshot age seen across the job's rescues, not a sum, since summing ages has no meaning |
 
 Search records are debounced per job (a deep run makes 100+ billed calls that all upsert the
 same row), so argo sees one trailing cumulative POST rather than a flood. Telemetry failure
@@ -711,7 +715,17 @@ Renders reached no telemetry at all until 2026-08-03 — they existed only in co
 which do not survive a redeploy, so a renderer that had started failing was invisible until
 someone ran the fetch bench. The `:render` record and an Uptime Kuma monitor on
 [`/health/render`](#contract) (homelab `uptime-kuma/monitors.yaml`) are the two halves of that
-fix.
+fix. The `:archive` record closes the same gap for Wayback rescues (`fetch-chain.ts`'s
+`tryWayback`, added 2026-08-17): a rescue means the live origin blocked this crawler AND
+Tavily Extract also failed, which is the signal that picks the next `site-adapters.ts` entry —
+previously visible only as a `tool.fetchPage` log line, gone on redeploy.
+
+Structured `log()` calls also ship to ClickStack over OTLP when `OTEL_EXPORTER_OTLP_ENDPOINT`
+is set (`lib/otel-logs.ts`) — unset (the default; local dev and every test run this way) keeps
+logging console-only. Measured 2026-08-17: the container's `json-file` log driver (10m x 3,
+container-local) held only 513 lines and a single `research.start` across 72h of production
+traffic, because it had already rotated past everything else — a deep job alone runs ~28min, so
+even one job's logs don't reliably survive to the next redeploy without this.
 
 ### What `tavilyCredits` cannot see
 

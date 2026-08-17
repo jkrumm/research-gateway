@@ -7,6 +7,7 @@ import {
   buildSonarSearchRecord,
   buildRenderRecord,
   buildYtdlpRecord,
+  buildArchiveRecord,
 } from './cost.js'
 
 // Re-exported for compatibility — callers importing `computeCost` from `usage.ts` keep
@@ -222,5 +223,30 @@ export async function reportYtdlpUsage(args: {
 }): Promise<void> {
   const now = new Date().toISOString()
   const record = { ...buildYtdlpRecord(args), ts: now, ingested_at: now }
+  await postUsageRecord(record)
+}
+
+// Seventh per-job record, alongside `lead`/`worker`/`tavily`/`sonar`/`render`/`ytdlp` — the
+// Wayback Machine rescue (fetch-chain.ts's `tryWayback`) was, until now, invisible to argo
+// exactly the way renders were before reportRenderUsage: only a `tool.fetchPage` log line
+// inside the job, gone the moment the container redeploys. A rescue is a specific, countable
+// signal — it means the live origin blocked this crawler AND the paid Tavily Extract fallback
+// also failed, which is exactly the failure `site-adapters.ts` exists to fix one host at a
+// time (see that file's header on how its next entry gets picked). Without this record, "which
+// hosts are forcing a Wayback rescue, and how often" has no way to accumulate across jobs or
+// survive a deploy — it dies with the container the same way `hostOf` logging alone did before
+// the render/ytdlp records existed. Same cumulative-snapshot contract as the others: the counts
+// are the job's running totals, and argo's upsert on (source, source_id, machine) overwrites
+// rather than accumulates duplicate rows.
+export async function reportArchiveUsage(args: {
+  jobId: string
+  rescues: number
+  failures: number
+  totalMs: number
+  oldestSnapshotDays: number | null
+  outcome?: 'ok' | 'error'
+}): Promise<void> {
+  const now = new Date().toISOString()
+  const record = { ...buildArchiveRecord(args), ts: now, ingested_at: now }
   await postUsageRecord(record)
 }

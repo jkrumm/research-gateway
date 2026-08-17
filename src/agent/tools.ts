@@ -4,7 +4,7 @@ import { z } from 'zod'
 import { tavily } from '@tavily/core'
 import { env } from '../env.js'
 import { log } from '../lib/log.js'
-import { reportTavilyUsage, reportSonarUsage, reportRenderUsage, reportYtdlpUsage } from '../lib/usage.js'
+import { reportTavilyUsage, reportSonarUsage, reportRenderUsage, reportYtdlpUsage, reportArchiveUsage } from '../lib/usage.js'
 import { reportTavilyAccountUsage } from '../lib/tavily-account.js'
 import { capText, TEXT_CAP } from './extract.js'
 import { buildDirectSourceTools } from './direct-sources.js'
@@ -198,6 +198,37 @@ const meterYtdlp = createJobMeter<{ calls: number; failures: number; totalMs: nu
 export function readYtdlpStats(jobId: string): { calls: number; failures: number; totalMs: number } {
   return meterYtdlp.read(jobId) ?? { calls: 0, failures: 0, totalMs: 0 }
 }
+
+// Wayback rescues (fetch-chain.ts's `tryWayback`) were previously visible only in container
+// logs. One meter entry per rescue ATTEMPT, whether it succeeded, hit a non-ok status, found
+// only thin content, or threw — see fetch-chain.ts's onArchive call sites, which fire in all
+// four cases. `oldestSnapshotDays` is MAX-merged rather than summed — createJobMeter's other
+// meters all sum every field, which is correct for counts and milliseconds but not for an age:
+// summing five rescued snapshots' ages produces a number with no meaning (`1254 "days"`),
+// while the max is the one fact worth surfacing — the single stalest page a job had to fall
+// back this far for, which is the signal that would justify a new site adapter for that host.
+const meterArchive = createJobMeter<{
+  rescues: number
+  failures: number
+  totalMs: number
+  oldestSnapshotDays: number | null
+}>({
+  add: (prev, delta) => ({
+    rescues: (prev?.rescues ?? 0) + delta.rescues,
+    failures: (prev?.failures ?? 0) + delta.failures,
+    totalMs: (prev?.totalMs ?? 0) + delta.totalMs,
+    // Null means "age unknown" (a rescue whose snapshot date did not parse, or a failed
+    // attempt), and it must NOT collapse into 0 — 0 is a genuine same-day snapshot. Coercing
+    // one to the other reports fresh content for a job whose only rescue had an unreadable
+    // date, defeating the whole point of carrying the age. A null contributes nothing to the
+    // max; a job with no dated rescue at all reports null.
+    oldestSnapshotDays:
+      delta.oldestSnapshotDays === null
+        ? (prev?.oldestSnapshotDays ?? null)
+        : Math.max(prev?.oldestSnapshotDays ?? 0, delta.oldestSnapshotDays),
+  }),
+  flush: (jobId, total) => void reportArchiveUsage({ jobId, ...total }),
+})
 
 // Per-job search spend, readable when a job finishes so it can travel in the job's own
 // result instead of only reaching argo. Without this the only way to price a single run was
@@ -496,6 +527,13 @@ function buildFetchPageTool(ledger: RetrievalLedger, jobId = '-'): AnyTool {
         onTavilyCredits: (credits) => recordTavilyExtract(jobId, credits),
         onRender: (r) => meterRender.add(jobId, { renders: 1, failures: r.ok ? 0 : 1, totalMs: r.ms }),
         onYtdlp: (r) => meterYtdlp.add(jobId, { calls: 1, failures: r.ok ? 0 : 1, totalMs: r.ms }),
+        onArchive: (r) =>
+          meterArchive.add(jobId, {
+            rescues: r.ok ? 1 : 0,
+            failures: r.ok ? 0 : 1,
+            totalMs: r.ms,
+            oldestSnapshotDays: r.snapshotAgeDays,
+          }),
       })
 
       if (result.text === null) return { url, error: result.error ?? 'fetch failed' }
