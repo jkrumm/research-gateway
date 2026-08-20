@@ -12,12 +12,15 @@ export function normalizeModel(raw: string): string {
 const RATES: Record<string, { input: number; cachedInput: number; output: number }> = {
   'deepseek-v4-flash': { input: 0.14, cachedInput: 0.0028, output: 0.28 },
   'deepseek-v4-pro': { input: 0.435, cachedInput: 0.0145, output: 0.87 },
-  // input/output are OpenRouter's reference pricing — the best available, but NOT confirmed
-  // as IU's actual billed rate. cachedInput is set equal to input rather than a guessed
-  // discount: live-probed 2026-08-10, gpt-5.6-luna reports `cached_tokens: 0` through IU on
-  // repeated identical prefixes across 6 separate test calls, so assuming a cache-read
-  // discount here would silently under-bill.
-  'gpt-5.6-luna': { input: 0.1, cachedInput: 0.1, output: 0.6 },
+  // OpenAI list price, short context (<=272k); Azure OpenAI matches exactly. Corrected
+  // 2026-08-20: the OpenRouter reference figure this originally carried ($0.10/$0.60) was
+  // wrong — OpenAI cut the model 80% on 2026-07-30 and $0.20/$1.20 is the post-cut rate.
+  // cachedInput now takes the published 90%-off cache-read rate: the 2026-08-10 probe saw
+  // `cached_tokens: 0` through IU and so declined to assume a discount, but re-probed
+  // 2026-08-20 the same identical-prefix test reports 3152/3155 cached with a 9x cost drop.
+  // $0.10/$0.60 is the *batch* tier (50% off), not a later cut — do not "correct" these down
+  // to it. Still not confirmed as IU's billed rate — IU returns no `cost` field on any route.
+  'gpt-5.6-luna': { input: 0.2, cachedInput: 0.02, output: 1.2 },
 }
 
 export function computeCost(
