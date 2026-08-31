@@ -4,6 +4,7 @@ import { Readability } from '@mozilla/readability'
 import { env } from '../env.js'
 import { assertPublicHttpUrl } from '../lib/ssrf.js'
 import { log } from '../lib/log.js'
+import { getActiveSpan } from '../lib/otel.js'
 import { normalizeText, capText, TEXT_CAP } from './extract.js'
 import { resolveSite } from './site-adapters.js'
 import { isRawContentType, isDefinitivelyMissing } from './response-kind.js'
@@ -157,10 +158,11 @@ async function safeFetch(startUrl: string, jobId = '-', maxHops = 3): Promise<Re
   }
 }
 
-// Lowercase host of a URL, or '' if it does not parse — used only for the `tool.fetchPage`
-// error log (Part 2 below), so recurring blocked hosts are greppable/aggregatable. That
-// aggregation is how site-adapters.ts picks its next entry (see that file's header).
-function hostOf(u: string): string {
+// Lowercase host of a URL, or '' if it does not parse — used by the `tool.fetchPage` error
+// log (Part 2 below) and by the `fetch.host` span attribute, so recurring blocked hosts are
+// greppable AND groupable. That aggregation is how site-adapters.ts picks its next entry
+// (see that file's header).
+export function hostOf(u: string): string {
   try {
     return new URL(u).hostname.toLowerCase()
   } catch {
@@ -194,10 +196,39 @@ export async function runFetchChain(url: string, opts: FetchChainOptions): Promi
   // `url`, because that is what a citation will name.
   const site = resolveSite(url)
   const fetchUrl = site.fetchUrl
-  if (fetchUrl !== url) log('tool.fetchPage', { jobId, url, via: 'rewrite', fetchUrl })
+  if (fetchUrl !== url) {
+    log('tool.fetchPage', { jobId, url, via: 'rewrite', fetchUrl })
+    getActiveSpan().addEvent('fetch.rewrite', { url, fetchUrl })
+  }
 
-  const fail = (error: string): FetchChainResult => ({ url, fetchUrl, via: null, text: null, error, attempts })
+  // The waterfall is reported as EVENTS on whatever span is active — the caller's
+  // `tool.fetchPage` span — rather than as a span of its own: one chain run is one fetch, and
+  // its steps are a timeline you want to read inside it. Emitted from the two terminal
+  // helpers below so every return path carries exactly the record `attempts` holds, once.
+  // `getActiveSpan()` is a no-op span when there is none, so fetch-bench.ts and the tests pay
+  // nothing for this.
+  let eventsEmitted = false
+  const emitAttempts = (): void => {
+    if (eventsEmitted) return
+    eventsEmitted = true
+    const span = getActiveSpan()
+    for (const a of attempts) {
+      span.addEvent('fetch.step', {
+        step: a.step,
+        ok: a.ok,
+        chars: a.chars,
+        error: a.error?.slice(0, 200),
+        ms: a.ms,
+      })
+    }
+  }
+
+  const fail = (error: string): FetchChainResult => {
+    emitAttempts()
+    return { url, fetchUrl, via: null, text: null, error, attempts }
+  }
   const done = (via: FetchStep, text: string): FetchChainResult => {
+    emitAttempts()
     ledger.recordRetrieved(url)
     // When an adapter rewrote the address, BOTH forms name the page that was genuinely read,
     // so both are recorded. This is not a loophole in the "ledger hears the ORIGINAL url"

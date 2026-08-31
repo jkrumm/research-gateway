@@ -1,8 +1,9 @@
 // Pure mapping helpers for shipping `log()` calls to OTel — dependency-free (no `env.js`,
 // no OTel package import) so they're unit-testable without booting the env-parsing chain or
 // starting an exporter. Same split as cost.ts (pure) / usage.ts (env-consuming): the actual
-// wiring — LoggerProvider, the OTLP exporter, the emit call — lives in otel-logs.ts, which
-// imports these two functions and re-exports them for convenience.
+// wiring — the SDK-free OTLP/HTTP JSON exporter (batched queues over plain `fetch`, no
+// OpenTelemetry packages) and the emit call — lives in otel.ts, which imports these two
+// functions and re-exports them for convenience.
 
 export type LogAttributeValue = string | number | boolean
 

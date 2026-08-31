@@ -8,7 +8,7 @@ import { researchRoutes } from './routes/research.js'
 import { mcpRoutes } from './routes/mcp.js'
 import { probeRoutes } from './routes/probe.js'
 import { log } from './lib/log.js'
-import { flushOtelLogs } from './lib/otel-logs.js'
+import { flushOtel } from './lib/otel.js'
 
 // ── Process-level diagnostics ────────────────────────────────────────────────
 // On 2026-07-31 the container exited with code 0, mid-flight, during a deep job,
@@ -26,28 +26,35 @@ import { flushOtelLogs } from './lib/otel-logs.js'
 process.on('exit', (code) => {
   log('process.exit', { code })
 })
+// Force-flush pending OTel log records and spans before exiting — the exporter's normal
+// 2s interval would otherwise lose the last records of exactly the event that is ending the
+// process. No-op when OTEL_EXPORTER_OTLP_ENDPOINT is unset; never rejects.
+//
+// Racing a 2s deadline is load-bearing, not defensive dressing: the flush's own fetch
+// timeout is 5s and Docker SIGKILLs at the default 10s grace period, so an unreachable
+// collector would turn every deploy into a hard kill — the exact scenario this feature
+// exists to survive. Whichever finishes first, the process exits.
+function flushThenExit(code: number): void {
+  const flushDeadline = new Promise<void>((resolve) => setTimeout(resolve, 2_000))
+  void Promise.race([flushOtel(), flushDeadline]).finally(() => process.exit(code))
+}
 for (const signal of ['SIGTERM', 'SIGINT'] as const) {
   process.on(signal, () => {
     // A deploy or `docker stop` lands here — that must be distinguishable from a
     // mystery exit, which is exactly what could not be told apart on 2026-07-31.
     log('process.signal', { signal })
-    // Force-flush pending OTel log records before exiting — the batch processor's normal
-    // export interval would otherwise lose the last records of exactly the deploy this
-    // signal represents. No-op when OTEL_EXPORTER_OTLP_ENDPOINT is unset; never rejects.
-    //
-    // Racing a 2s deadline is load-bearing, not defensive dressing: forceFlush's own timeout
-    // is 30s and Docker SIGKILLs at the default 10s grace period, so an unreachable collector
-    // would turn every deploy into a hard kill — the exact scenario this feature exists to
-    // survive. Whichever finishes first, the process exits.
-    const flushDeadline = new Promise<void>((resolve) => setTimeout(resolve, 2_000))
-    void Promise.race([flushOtelLogs(), flushDeadline]).finally(() => process.exit(0))
+    flushThenExit(0)
   })
 }
 process.on('uncaughtException', (err) => {
   // Fail LOUD and non-zero: an unknown-state process serving research is worse than
   // a restart, and exit code 1 distinguishes this from a clean shutdown.
+  //
+  // Flushed on the way out for the same reason the signal path is, only more so: this line
+  // and every span that ended in the last <2s are the only record of a crash, and exiting
+  // immediately would drop them — the 2026-07-31 no-log-line failure mode above, again.
   log('process.uncaughtException', { error: String(err), stack: err.stack?.slice(0, 2_000) })
-  process.exit(1)
+  flushThenExit(1)
 })
 process.on('unhandledRejection', (reason) => {
   // Deliberately NOT fatal. These originate in fire-and-forget background jobs whose

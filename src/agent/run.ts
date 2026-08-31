@@ -11,6 +11,7 @@ import { computeCost, emptyUsage, addUsage } from '../lib/usage.js'
 import { readSearchSpend, readRenderStats } from './tools.js'
 import type { UsageStats } from '../lib/usage.js'
 import { env } from '../env.js'
+import { traceIdFromJobId, withRootSpan, withSpan } from '../lib/otel.js'
 
 // Re-exported for compatibility and direct unit-testing — the implementation lives in
 // `assemble.ts` because it has no `env.js` import chain (schema.js only), so it can be
@@ -101,186 +102,257 @@ export async function runResearch(
 ): Promise<ResearchReport> {
   const depth = input.depth ?? 'standard'
   const jobId = input.jobId ?? '-'
-  const profile = profiles[depth]
-  const start = Date.now()
 
-  log('research.start', { jobId, depth, queryPreview: input.query.slice(0, 200) })
-
-  let leadUsage = emptyUsage()
-  let workerUsage = emptyUsage()
-  const allDigests: WorkerDigest[] = []
-  const askedLower = new Set<string>()
-  const allLedgers: LedgerSnapshot[] = []
-  let workersDispatchedTotal = 0
-
-  const { plan, usage: planUsage } = await planResearch({ query: input.query, depth, jobId })
-  leadUsage = addUsage(leadUsage, planUsage)
-  log('research.plan', { jobId, subQuestions: plan.subQuestions.length })
-
-  // Synthesis MUST always retain its full budget — the research phase (plan + worker
-  // rounds) is only ever allowed to eat the remainder. Threaded into each worker so a
-  // worker running past this point BANKS its digest (forced submit_digest) instead of
-  // being aborted — an abort here would lose the whole digest, reintroducing the exact
-  // failure class (missing try/catch on searchWeb killing 60% of workers) already fixed.
-  const researchDeadlineAt = start + (profile.totalTimeoutMs - profile.synthesisTimeoutMs)
-
-  let currentQuestions: SubQuestion[] = plan.subQuestions
-  let round = 1
-  while (currentQuestions.length > 0) {
-    for (const sq of currentQuestions) askedLower.add(sq.question.trim().toLowerCase())
-
-    const { digests, usage, ledgers } = await dispatchRound(
-      currentQuestions,
-      depth,
-      jobId,
-      round,
-      researchDeadlineAt,
-    )
-    workerUsage = addUsage(workerUsage, usage)
-    allDigests.push(...digests)
-    workersDispatchedTotal += currentQuestions.length
-    allLedgers.push(...ledgers)
-
-    // Emit a cumulative snapshot per round, not just once at the end. argo upserts
-    // on (source, source_id, machine), so each snapshot overwrites the last rather
-    // than double-counting — and a job that dies mid-flight still leaves the tokens
-    // it had already burned behind instead of reporting nothing at all.
-    if (onUsage) {
-      onUsage({
-        ...addUsage(leadUsage, workerUsage),
-        durationMs: Date.now() - start,
-        lead: leadUsage,
-        worker: workerUsage,
-      })
-    }
-
-    log('research.round', {
-      jobId,
-      round,
-      workersDispatched: currentQuestions.length,
-      digestsReturned: digests.length,
-    })
-
-    if (round >= profile.rounds) break
-
-    const elapsed = Date.now() - start
-    if (elapsed + profile.synthesisTimeoutMs >= profile.totalTimeoutMs) break
-
-    const gapQuestions = nextRoundQuestions(digests, askedLower, profile.gapWorkers)
-    if (gapQuestions.length === 0) break
-
-    currentQuestions = gapQuestions
-    round += 1
-  }
-
-  let submitted: SubmittedReport | null = null
-  let reason: 'submit_report' | 'assembled' | 'empty' = 'empty'
-
-  if (allDigests.length > 0) {
-    const { report: synthesized, usage: synthesisUsage } = await synthesize({
-      query: input.query,
-      digests: allDigests,
-      depth,
-      jobId,
-    })
-    leadUsage = addUsage(leadUsage, synthesisUsage)
-
-    if (synthesized) {
-      submitted = synthesized
-      reason = 'submit_report'
-    } else {
-      // Deterministic fallback — assembled in code, no LLM call. See assemble.ts.
-      submitted = assembleReport(allDigests)
-      reason = 'assembled'
-    }
-  }
-
-  // Last-resort degraded stub: no digest was ever produced (every worker failed/timed out).
-  if (!submitted) {
-    submitted = {
-      report: 'Research could not gather any evidence for this query before the budget was exhausted.',
-      citations: [],
-      sources: [],
-      unverified: [],
-    }
-    reason = 'empty'
-  }
-
-  // The job-level gate. Every citation the synthesis model asserted is checked against the
-  // union of what the workers' tools actually retrieved, `sources` is replaced by the pages
-  // genuinely read, and `status`/`grounding` are counted in code. This is the invariant
-  // from issue #1: a URL this run could not fetch can never back a citation.
-  const jobLedger = mergeLedgers(allLedgers)
-  const grounded = groundReport(submitted, jobLedger)
-
-  const wallMs = Date.now() - start
-  const combined = addUsage(leadUsage, workerUsage)
-  const jobUsage: JobUsage = { ...combined, durationMs: wallMs, lead: leadUsage, worker: workerUsage }
-
-  if (onUsage) onUsage(jobUsage)
-
-  const leadCost = computeCost(env.IU_LEAD_MODEL, {
-    inputTokens: leadUsage.inputTokens,
-    cachedInputTokens: leadUsage.cachedInputTokens,
-    outputTokens: leadUsage.outputTokens,
-  })
-  const workerCost = computeCost(env.IU_WORKER_MODEL, {
-    inputTokens: workerUsage.inputTokens,
-    cachedInputTokens: workerUsage.cachedInputTokens,
-    outputTokens: workerUsage.outputTokens,
-  })
-  const costUsd =
-    leadCost.costUsd === null && workerCost.costUsd === null
-      ? null
-      : (leadCost.costUsd ?? 0) + (workerCost.costUsd ?? 0)
-
-  // Search spend is read here, at the end of the run, from the same per-job meters that
-  // feed argo — so the number in the result and the number on the dashboard are the same
-  // number, not two independent accountings that can drift.
-  const search = readSearchSpend(jobId)
-  const report: ResearchReport = {
-    ...grounded,
-    cost: {
-      wallMs,
-      totalUsd: costUsd === null ? null : costUsd + search.sonarCostUsd,
-      llmUsd: costUsd,
-      searchUsd: search.sonarCostUsd,
-      searchCalls: search.sonarCalls,
-      tavilyCredits: search.tavilyCredits,
-      tavilyExtractCalls: search.tavilyExtractCalls,
+  // The whole job is one trace, and its id is derived from the jobId — so a job id from the
+  // REST/MCP surface is enough to find the trace, with no lookup table in between.
+  return withRootSpan(
+    {
+      traceId: traceIdFromJobId(jobId),
+      name: 'research.job',
+      kind: 'server',
+      attrs: { 'research.depth': depth, 'research.query': input.query.slice(0, 200) },
     },
-  }
+    async (span) => {
+      const profile = profiles[depth]
+      const start = Date.now()
 
-  // Operational counters, not spend — kept out of RunCost (which stays about money) and
-  // reported only in this log line, plus argo via reportRenderUsage (tools.ts's meterRender).
-  const renderStats = readRenderStats(jobId)
+      log('research.start', { jobId, depth, queryPreview: input.query.slice(0, 200) })
 
-  log('research.done', {
-    jobId,
-    reason,
-    depth,
-    rounds: round,
-    workers: workersDispatchedTotal,
-    digests: allDigests.length,
-    citations: grounded.citations.length,
-    sources: grounded.sources.length,
-    status: grounded.status,
-    pagesRetrieved: grounded.grounding.pagesRetrieved,
-    pagesFailed: grounded.grounding.pagesFailed,
-    citationsDropped: grounded.grounding.citationsDropped,
-    confidenceCapped: grounded.grounding.confidenceCapped,
-    inputTokens: combined.inputTokens,
-    cachedInputTokens: combined.cachedInputTokens,
-    outputTokens: combined.outputTokens,
-    totalTokens: combined.totalTokens,
-    reasoningTokens: combined.reasoningTokens,
-    costUsd,
-    searchUsd: search.sonarCostUsd,
-    searchCalls: search.sonarCalls,
-    renders: renderStats.renders,
-    rendersFailed: renderStats.failures,
-    wallMs,
-  })
+      let leadUsage = emptyUsage()
+      let workerUsage = emptyUsage()
+      const allDigests: WorkerDigest[] = []
+      const askedLower = new Set<string>()
+      const allLedgers: LedgerSnapshot[] = []
+      let workersDispatchedTotal = 0
 
-  return report
+      // No span wrapper here — planResearch opens `research.plan` itself, so the quick-depth
+      // path (which makes no LLM call at all) produces no zero-duration span. Same for
+      // synthesize/`research.synthesis` below.
+      const { plan, usage: planUsage } = await planResearch({ query: input.query, depth, jobId })
+      leadUsage = addUsage(leadUsage, planUsage)
+      log('research.plan', { jobId, subQuestions: plan.subQuestions.length })
+
+      // Synthesis MUST always retain its full budget — the research phase (plan + worker
+      // rounds) is only ever allowed to eat the remainder. Threaded into each worker so a
+      // worker running past this point BANKS its digest (forced submit_digest) instead of
+      // being aborted — an abort here would lose the whole digest, reintroducing the exact
+      // failure class (missing try/catch on searchWeb killing 60% of workers) already fixed.
+      const researchDeadlineAt = start + (profile.totalTimeoutMs - profile.synthesisTimeoutMs)
+
+      let currentQuestions: SubQuestion[] = plan.subQuestions
+      let round = 1
+      while (currentQuestions.length > 0) {
+        for (const sq of currentQuestions) askedLower.add(sq.question.trim().toLowerCase())
+
+        const { digests, usage, ledgers } = await withSpan(
+          'research.round',
+          {
+            'research.round': round,
+            'research.workers_dispatched': currentQuestions.length,
+            'research.gap_round': round > 1,
+          },
+          async (s) => {
+            const result = await dispatchRound(
+              currentQuestions,
+              depth,
+              jobId,
+              round,
+              researchDeadlineAt,
+            )
+            s.setAttributes({ 'research.digests_returned': result.digests.length })
+            return result
+          },
+        )
+        workerUsage = addUsage(workerUsage, usage)
+        allDigests.push(...digests)
+        workersDispatchedTotal += currentQuestions.length
+        allLedgers.push(...ledgers)
+
+        // Emit a cumulative snapshot per round, not just once at the end. argo upserts
+        // on (source, source_id, machine), so each snapshot overwrites the last rather
+        // than double-counting — and a job that dies mid-flight still leaves the tokens
+        // it had already burned behind instead of reporting nothing at all.
+        if (onUsage) {
+          onUsage({
+            ...addUsage(leadUsage, workerUsage),
+            durationMs: Date.now() - start,
+            lead: leadUsage,
+            worker: workerUsage,
+          })
+        }
+
+        log('research.round', {
+          jobId,
+          round,
+          workersDispatched: currentQuestions.length,
+          digestsReturned: digests.length,
+        })
+
+        if (round >= profile.rounds) break
+
+        const elapsed = Date.now() - start
+        if (elapsed + profile.synthesisTimeoutMs >= profile.totalTimeoutMs) break
+
+        const gapQuestions = nextRoundQuestions(digests, askedLower, profile.gapWorkers)
+        if (gapQuestions.length === 0) break
+
+        currentQuestions = gapQuestions
+        round += 1
+      }
+
+      let submitted: SubmittedReport | null = null
+      let reason: 'submit_report' | 'assembled' | 'empty' = 'empty'
+
+      if (allDigests.length > 0) {
+        const { report: synthesized, usage: synthesisUsage } = await synthesize({
+          query: input.query,
+          digests: allDigests,
+          depth,
+          jobId,
+        })
+        leadUsage = addUsage(leadUsage, synthesisUsage)
+
+        if (synthesized) {
+          submitted = synthesized
+          reason = 'submit_report'
+        } else {
+          // Deterministic fallback — assembled in code, no LLM call. See assemble.ts.
+          submitted = assembleReport(allDigests)
+          reason = 'assembled'
+        }
+      }
+
+      // Last-resort degraded stub: no digest was ever produced (every worker failed/timed out).
+      if (!submitted) {
+        submitted = {
+          report: 'Research could not gather any evidence for this query before the budget was exhausted.',
+          citations: [],
+          sources: [],
+          unverified: [],
+        }
+        reason = 'empty'
+      }
+
+      // The job-level gate. Every citation the synthesis model asserted is checked against the
+      // union of what the workers' tools actually retrieved, `sources` is replaced by the pages
+      // genuinely read, and `status`/`grounding` are counted in code. This is the invariant
+      // from issue #1: a URL this run could not fetch can never back a citation.
+      const toGround = submitted
+      const grounded = await withSpan('research.ground', {}, async (s) => {
+        const jobLedger = mergeLedgers(allLedgers)
+        const result = groundReport(toGround, jobLedger)
+        s.setAttributes({
+          'grounding.pages_retrieved': result.grounding.pagesRetrieved,
+          'grounding.pages_failed': result.grounding.pagesFailed,
+          'grounding.citations_dropped': result.grounding.citationsDropped,
+          'grounding.confidence_capped': result.grounding.confidenceCapped,
+          'report.citations': result.citations.length,
+          'report.sources': result.sources.length,
+          'report.status': result.status,
+        })
+        return result
+      })
+
+      const wallMs = Date.now() - start
+      const combined = addUsage(leadUsage, workerUsage)
+      const jobUsage: JobUsage = { ...combined, durationMs: wallMs, lead: leadUsage, worker: workerUsage }
+
+      if (onUsage) onUsage(jobUsage)
+
+      const leadCost = computeCost(env.IU_LEAD_MODEL, {
+        inputTokens: leadUsage.inputTokens,
+        cachedInputTokens: leadUsage.cachedInputTokens,
+        outputTokens: leadUsage.outputTokens,
+      })
+      const workerCost = computeCost(env.IU_WORKER_MODEL, {
+        inputTokens: workerUsage.inputTokens,
+        cachedInputTokens: workerUsage.cachedInputTokens,
+        outputTokens: workerUsage.outputTokens,
+      })
+      const costUsd =
+        leadCost.costUsd === null && workerCost.costUsd === null
+          ? null
+          : (leadCost.costUsd ?? 0) + (workerCost.costUsd ?? 0)
+
+      // Search spend is read here, at the end of the run, from the same per-job meters that
+      // feed argo — so the number in the result and the number on the dashboard are the same
+      // number, not two independent accountings that can drift.
+      const search = readSearchSpend(jobId)
+      const report: ResearchReport = {
+        ...grounded,
+        cost: {
+          wallMs,
+          totalUsd: costUsd === null ? null : costUsd + search.sonarCostUsd,
+          llmUsd: costUsd,
+          searchUsd: search.sonarCostUsd,
+          searchCalls: search.sonarCalls,
+          tavilyCredits: search.tavilyCredits,
+          tavilyExtractCalls: search.tavilyExtractCalls,
+        },
+      }
+
+      // Operational counters, not spend — kept out of RunCost (which stays about money) and
+      // reported only in this log line, plus argo via reportRenderUsage (tools.ts's meterRender).
+      const renderStats = readRenderStats(jobId)
+
+      // Mirrors the `research.done` line below field-for-field on purpose: the trace and the
+      // log are then the same numbers by construction, not two accountings that can drift.
+      span.setAttributes({
+        'research.reason': reason,
+        'research.rounds': round,
+        'research.workers': workersDispatchedTotal,
+        'research.digests': allDigests.length,
+        'research.outcome_partial': grounded.status === 'partial',
+        'report.status': grounded.status,
+        'report.citations': grounded.citations.length,
+        'report.sources': grounded.sources.length,
+        'grounding.pages_retrieved': grounded.grounding.pagesRetrieved,
+        'grounding.pages_failed': grounded.grounding.pagesFailed,
+        'grounding.citations_dropped': grounded.grounding.citationsDropped,
+        'grounding.confidence_capped': grounded.grounding.confidenceCapped,
+        'llm.input_tokens': combined.inputTokens,
+        'llm.cached_input_tokens': combined.cachedInputTokens,
+        'llm.output_tokens': combined.outputTokens,
+        'llm.reasoning_tokens': combined.reasoningTokens,
+        'llm.lead_output_tokens': leadUsage.outputTokens,
+        'llm.worker_output_tokens': workerUsage.outputTokens,
+        'cost.llm_usd': costUsd,
+        'cost.search_usd': search.sonarCostUsd,
+        'cost.total_usd': report.cost.totalUsd,
+        'search.calls': search.sonarCalls,
+        'search.tavily_extract_calls': search.tavilyExtractCalls,
+        'render.count': renderStats.renders,
+        'render.failures': renderStats.failures,
+      })
+
+      log('research.done', {
+        jobId,
+        reason,
+        depth,
+        rounds: round,
+        workers: workersDispatchedTotal,
+        digests: allDigests.length,
+        citations: grounded.citations.length,
+        sources: grounded.sources.length,
+        status: grounded.status,
+        pagesRetrieved: grounded.grounding.pagesRetrieved,
+        pagesFailed: grounded.grounding.pagesFailed,
+        citationsDropped: grounded.grounding.citationsDropped,
+        confidenceCapped: grounded.grounding.confidenceCapped,
+        inputTokens: combined.inputTokens,
+        cachedInputTokens: combined.cachedInputTokens,
+        outputTokens: combined.outputTokens,
+        totalTokens: combined.totalTokens,
+        reasoningTokens: combined.reasoningTokens,
+        costUsd,
+        searchUsd: search.sonarCostUsd,
+        searchCalls: search.sonarCalls,
+        renders: renderStats.renders,
+        rendersFailed: renderStats.failures,
+        wallMs,
+      })
+
+      return report
+    },
+  )
 }

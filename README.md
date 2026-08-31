@@ -133,8 +133,8 @@ bun test           # pure-function tests; needs no secrets
 | `CONTEXT7_API_KEY` | no | enables the `libraryDocs` tool when set. Free, and the best source for library questions |
 | `GITHUB_TOKEN` | no | the `githubFile`/`githubRepo`/`findPackages` tools work without it, but anonymous GitHub is **60 req/h per IP** shared across all jobs; a no-scope token raises it to 5000/h |
 | `ARGO_USAGE_URL` / `ARGO_API_SECRET` | no | telemetry → argo `POST /usage/records`; no-op if unset |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | no (off) | ClickStack/HyperDX collector base URL, e.g. `http://clickstack:4318`. Unset keeps `log()` console-only — see [Telemetry](#telemetry) |
-| `OTEL_SERVICE_NAME` | no (`research-gateway`) | `service.name` resource attribute on exported log records |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | no (off) | ClickStack/HyperDX collector base URL, e.g. `http://clickstack:4319` (the unauthed receiver; `:4318` enforces bearer auth). Unset keeps `log()` console-only and exports no traces — see [Telemetry](#telemetry) |
+| `OTEL_SERVICE_NAME` | no (`research-gateway`) | `service.name` resource attribute on exported spans and log records |
 | `RESEARCH_MAX_CONCURRENCY` | no (3) | concurrent *jobs* |
 | `WORKER_MAX_CONCURRENCY` | no (8) | concurrent *workers within one job* |
 
@@ -720,12 +720,30 @@ fix. The `:archive` record closes the same gap for Wayback rescues (`fetch-chain
 Tavily Extract also failed, which is the signal that picks the next `site-adapters.ts` entry —
 previously visible only as a `tool.fetchPage` log line, gone on redeploy.
 
-Structured `log()` calls also ship to ClickStack over OTLP when `OTEL_EXPORTER_OTLP_ENDPOINT`
-is set (`lib/otel-logs.ts`) — unset (the default; local dev and every test run this way) keeps
-logging console-only. Measured 2026-08-17: the container's `json-file` log driver (10m x 3,
-container-local) held only 513 lines and a single `research.start` across 72h of production
-traffic, because it had already rotated past everything else — a deep job alone runs ~28min, so
-even one job's logs don't reliably survive to the next redeploy without this.
+**Traces and structured `log()` calls both ship to ClickStack over OTLP when
+`OTEL_EXPORTER_OTLP_ENDPOINT` is set (`lib/otel.ts`)** — unset (the default; local dev and every
+test run this way) keeps logging console-only and exports no spans. Measured 2026-08-17: the
+container's `json-file` log driver (10m x 3, container-local) held only 513 lines and a single
+`research.start` across 72h of production traffic, because it had already rotated past
+everything else — a deep job alone runs ~28min, so even one job's logs don't reliably survive to
+the next redeploy without this.
+
+`lib/otel.ts` is **SDK-free**: OTLP/HTTP JSON over plain `fetch`, spans parented through a
+`node:async_hooks` `AsyncLocalStorage`. That removed four `@opentelemetry/*` dependencies rather
+than adding the two a trace SDK would need, and avoids `@opentelemetry/context-async-hooks`,
+whose Bun support is not certified — the one piece that has to be correct for a worker's span to
+parent to its job. The same hand-rolled exporter runs in `audio-gateway` against this collector.
+The AI SDK's own `@ai-sdk/otel` telemetry is deliberately NOT wired up: in ai@7 it records
+prompts and outputs by default, which would ship entire research prompts into spans.
+
+A job's trace id is *derived* from its job id (the UUID, dashes stripped to 32 hex), so a trace
+joins its `usage_record` rows and its `jobId` log fields with no correlation column — and a log
+record emitted inside a span carries that span's trace/span id, so a log line in HyperDX is
+clickable straight into its trace.
+
+The span model and the nine dashboard tiles built on it — the fetch-fallback waterfall, how
+workers end, the grounding funnel — live in
+[`docs/hyperdx-dashboard.md`](docs/hyperdx-dashboard.md), with the ClickHouse SQL for each.
 
 ### What `tavilyCredits` cannot see
 

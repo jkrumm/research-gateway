@@ -4,12 +4,13 @@ import { z } from 'zod'
 import { tavily } from '@tavily/core'
 import { env } from '../env.js'
 import { log } from '../lib/log.js'
+import { getActiveSpan, withSpan } from '../lib/otel.js'
 import { reportTavilyUsage, reportSonarUsage, reportRenderUsage, reportYtdlpUsage, reportArchiveUsage } from '../lib/usage.js'
 import { reportTavilyAccountUsage } from '../lib/tavily-account.js'
 import { capText, TEXT_CAP } from './extract.js'
 import { buildDirectSourceTools } from './direct-sources.js'
 import { sonarSearch, type SonarContextSize } from './sonar.js'
-import { runFetchChain } from './fetch-chain.js'
+import { runFetchChain, hostOf } from './fetch-chain.js'
 import { normalizeUrl, type RetrievalLedger } from './ledger.js'
 
 const tvly = tavily({ apiKey: env.TAVILY_API_KEY })
@@ -291,6 +292,11 @@ async function searchViaSonar(args: {
     searchQueries: r.usage.searchQueries,
   })
 
+  getActiveSpan().setAttributes({
+    'search.query': args.query.slice(0, 200),
+    'search.via': 'sonar',
+    'search.results': r.results.length,
+  })
   log('tool.searchWeb', {
     jobId: args.jobId,
     query: args.query,
@@ -340,6 +346,11 @@ async function searchViaTavily(args: {
   // billed a request it never answered is unknown, and undercounting is the safer direction
   // for a cost figure.
   recordTavilySearch(args.jobId, r.usage?.credits ?? 0)
+  getActiveSpan().setAttributes({
+    'search.query': args.query.slice(0, 200),
+    'search.via': 'tavily',
+    'search.results': r.results.length,
+  })
   log('tool.searchWeb', {
     jobId: args.jobId,
     query: args.query,
@@ -413,14 +424,23 @@ function buildSearchWebTool(args: {
     // job must search deeply. Exposing it let the model silently downgrade and halve the
     // sources a deep pass found.
     execute: async ({ query }) => {
+      // Written at exactly the points the `log('tool.searchWeb', { via })` calls below are
+      // written, so the span and the log line can never name a different backend for the
+      // same call. The `sonar`/`tavily` values are set inside those helpers, next to theirs.
+      const span = getActiveSpan()
+      const mark = (via: string, results?: number): void =>
+        span.setAttributes({ 'search.query': query.slice(0, 200), 'search.via': via, 'search.results': results })
+
       const cacheKey = `${searchDepth}:${contextSize}:${maxResults}:${dualSearch}:${query.trim().toLowerCase()}`
       const cached = searched.get(cacheKey)
       if (cached !== undefined) {
+        mark('cache', cached.results.length)
         log('tool.searchWeb', { jobId, query, via: 'cache' })
         return cached
       }
 
       if (spent >= maxSearches) {
+        mark('budget', 0)
         log('tool.searchWeb', { jobId, query, via: 'budget', spent, maxSearches })
         return {
           error: `search budget exhausted (${maxSearches} searches used). Do not search again — read the most promising pages you have already found with fetchPage, and report anything still unresolved in openGaps.`,
@@ -465,6 +485,7 @@ function buildSearchWebTool(args: {
             }
           }
           const out: SearchOutput = { answer: null, results: merged }
+          mark('dual', merged.length)
           log('tool.searchWeb', {
             jobId,
             query,
@@ -476,6 +497,7 @@ function buildSearchWebTool(args: {
           searched.set(cacheKey, out)
           return out
         }
+        mark('dual', 0)
         log('tool.searchWeb', { jobId, query, via: 'dual', error: 'both backends failed' })
       }
 
@@ -491,6 +513,7 @@ function buildSearchWebTool(args: {
           return out
         } catch (err) {
           lastError = String(err)
+          mark(backend, 0)
           log('tool.searchWeb', { jobId, query, via: backend, error: lastError })
         }
       }
@@ -513,6 +536,7 @@ function buildFetchPageTool(ledger: RetrievalLedger, jobId = '-'): AnyTool {
     }),
     execute: async ({ url }) => {
       if (fetched.has(url)) {
+        getActiveSpan().setAttributes({ 'fetch.url': url, 'fetch.via': 'cache', 'fetch.ok': true })
         log('tool.fetchPage', { jobId, url, via: 'cache' })
         return { url, text: 'Already fetched earlier in this conversation — reuse the previous result for this URL.' }
       }
@@ -534,6 +558,18 @@ function buildFetchPageTool(ledger: RetrievalLedger, jobId = '-'): AnyTool {
             totalMs: r.ms,
             oldestSnapshotDays: r.snapshotAgeDays,
           }),
+      })
+
+      // The per-step waterfall is already on this span as `fetch.step` events, emitted by
+      // runFetchChain itself; these are the dimensions you group by around them.
+      getActiveSpan().setAttributes({
+        'fetch.url': url,
+        'fetch.host': hostOf(result.fetchUrl),
+        'fetch.via': result.via ?? 'none',
+        'fetch.chars': result.text?.length ?? 0,
+        'fetch.attempts': result.attempts.length,
+        'fetch.error': result.error ?? undefined,
+        'fetch.ok': result.via !== null,
       })
 
       if (result.text === null) return { url, error: result.error ?? 'fetch failed' }
@@ -636,5 +672,21 @@ export function buildTools(args: {
     tools['libraryDocs'] = libraryDocsTool
   }
 
-  return tools
+  return Object.fromEntries(Object.entries(tools).map(([name, t]) => [name, instrument(name, t)]))
+}
+
+// One wrapper for every tool, so a tool added later is instrumented by construction rather
+// than by remembering to. The span name mirrors the `tool.<name>` vocabulary the log() events
+// already use, so a log body and a span name are the same string in HyperDX.
+//
+// It deliberately does NOT catch: the AI SDK's own tool-error handling stays in charge, and
+// withSpan records the exception and rethrows it unchanged. A tool with no `execute`
+// (submit_digest/submit_plan/submit_report — the loop-terminating ones, added elsewhere) is
+// returned untouched, since there is nothing to time.
+function instrument(name: string, t: AnyTool): AnyTool {
+  const original = t.execute
+  if (typeof original !== 'function') return t
+  const execute: NonNullable<AnyTool['execute']> = (input, options) =>
+    withSpan(`tool.${name}`, {}, async () => original(input, options), 'client')
+  return { ...t, execute }
 }
