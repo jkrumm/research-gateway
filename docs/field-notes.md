@@ -176,20 +176,19 @@ matters more at `deep` than anywhere else.
 
 ### Ranked, if only some get built
 
-1. **Never promote a fetch failure to a negative claim** — the deep run stated two
-   false facts at `confidence: high` off failed retrievals. Highest severity: a
-   confident wrong answer costs more than no answer.
-2. **A claim whose source is in `unverified` must degrade with it** — same run
-   declared a 121 KB document stale without reading it.
-3. Internal-consistency pass — it produced a wrong fact in a published note, and
-   the fix needs no new retrieval.
-4. `context` parameter — biggest cost lever, smallest surface.
-5. Strip `unverified` sources from the body — small, purely additive safety.
-6. Claim-type tag (`measured` / `editorial`) — changes how a consumer reads every report.
-7. Phase in `job_status` and `job_wait_all` — ergonomics, not correctness.
+Filed as issues, ranked by severity — the first two are the same bug wearing two
+hats: **the pipeline treats "we couldn't get it" as "it isn't there."** Fixing
+that one idea fixes both.
 
-The first two are the same bug wearing two hats: **the pipeline treats "we
-couldn't get it" as "it isn't there."** Fixing that one idea fixes both.
+1. [#3](https://github.com/jkrumm/research-gateway/issues/3) Never promote a fetch failure to a negative claim
+2. [#4](https://github.com/jkrumm/research-gateway/issues/4) A claim sourced from an `unverified` document should degrade with it
+3. [#5](https://github.com/jkrumm/research-gateway/issues/5) Internal-consistency pass over a report's own claims
+4. [#6](https://github.com/jkrumm/research-gateway/issues/6) Add a `context` parameter to skip re-deriving shared background
+5. [#7](https://github.com/jkrumm/research-gateway/issues/7) Strip `unverified` sources from the report body
+
+Not filed, lower priority: a claim-type tag (`measured` / `editorial` /
+`community`) alongside `confidence`, and a coarse `job_status` phase plus
+`job_wait_all` — both ergonomics, not correctness.
 
 ---
 
