@@ -155,7 +155,16 @@ export const app = new Elysia()
       auth: {
         scheme: 'Bearer',
         header: 'Authorization: Bearer <API_SECRET>',
-        public: ['GET /', 'GET /health', 'GET /health/render'],
+        // Everything mounted before `authGuard` below — keep this list and that order in sync.
+        public: [
+          'GET /',
+          'GET /health',
+          'GET /health/render',
+          'GET /health/tavily',
+          'GET /health/ytdlp',
+          'GET /openapi',
+          'GET /openapi/json',
+        ],
       },
       endpoints: {
         submit: 'POST /research',
