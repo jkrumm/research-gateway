@@ -12,7 +12,12 @@ process.env['IU_API_KEY'] ??= 'test-key'
 process.env['TAVILY_API_KEY'] ??= 'test-key'
 // A literal, public, non-routable IP (TEST-NET-3): the render step fetches this directly with
 // no SSRF/DNS round trip, so the stub below is the only thing it can reach.
-process.env['LIGHTPANDA_URL'] ??= 'http://203.0.113.10:7781'
+//
+// Assigned, NOT `??=`. This one steers routing: the waterfall test recognises the render step
+// by matching this host, so an inherited value sends the chain past lightpanda into
+// tavily-extract and wayback and the assertion fails. CI has a real LIGHTPANDA_URL in scope,
+// which is exactly how that happened.
+process.env['LIGHTPANDA_URL'] = 'http://203.0.113.10:7781'
 
 const { runFetchChain } = await import('./fetch-chain.js')
 const { createLedger } = await import('./ledger.js')
