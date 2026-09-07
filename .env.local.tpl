@@ -8,13 +8,13 @@ PORT=7780
 # Gateway's own bearer (clients send this as `Authorization: Bearer <…>`)
 API_SECRET=op://vps/research-gateway/API_SECRET
 
-# IU unified endpoint (same item argo uses for its DeepSeek calls)
+# IU unified endpoint (same item argo uses)
 IU_BASE_URL=op://common/anthropic/OPENAI_BASE_URL
 IU_API_KEY=op://common/anthropic/API_KEY
-# Lead plans + synthesizes; workers fan out. Split so the cheap/fast model does the
-# bounded extract-and-distill work and the strong one only sees compact digests.
-IU_LEAD_MODEL=DeepSeek-V4-Pro
-IU_WORKER_MODEL=DeepSeek-V4-Flash
+# Lead and worker models come from the defaults in src/env.ts (gpt-5.6-luna for both), the
+# same as prod, which sets neither. Override here only to test a deliberate exception:
+# IU_LEAD_MODEL=
+# IU_WORKER_MODEL=
 
 # Web search backend: `sonar` (default) routes searchWeb through Perplexity on the IU
 # endpoint above — billed to the work key, ~20 dated sources per call. `tavily` takes

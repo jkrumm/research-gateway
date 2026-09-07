@@ -77,7 +77,8 @@ const Env = z.object({
   JOB_TTL_MINUTES: z.coerce.number().default(30),
   // bun:sqlite job store (status-only durability — see lib/job-db.ts). Relative default
   // resolves against the process CWD: the repo root in local dev, /app (the Dockerfile
-  // WORKDIR) in the container, where deploy/compose.yml mounts a named volume at /app/data.
+  // WORKDIR) in the container, where the vps repo's apps/research-gateway/compose.yml mounts a
+  // named volume at /app/data.
   JOB_DB_PATH: z.string().default('./data/jobs.sqlite'),
   // yt-dlp binary path — bundled into the image at build time (Dockerfile), pinned to a
   // specific release. See agent/ytdlp.ts.

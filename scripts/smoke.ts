@@ -2,11 +2,12 @@
 // Runs one runResearch() end-to-end against the real IU endpoint + Tavily, prints a
 // compact trace. Does NOT import index.ts, so no HTTP server is started.
 //
-// Run (from repo root), Tavily key from the macOS keychain + IU from 1Password:
-//   TAVILY_API_KEY="$(security find-generic-password -s tavily-api-key -w)" \
-//   secrets-run run --env-file=/tmp/rg-smoke.env -- bun run scripts/smoke.ts "<query>" <depth>
+// Run (from repo root) with the same secrets template `bun run dev` uses:
+//   secrets-run run --env-file=.env.local.tpl -- bun run scripts/smoke.ts "<query>" <depth>
 //
-// /tmp/rg-smoke.env must define API_SECRET (any dummy), IU_BASE_URL, IU_API_KEY, IU_MODEL.
+// That template points ARGO_USAGE_URL at prod argo, so a smoke run reports usage there under
+// jobId `smoke`. Add `--env-file=<file>` with `ARGO_API_SECRET=` (empty) after it to keep the
+// run out of the dashboard — the last file wins, and an empty secret disables reporting.
 
 import { runResearch } from '../src/agent/run.js'
 import type { Depth } from '../src/agent/schema.js'

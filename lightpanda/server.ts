@@ -57,7 +57,8 @@ const BIN = process.env['LIGHTPANDA_BIN'] ?? '/usr/local/bin/lightpanda'
 
 // Sized against the measured worst case: 205 MB for the heaviest page in the sweep, at the
 // heap cap below. 3 x 205 MB + this Bun process (~50 MB) = ~665 MB, which is what the 768 MiB
-// `mem_limit` in deploy/compose.yml is derived from. Change one, recompute the other.
+// `mem_limit` in the vps repo's apps/research-gateway/compose.yml is derived from. Change one,
+// recompute the other.
 const MAX_CONCURRENCY = numberFromEnv('RENDER_MAX_CONCURRENCY', 3)
 
 // The single most valuable flag on the binary. Measured across 8 real pages at caps of 32, 64
