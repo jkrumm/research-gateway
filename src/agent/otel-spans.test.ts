@@ -25,7 +25,7 @@ const { runFetchChain } = await import('./fetch-chain.js')
 // it the assignment above arrived too late and the chain calls the inherited URL instead. Read
 // back what the chain will actually use and match the stub against that, so this test is
 // correct under any import order.
-const RENDER_HOST = new URL((await import('../env.js')).env.LIGHTPANDA_URL).host
+const RENDER_HOST = new URL((await import('../env.js')).env.LIGHTPANDA_URL ?? 'http://203.0.113.10:7781').host
 const { createLedger } = await import('./ledger.js')
 const { buildTools } = await import('./tools.js')
 const { _test, withSpan } = await import('../lib/otel.js')
