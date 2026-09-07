@@ -57,10 +57,21 @@ const jobs = new Map<string, Job>()
 // nobody is left proving the job alive.
 const reaped = db.reapInterrupted(INTERRUPTED_MESSAGE, Date.now() - HEARTBEAT_STALE_MS)
 if (reaped.length > 0) {
+  // Error level (otel-format.ts ERROR_EVENTS) with a `count`: every reaped job is one a caller
+  // lost to a restart, and this line is what the HyperDX alert fires on.
   log('job.reaped', { count: reaped.length, jobIds: reaped.map((job) => job.jobId) })
 }
 for (const job of db.all()) {
   jobs.set(job.jobId, job)
+}
+
+// Surfaced on GET /health so a keyword monitor can see an unclean restart without log access.
+// `reaped` is this boot's reap; `interrupted` also counts jobs reaped later on read (getJob).
+const bootedAt = new Date().toISOString()
+let interruptedCount = reaped.length
+
+export function restartStats(): { lastRestartAt: string; reaped: number; interrupted: number } {
+  return { lastRestartAt: bootedAt, reaped: reaped.length, interrupted: interruptedCount }
 }
 
 const JOB_TTL_MS = env.JOB_TTL_MINUTES * 60_000
@@ -114,7 +125,8 @@ export function getJob(jobId: string): Job | undefined {
   const reapedJob: Job = { ...job, status: 'error', error: INTERRUPTED_MESSAGE, finishedAt: Date.now() }
   jobs.set(jobId, reapedJob)
   db.put(reapedJob)
-  log('job.reaped_on_read', { jobId })
+  interruptedCount++
+  log('job.reaped_on_read', { jobId, count: 1 })
   return reapedJob
 }
 

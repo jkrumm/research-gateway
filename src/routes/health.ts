@@ -2,6 +2,7 @@ import { Elysia } from 'elysia'
 import { z } from 'zod'
 import { env } from '../env.js'
 import { fetchTavilyUsage } from '../lib/tavily-account.js'
+import { restartStats } from '../lib/job-store.js'
 
 async function readYtdlpVersion(): Promise<string> {
   const proc = Bun.spawn([env.YTDLP_PATH, '--version'], {
@@ -18,13 +19,24 @@ async function readYtdlpVersion(): Promise<string> {
 }
 
 export const healthRoute = new Elysia()
-  .get('/health', () => ({ status: 'ok' as const }), {
-    response: z.object({ status: z.literal('ok') }),
+  // `status` stays the only field anything GATES on (Docker healthcheck, rollhook, Traefik).
+  // The restart fields are visibility for a keyword monitor: `reaped` > 0 means this boot found
+  // queued/running jobs with a stale heartbeat — the process before it died without finishing
+  // them (2026-09-04: a cgroup OOM kill, 15 jobs). They reset on the next clean deploy.
+  .get('/health', () => ({ status: 'ok' as const, ...restartStats() }), {
+    response: z.object({
+      status: z.literal('ok'),
+      lastRestartAt: z.string().describe('ISO time this process booted — the last (re)start'),
+      reaped: z.number().describe('Jobs reaped as interrupted at this boot (stale heartbeat)'),
+      interrupted: z
+        .number()
+        .describe('Jobs reaped in this process lifetime: the boot reap plus any reaped later on read'),
+    }),
     detail: {
       tags: ['System'],
       summary: 'Liveness probe',
       description:
-        'Returns `{ status: "ok" }` if the service process is up. No auth required. Used by Docker healthcheck and external uptime monitors.',
+        'Returns `{ status: "ok" }` if the service process is up, plus `lastRestartAt` and the `reaped` / `interrupted` job counts of this process lifetime — an unclean restart shows as `reaped` > 0 until the next deploy. Only `status` gates anything (Docker healthcheck, rollhook); the counts exist for a keyword monitor. No auth required.',
     },
   })
   // DELIBERATELY a separate path from `/health`, not a field on it.
