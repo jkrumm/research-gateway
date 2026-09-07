@@ -190,3 +190,69 @@ matters more at `deep` than anywhere else.
 
 The first two are the same bug wearing two hats: **the pipeline treats "we
 couldn't get it" as "it isn't there."** Fixing that one idea fixes both.
+
+---
+
+## 2026-08-30 — open items harvested from the serving-side handover notes
+
+The gitignored handover file (`HANDOVER.md`) that carried the working state between sessions
+was retired; its measurements moved to [`measurements.md`](./measurements.md), its settled
+rules to [`decisions.md`](./decisions.md), and everything still *open* is here, so it has a
+tracked home. Status as of the retirement, with the numbers that were true then.
+
+### Costs money while it waits
+
+- **Tavily is over plan** — `planUsage 1152 / planLimit 1000`, `paygoUsage 151`, visible at
+  `GET /health/tavily` and pushed to argo on a 10-min throttle. The open part is the decision:
+  upgrade or cap. yt-dlp made it much less urgent — extract calls for one job fell 22 → 4,
+  and video transcripts now cost zero.
+
+### Known-open, with numbers
+
+- **`readCapped` in `ytdlp.ts` breaks out of the stream at 8 MB without draining**, then awaits
+  `proc.exited`. A process still writing could block on a full pipe. The cap is far above the
+  measured 642 KB so it has never fired; kill the process on cap instead if it ever does.
+- **techempower returns 4,626 chars of nav.** The real data is a 143 KB JS chunk on the same
+  host (`/benchmarks/assets/index-<hash>.js` → `round-23-<hash>.js`). A 3-GET site adapter
+  would fix it. The hash changes on rebuild — walk the chain, never pin it.
+- **The 200-char floor let a 243-char error page through once** (`walmart`, at concurrency 2;
+  three solo runs read 1,632). Isolate with `--only <name>` before attributing movement.
+- **Step-1 fetch timeout is 10s.** Surfline hit it once, never again. Deliberately unchanged.
+- **Search tuning untouched.** `deep`'s `maxSearches: 6` was never validated. Pages-read
+  predicts citations (r=+0.78); searches-issued only +0.52. Read the price-of-an-answer
+  table in `measurements.md` before A/B-ing anything.
+- **`github.com` is the top unverifiable host** (16 of 26 across 15 runs) and the next
+  site-adapter candidate — a Wayback rescue (`sub_tool: wayback` in argo) is the signal that
+  picks the one after that.
+- **Workers occasionally die at ~300-321s with `TimeoutError`**; wall time is dominated by
+  synthesis, not research. The SSRF DNS-rebinding TOCTOU gap remains (the redirect-hop gap
+  is closed).
+- **If yt-dlp starts returning `Sign in to confirm you're not a bot` across the board, the
+  VPS IP got flagged.** Independent research says YouTube blocks whole cloud ASNs at the
+  edge; this VPS is currently not in that state. Levers, in order: `--cookies` from a
+  logged-in export, a residential proxy, a paid transcript API. Nothing in the code needs
+  redesigning for that.
+
+### Proposed, NOT validated
+
+- **Bump `YTDLP_MAX_CONCURRENCY` above 2.** 429s were measured under burst, so raising it
+  needs a real run, not a guess.
+- **A retry for `no json3 caption track`** — pointless, it is a property of the video. Do not
+  add it.
+- **Split `direct-sources.ts`** (~900 lines). Flagged by review as a deliberate call.
+- **Extract steps 1-2 of `runFetchChain` into a helper** so `skipToExtract` is a guard clause
+  rather than a wrapping `if/else`.
+- **`SiteAdapter` as a discriminated union** — `plan` and `rewriteHost` are mutually exclusive
+  at runtime but not in the type.
+
+### Traps that are not obvious from the code
+
+- **Pushing to master deploys and kills running jobs.** Check `/health/render` shows `active: 0`.
+- **`make research-gateway-down && up` rolls code back** (recreates from `:latest`, which
+  RollHook never updates). Use `make research-gateway-redeploy`.
+- **The VPS's own `~/vps` checkout has no git credential** — commit from the mini, pull there.
+- **From the mini, `.github/workflows/` pushes need a credential override.**
+- **`lightpanda/Dockerfile` copies `*.ts` as a glob**; `boundary.test.ts` guards it.
+- **`--extractor-args "youtube:player_skip=webpage,configs"` triggers the bot wall on every
+  video; `--sub-langs "en.*"` expands to ~157 tracks and 429s.** Both measured; never add
+  either. The code picks one caption track from `-J` itself and never passes `--write-subs`.
