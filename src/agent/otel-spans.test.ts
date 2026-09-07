@@ -20,6 +20,12 @@ process.env['TAVILY_API_KEY'] ??= 'test-key'
 process.env['LIGHTPANDA_URL'] = 'http://203.0.113.10:7781'
 
 const { runFetchChain } = await import('./fetch-chain.js')
+// The chain reads env.LIGHTPANDA_URL, and `env.ts` parses process.env ONCE at first import.
+// Under `bun test` the module registry is shared across files, so if any earlier file imported
+// it the assignment above arrived too late and the chain calls the inherited URL instead. Read
+// back what the chain will actually use and match the stub against that, so this test is
+// correct under any import order.
+const RENDER_HOST = new URL((await import('../env.js')).env.LIGHTPANDA_URL).host
 const { createLedger } = await import('./ledger.js')
 const { buildTools } = await import('./tools.js')
 const { _test, withSpan } = await import('../lib/otel.js')
@@ -83,7 +89,7 @@ describe('runFetchChain span events', () => {
   it('emits one event per attempt across a multi-step waterfall, in attempt order', async () => {
     const rendered = 'Real page content. '.repeat(200)
     stubFetch((url) =>
-      url.includes('203.0.113.10')
+      url.includes(RENDER_HOST)
         ? new Response(JSON.stringify({ ok: true, text: rendered, status: 200 }), {
             status: 200,
             headers: { 'content-type': 'application/json' },
