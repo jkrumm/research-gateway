@@ -9,22 +9,39 @@ import { mcpRoutes } from './routes/mcp.js'
 import { probeRoutes } from './routes/probe.js'
 import { log } from './lib/log.js'
 import { flushOtel } from './lib/otel.js'
+import { startMemoryWatch } from './lib/memory-watch.js'
 
 // ── Process-level diagnostics ────────────────────────────────────────────────
 // On 2026-07-31 the container exited with code 0, mid-flight, during a deep job,
 // leaving NO log line. `RestartCount=1`, `OOMKilled=false`, peak memory 254M of a
 // 512M limit, no host event, no other container affected — and every application
 // path was already guarded (reportUsage cannot reject, withSlot is safe,
-// startResearchJob catches everything). The exit is still unexplained. At the time,
-// the job store was in-memory, so that restart took every in-flight job with it —
-// the job store now persists to sqlite (lib/job-db.ts) with heartbeat-based reaping
-// (lib/job-store.ts), so a restart like this one no longer silently drops a job: a
-// `done` job's result survives, and one caught mid-run comes back as a terminal
-// `error` once its heartbeat goes stale, not a vanished 404.
+// startResearchJob catches everything). At the time, the job store was in-memory, so
+// that restart took every in-flight job with it — the job store now persists to sqlite
+// (lib/job-db.ts) with heartbeat-based reaping (lib/job-store.ts), so a restart like
+// this one no longer silently drops a job: a `done` job's result survives, and one
+// caught mid-run comes back as a terminal `error` once its heartbeat goes stale, not
+// a vanished 404.
 //
-// Rather than guess at the exit's cause, make the next occurrence self-describing.
+// 2026-09-04 07:37 UTC, the same shape again — "exit 0, no process.* line", 15 jobs
+// reaped at boot — and this time the VPS kernel journal had the answer: the memory
+// cgroup OOM killer SIGKILLed bun at exactly the 1 GiB `mem_limit`. SIGKILL runs no
+// handler, so NONE of the hooks below can ever describe that exit; and `docker inspect`
+// on the restarted container reports `ExitCode: 0` / `OOMKilled: false` because both
+// fields describe the CURRENT run — which is how a kernel kill read as a mystery
+// exit twice. The honest record of an OOM lives in the host journal
+// (`journalctl -k | grep oom`), and the only in-process warning is the approach:
+// lib/memory-watch.ts samples the cgroup's own `memory.current` against its limit every
+// 5 s and logs at error level when it crosses 85%. The hooks below still cover every exit
+// that IS in-process.
 process.on('exit', (code) => {
+  // Console only — the process is gone before the OTel batch could post.
   log('process.exit', { code })
+})
+process.on('beforeExit', (code) => {
+  // A server's event loop draining is a bug (the listener is what keeps it alive), not a
+  // shutdown — this is the "Bun went idle" hypothesis, made self-describing if it ever fires.
+  log('process.beforeExit', { code })
 })
 // Force-flush pending OTel log records and spans before exiting — the exporter's normal
 // 2s interval would otherwise lose the last records of exactly the event that is ending the
@@ -53,15 +70,17 @@ process.on('uncaughtException', (err) => {
   // Flushed on the way out for the same reason the signal path is, only more so: this line
   // and every span that ended in the last <2s are the only record of a crash, and exiting
   // immediately would drop them — the 2026-07-31 no-log-line failure mode above, again.
-  log('process.uncaughtException', { error: String(err), stack: err.stack?.slice(0, 2_000) })
+  log('process.uncaughtException', { reason: String(err), stack: err.stack?.slice(0, 2_000) })
   flushThenExit(1)
 })
 process.on('unhandledRejection', (reason) => {
   // Deliberately NOT fatal. These originate in fire-and-forget background jobs whose
   // own try/catch already contains the damage; killing the server would discard every
   // OTHER in-flight job to punish one. Logged loudly so it cannot hide.
-  log('process.unhandledRejection', { reason: String(reason) })
+  const stack = reason instanceof Error ? reason.stack?.slice(0, 2_000) : undefined
+  log('process.unhandledRejection', { reason: String(reason), stack })
 })
+startMemoryWatch()
 
 // Elysia's error `code` is either a named framework error ('VALIDATION' | 'NOT_FOUND' |
 // 'PARSE' | 'INVALID_COOKIE_SIGNATURE' | 'INVALID_FILE_TYPE' | 'INTERNAL_SERVER_ERROR' |
@@ -93,7 +112,7 @@ export const app = new Elysia()
           title: 'research-gateway',
           version: '0.1.0',
           description:
-            'Agentic research gateway. Accepts a query, runs a multi-step tool-calling loop (Tavily search + page fetch + library docs), and returns a cited markdown report. All routes except `GET /` and `GET /health` require `Authorization: Bearer <API_SECRET>`.',
+            'Agentic research gateway. Accepts a query, runs a multi-step tool-calling loop (web search + page fetch + source-of-truth lookups), and returns a cited markdown report. Every route except the public ones listed by `GET /` (discovery, `/health*`, `/openapi*`) requires `Authorization: Bearer <API_SECRET>`.',
         },
         components: {
           securitySchemes: {

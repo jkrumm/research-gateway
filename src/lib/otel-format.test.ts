@@ -46,6 +46,20 @@ describe('severityFor', () => {
     expect(severityFor('process.unhandledRejection', {})).toBe('error')
   })
 
+  it('is error for a reap — a job a caller lost to a restart — regardless of fields', () => {
+    expect(severityFor('job.reaped', { count: 15, jobIds: ['a'] })).toBe('error')
+    expect(severityFor('job.reaped_on_read', { jobId: 'a' })).toBe('error')
+  })
+
+  it('is error for the memory watchdog', () => {
+    expect(severityFor('process.memory_pressure', { currentBytes: 1, limitBytes: 2 })).toBe('error')
+  })
+
+  it('is info for process.exit / beforeExit — console-only, they run after the OTel flush', () => {
+    expect(severityFor('process.exit', { code: 0 })).toBe('info')
+    expect(severityFor('process.beforeExit', { code: 0 })).toBe('info')
+  })
+
   it('is warn when fields carry a truthy error key, even without a matching event name', () => {
     expect(severityFor('tool.fetchPage', { error: 'HTTP 403' })).toBe('warn')
     expect(severityFor('tool.searchWeb', { error: 'search failed: timeout' })).toBe('warn')

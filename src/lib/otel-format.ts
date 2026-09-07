@@ -40,7 +40,14 @@ export type LogSeverity = 'info' | 'warn' | 'error'
  *   ERROR — the event name ends in `.error` (job.error, mcp.error) or `.failed`
  *   (synthesis.failed, worker.failed), or contains `uncaughtException` /
  *   `unhandledRejection` (the two process-level handlers in index.ts, already logged as loud
- *   failures there).
+ *   failures there), or is one of ERROR_EVENTS: the reaps (job.reaped, job.reaped_on_read —
+ *   every one is a job a caller lost to a restart, and the count is what the HyperDX alert
+ *   fires on) and the memory watchdog (process.memory_pressure — the only in-process
+ *   warning a cgroup OOM kill leaves, since SIGKILL runs no handler). NOT process.exit /
+ *   process.beforeExit: those handlers run after the OTel flush has already happened (see
+ *   flushThenExit in index.ts — "console only"), so a severity there reaches no exporter,
+ *   and a routine deploy's `process.exit code 0` would read as an error on the console for
+ *   nothing. The exits that do flush are process.signal and process.uncaughtException.
  *
  *   WARN — the fields carry a truthy `error` key even when the event name doesn't say so
  *   (tool.fetchPage's per-attempt failure logs, tool.searchWeb's retry-exhausted log,
@@ -51,8 +58,15 @@ export type LogSeverity = 'info' | 'warn' | 'error'
  *   INFO — everything else: the request/job/plan/round/tool-call lifecycle events that make
  *   up the bulk of the ~34 names and carry no failure signal at all.
  */
+const ERROR_EVENTS = new Set([
+  'job.reaped',
+  'job.reaped_on_read',
+  'process.memory_pressure',
+])
+
 export function severityFor(event: string, fields: Record<string, unknown> = {}): LogSeverity {
   if (
+    ERROR_EVENTS.has(event) ||
     event.endsWith('.error') ||
     event.endsWith('.failed') ||
     event.includes('uncaughtException') ||
