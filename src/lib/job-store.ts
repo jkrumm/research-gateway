@@ -2,6 +2,7 @@ import { env } from '../env.js'
 import type { ResearchReport, Depth, JobStatus } from '../agent/schema.js'
 import { openJobDb } from './job-db.js'
 import { log } from './log.js'
+import { admit, canDispatch, type AdmissionRefusal } from './admission.js'
 
 export type { JobStatus }
 
@@ -31,6 +32,12 @@ export interface Job {
 const INTERRUPTED_MESSAGE =
   'This research job was lost when the service restarted before it finished running. It cannot be resumed — resubmit the query.'
 
+// Shown to a waiter still sitting in the semaphore queue when `beginDraining` rejects it: the
+// job never started (unlike INTERRUPTED_MESSAGE, which covers one that was queued/running and
+// lost its heartbeat), so there is nothing to reap on the next boot — just resubmit.
+const DRAIN_QUEUED_MESSAGE =
+  'This research job was still queued when the service began restarting. It never started — resubmit the query.'
+
 // How often the owning process re-proves a job (queued OR running) is alive (see
 // `startHeartbeat`), and how far behind that a heartbeat has to fall before another process
 // may treat the job as dead. The gap between the two (90s vs 15s — 6 missed ticks) absorbs an
@@ -46,6 +53,12 @@ const HEARTBEAT_STALE_MS = 90_000
 const db = openJobDb(env.JOB_DB_PATH)
 
 const jobs = new Map<string, Job>()
+
+// Job ids this process is actively heartbeating (see `startHeartbeat`). The map above is
+// hydrated once at boot and thereafter only kept current for these — a job belonging to the
+// SIBLING replica of a rolling deploy keeps changing in sqlite while this process's copy of it
+// stays frozen at whatever it read at boot. `getJob` uses this to decide whose word to trust.
+const owned = new Set<string>()
 
 // ── Boot: hydrate from the durable store ────────────────────────────────────
 // A job that reached 'done'/'error' survives with its full result. A job that was
@@ -85,6 +98,7 @@ function sweep(): void {
     const age = now - (job.finishedAt ?? job.createdAt)
     if (age > JOB_TTL_MS) {
       jobs.delete(id)
+      owned.delete(id)
       db.delete(id)
     }
   }
@@ -110,8 +124,26 @@ export function createJob(input: { query: string; depth: Depth }): Job {
 }
 
 export function getJob(jobId: string): Job | undefined {
-  const job = jobs.get(jobId)
+  let job = jobs.get(jobId)
   if (!job || (job.status !== 'running' && job.status !== 'queued')) return job
+
+  // A non-terminal job this process does NOT own is being executed by the sibling replica of a
+  // rolling deploy, which heartbeats it into the shared sqlite file this process never re-reads.
+  // Trusting the boot-time snapshot here reaped a LIVE job ~90s after this replica booted and
+  // wrote 'error' over the owner's row — the precise failure the drain exists to prevent,
+  // reintroduced from the other side, and made far more likely by the drain itself: the old
+  // replica now outlives the new one's boot by up to SHUTDOWN_DRAIN_MS instead of 2 seconds.
+  if (!owned.has(jobId)) {
+    const fresh = db.get(jobId)
+    // A missing row means the cached snapshot is all there is (sweep only ever deletes terminal
+    // jobs, so this is not reachable in practice) — fall through to the staleness check below
+    // rather than hand back a 'running' job nothing is proving alive.
+    if (fresh) {
+      job = fresh
+      jobs.set(jobId, fresh)
+      if (fresh.status !== 'running' && fresh.status !== 'queued') return fresh
+    }
+  }
 
   // Read-time half of the heartbeat guarantee: a job hydrated at boot as 'queued'/'running'
   // (owned by whichever replica actually created or started it) can go stale between boot and
@@ -143,6 +175,11 @@ export function updateJob(jobId: string, patch: Partial<Job>): void {
 // heartbeat runs for exactly the job's actual lifetime and clears on both success and failure.
 // Returns a stop function; `.unref()` matches `_sweepTimer` so it never blocks process exit.
 export function startHeartbeat(jobId: string): () => void {
+  // Heartbeating a job IS owning it — this is the one place a job becomes this process's own,
+  // and `getJob` reads `owned` to decide whether its cached copy is authoritative or has to be
+  // re-read from the shared file. Kept in the set after the timer stops: the stop happens in
+  // run-job.ts's `.finally()`, by which point the job is terminal and the cache is correct.
+  owned.add(jobId)
   const tick = (): void => {
     const now = Date.now()
     const job = jobs.get(jobId)
@@ -161,23 +198,41 @@ export function startHeartbeat(jobId: string): () => void {
 // Avoids reaching for p-limit for a few lines of logic.
 
 let running = 0
-const queue: Array<() => void> = []
+const queue: Array<{ resolve: () => void; reject: (err: Error) => void }> = []
 
+// Set once by `beginDraining` (SIGTERM/SIGINT — see index.ts) and never cleared: a process
+// that started shutting down must never resume accepting work. `tryDispatch` checks it so a
+// slot freed by a job finishing mid-drain does not start a fresh one from the queue — every
+// queued waiter was already rejected by `beginDraining` itself, so the queue is empty by the
+// time this matters, but the guard also covers the (impossible in practice, cheap to guard)
+// case of a `withSlot` call racing in after draining began.
+let draining = false
+
+// Set by `setMemoryPressure`, driven by `memory-watch.ts`'s pressure/recovery callback —
+// purely a read for `admission()`; nothing here sheds already-running work.
+let memoryPressure = false
+
+// A loop, not a single dispatch: `release()` frees one slot at a time, but `setMemoryPressure`
+// releasing the brake can free several at once, and every free slot must be filled in that one
+// call or the backlog stalls until the next unrelated release.
 function tryDispatch(): void {
-  if (running < env.RESEARCH_MAX_CONCURRENCY && queue.length > 0) {
+  if (draining) return
+  while (
+    canDispatch({ memoryPressure, running, queued: queue.length, maxConcurrency: env.RESEARCH_MAX_CONCURRENCY })
+  ) {
     running++
-    const resolve = queue.shift()
-    resolve?.()
+    const waiter = queue.shift()
+    waiter?.resolve()
   }
 }
 
 function acquire(): Promise<void> {
-  if (running < env.RESEARCH_MAX_CONCURRENCY) {
+  if (!memoryPressure && running < env.RESEARCH_MAX_CONCURRENCY) {
     running++
     return Promise.resolve()
   }
-  return new Promise<void>((resolve) => {
-    queue.push(resolve)
+  return new Promise<void>((resolve, reject) => {
+    queue.push({ resolve, reject })
   })
 }
 
@@ -195,6 +250,50 @@ export async function withSlot<T>(fn: () => Promise<T>): Promise<T> {
   }
 }
 
-export function atCapacity(): boolean {
-  return running + queue.length >= env.RESEARCH_MAX_QUEUE
+export function admission(): AdmissionRefusal | null {
+  return admit({ draining, memoryPressure, running, queued: queue.length, maxQueue: env.RESEARCH_MAX_QUEUE })
+}
+
+export function isDraining(): boolean {
+  return draining
+}
+
+// Driven by `memory-watch.ts`'s cgroup sampler. Both directions matter: setting it stops
+// `tryDispatch` from starting queued work (see canDispatch), and clearing it must actively
+// restart dispatch — nothing else will, since the release that would normally trigger it
+// already happened while the brake was on.
+export function setMemoryPressure(under: boolean): void {
+  memoryPressure = under
+  if (!under) tryDispatch()
+}
+
+export function jobCounts(): { running: number; queued: number } {
+  return { running, queued: queue.length }
+}
+
+// Idempotent — a second SIGTERM must not re-reject an already-emptied queue. Rejects every
+// waiter still sitting in the semaphore queue: that job was created (it exists in the store
+// as 'queued') but never got a slot, so there is nothing running to wait for and nothing to
+// reap on the next boot — the honest answer is DRAIN_QUEUED_MESSAGE, not a hang. `run-job.ts`'s
+// `withSlot(...).catch(...)` (see startResearchJob) turns this rejection into `status: 'error'`
+// with that message.
+export function beginDraining(): void {
+  if (draining) return
+  draining = true
+  const waiters = queue.splice(0, queue.length)
+  for (const waiter of waiters) {
+    waiter.reject(new Error(DRAIN_QUEUED_MESSAGE))
+  }
+  log('job.drain_queued', { count: waiters.length })
+}
+
+// Polled by index.ts's shutdown path. Only `running` counts — the queue was already rejected
+// in `beginDraining`, so a job stuck there is already terminal, not something worth waiting on.
+export async function waitForDrain(deadlineMs: number): Promise<{ remaining: number; waitedMs: number }> {
+  const start = Date.now()
+  const deadline = start + deadlineMs
+  while (running > 0 && Date.now() < deadline) {
+    await new Promise<void>((resolve) => setTimeout(resolve, 250))
+  }
+  return { remaining: running, waitedMs: Date.now() - start }
 }

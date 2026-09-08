@@ -10,6 +10,7 @@ import { probeRoutes } from './routes/probe.js'
 import { log } from './lib/log.js'
 import { flushOtel } from './lib/otel.js'
 import { startMemoryWatch } from './lib/memory-watch.js'
+import { beginDraining, jobCounts, waitForDrain, setMemoryPressure } from './lib/job-store.js'
 
 // ── Process-level diagnostics ────────────────────────────────────────────────
 // On 2026-07-31 the container exited with code 0, mid-flight, during a deep job,
@@ -55,12 +56,53 @@ function flushThenExit(code: number): void {
   const flushDeadline = new Promise<void>((resolve) => setTimeout(resolve, 2_000))
   void Promise.race([flushOtel(), flushDeadline]).finally(() => process.exit(code))
 }
+// Guards drainThenExit against re-entry: a second SIGTERM while already draining must not
+// restart the wait from scratch (it would just extend an already-decided shutdown), but it
+// SHOULD short-circuit straight to flushThenExit — an operator sending a second signal is
+// explicitly asking to skip the wait, the same as `docker stop -t 0`.
+let shuttingDown = false
+
+// SIGTERM/SIGINT used to call flushThenExit(0) directly — every job running or queued died
+// mid-flight, which is exactly what a 2026-09-04 rolling deploy did to 11 of them. This now
+// stops admitting new work (`beginDraining`, read by `admission()` in job-store.ts) and gives
+// jobs already running up to SHUTDOWN_DRAIN_MS to finish before falling through to the same
+// flush-and-exit as before.
+async function drainThenExit(code: number): Promise<void> {
+  if (shuttingDown) {
+    flushThenExit(code)
+    return
+  }
+  shuttingDown = true
+
+  // Captured BEFORE beginDraining rejects the wait queue — after that, `queued` reads 0
+  // regardless of how many jobs were actually waiting when the signal arrived.
+  const { running, queued } = jobCounts()
+  // `drainMs` on the line, not just in env.ts: the drain is only real while it stays below the
+  // compose `stop_grace_period`, and that file lives in ANOTHER repo (vps). If the two ever
+  // drift apart, this is the log line that says so, instead of the drift only surfacing as a
+  // deploy that silently killed jobs again. `hint` for the local case — Ctrl+C during
+  // `bun run dev` with a job running would otherwise look like a hang.
+  log('process.draining', {
+    running,
+    queued,
+    drainMs: env.SHUTDOWN_DRAIN_MS,
+    hint: 'send the signal again to exit immediately',
+  })
+  beginDraining()
+
+  const { remaining, waitedMs } = await waitForDrain(env.SHUTDOWN_DRAIN_MS)
+  // Error severity when remaining > 0 (see otel-format.ts ERROR_EVENTS) — those are jobs
+  // still running when the deadline elapsed, about to be lost exactly like a reap.
+  log('process.drained', { remaining, waitedMs })
+  flushThenExit(code)
+}
+
 for (const signal of ['SIGTERM', 'SIGINT'] as const) {
   process.on(signal, () => {
     // A deploy or `docker stop` lands here — that must be distinguishable from a
     // mystery exit, which is exactly what could not be told apart on 2026-07-31.
     log('process.signal', { signal })
-    flushThenExit(0)
+    void drainThenExit(0)
   })
 }
 process.on('uncaughtException', (err) => {
@@ -80,7 +122,7 @@ process.on('unhandledRejection', (reason) => {
   const stack = reason instanceof Error ? reason.stack?.slice(0, 2_000) : undefined
   log('process.unhandledRejection', { reason: String(reason), stack })
 })
-startMemoryWatch()
+startMemoryWatch(setMemoryPressure)
 
 // Elysia's error `code` is either a named framework error ('VALIDATION' | 'NOT_FOUND' |
 // 'PARSE' | 'INVALID_COOKIE_SIGNATURE' | 'INVALID_FILE_TYPE' | 'INTERNAL_SERVER_ERROR' |

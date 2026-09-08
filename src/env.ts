@@ -75,6 +75,17 @@ const Env = z.object({
   RESEARCH_MAX_CONCURRENCY: z.coerce.number().default(3),
   RESEARCH_MAX_QUEUE: z.coerce.number().default(50),
   JOB_TTL_MINUTES: z.coerce.number().default(30),
+  // How long index.ts's shutdown path waits for RUNNING jobs to finish before force-exiting
+  // (see `drainThenExit`, `waitForDrain`). Safe to be generous: rollhook's rollout is
+  // start-new -> wait-healthy -> stop-old (rollhook/internal/jobs/steps/rollout.go:102-110,
+  // `container.StopOptions{}` with no timeout — Docker applies the compose `stop_grace_period`
+  // instead), so the OLD container draining for minutes only costs deploy-tail latency; the
+  // NEW container is already serving traffic, and both replicas share the same sqlite job
+  // store, so a client polling through the new container still sees the old replica's job
+  // finish. 10 minutes covers every observed real job (a measured `deep` run on 2026-09-08
+  // finished in 159s wall) while still bounding a wedged one. MUST stay strictly below the
+  // compose `stop_grace_period` (630s) or SIGKILL wins first and the drain buys nothing.
+  SHUTDOWN_DRAIN_MS: z.coerce.number().default(600_000),
   // bun:sqlite job store (status-only durability — see lib/job-db.ts). Relative default
   // resolves against the process CWD: the repo root in local dev, /app (the Dockerfile
   // WORKDIR) in the container, where the vps repo's apps/research-gateway/compose.yml mounts a

@@ -48,6 +48,11 @@ export type LogSeverity = 'info' | 'warn' | 'error'
  *   flushThenExit in index.ts — "console only"), so a severity there reaches no exporter,
  *   and a routine deploy's `process.exit code 0` would read as an error on the console for
  *   nothing. The exits that do flush are process.signal and process.uncaughtException.
+ *   process.drained is ERROR conditionally, by field rather than by name (unlike ERROR_EVENTS
+ *   below): a clean drain (remaining: 0) is the routine, expected shape of every deploy and
+ *   must not page anyone, but remaining > 0 means the shutdown deadline elapsed with jobs
+ *   still running — those are about to be lost exactly like a reap, so they get the same
+ *   severity.
  *
  *   WARN — the fields carry a truthy `error` key even when the event name doesn't say so
  *   (tool.fetchPage's per-attempt failure logs, tool.searchWeb's retry-exhausted log,
@@ -70,7 +75,8 @@ export function severityFor(event: string, fields: Record<string, unknown> = {})
     event.endsWith('.error') ||
     event.endsWith('.failed') ||
     event.includes('uncaughtException') ||
-    event.includes('unhandledRejection')
+    event.includes('unhandledRejection') ||
+    (event === 'process.drained' && typeof fields['remaining'] === 'number' && fields['remaining'] > 0)
   ) {
     return 'error'
   }

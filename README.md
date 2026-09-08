@@ -72,7 +72,18 @@ invisible at this call shape ([measurements](./docs/measurements.md#what-tavilyc
 
 Runs are **async**: submit returns a `jobId` immediately; poll until `status` is `done`
 (tens of seconds to ~28 minutes at `deep`). `RESEARCH_MAX_CONCURRENCY` caps concurrent jobs
-and `RESEARCH_MAX_QUEUE` the backlog; past it, submit returns 429.
+and `RESEARCH_MAX_QUEUE` the backlog.
+
+Submission is admission-controlled (`lib/admission.ts`, one pure decision function), and the
+refusal says which of three reasons it was, with a `Retry-After`:
+
+| Reason | Status | Meaning |
+|-|-|-|
+| `queue_full` | 429 | `running + queued >= RESEARCH_MAX_QUEUE` |
+| `memory_pressure` | 503 | the cgroup crossed 85% of the container limit — new work is shed so the jobs already running survive |
+| `draining` | 503 | SIGTERM arrived; this process is finishing what it has and starting nothing |
+
+Polling a job already submitted is never refused — only new work is.
 
 ## Grounding
 
@@ -142,6 +153,7 @@ do not mock env. `scripts/smoke.ts` runs one `runResearch()` end to end without 
 | `RESEARCH_MAX_CONCURRENCY` / `RESEARCH_MAX_QUEUE` | no (3 / 50) | concurrent *jobs* / accepted backlog |
 | `WORKER_MAX_CONCURRENCY` | no (8) | concurrent *workers within one job* |
 | `JOB_DB_PATH` | no (`./data/jobs.sqlite`) | `/app/data` in the container, a named volume |
+| `SHUTDOWN_DRAIN_MS` | no (600 000) | how long SIGTERM waits for RUNNING jobs before force-exiting. **Must stay below the compose `stop_grace_period` (630s)** or SIGKILL wins and the drain buys nothing |
 | `YTDLP_PATH` / `YTDLP_MAX_CONCURRENCY` / `YTDLP_TIMEOUT_MS` | no | bundled binary; concurrency 2 because YouTube rate-limits the datacenter IP under burst |
 
 Production values come from `vps/apps/research-gateway/.env.tpl` via `op inject`, which
@@ -226,13 +238,39 @@ Dashboard tiles and SQL: [`docs/hyperdx-dashboard.md`](./docs/hyperdx-dashboard.
 
 ## Restarts, and what they cost
 
-A restart takes every queued and running job with it — status-only durability means the agent's
-in-flight work is not resumed, and the next boot reaps any job whose heartbeat is >90s stale to a
-terminal `error` ("lost, resubmit"). That reap is the thing to watch:
+Status-only durability: the agent's in-flight work is never resumed, so a job that loses its
+process is lost. Two mechanisms keep that from being the normal case.
+
+**A deploy drains rather than kills.** SIGTERM stops admitting new jobs, rejects the ones still
+queued behind the concurrency semaphore with "never started — resubmit", and then waits up to
+`SHUTDOWN_DRAIN_MS` for the running ones to finish before flushing OTel and exiting. This is
+free because of the rollout order: rollhook starts the new container and waits for it to be
+healthy *before* stopping the old one, and both replicas write through to the same sqlite job
+store — so a client polling through the new container still sees the old replica's job reach
+`done`. The cost is a longer deploy tail when a job is in flight.
+
+The window is not unlimited, and the docs should not pretend otherwise: a `deep` job may run
+longer than `SHUTDOWN_DRAIN_MS`, and one that does still gets cut — the drain falls through to
+the same flush-and-exit as before, and Docker SIGKILLs shortly after. That is a smaller loss
+than the old behaviour (which killed *everything, always*) but it is not zero, and closing it
+needs agent-loop checkpointing, not a bigger timer. `process.drained` logs `remaining`, at
+**error** level when the deadline elapsed with jobs still running — that number is exactly how
+often this ceiling is being hit.
+
+**Memory pressure sheds instead of dying.** `lib/memory-watch.ts` samples the cgroup every 5 s;
+at 85% of the limit it logs `process.memory_pressure` *and* flips admission to refuse new jobs,
+re-arming (`process.memory_recovered`) below 75%. A watchdog that only logged is what the
+2026-09-04 OOM kill exposed — all three concurrent jobs died with the process because nothing
+upstream ever stopped admitting more.
+
+What survives neither is a SIGKILL. The next boot reaps any job whose heartbeat is >90s stale to
+a terminal `error` ("lost, resubmit"), and that reap is the thing to watch:
 
 - `job.reaped` is logged at **error** level with a `count` — the HyperDX alert fires on it.
-- `GET /health` carries `lastRestartAt`, `reaped` (this boot) and `interrupted` (this process
-  lifetime) for a keyword monitor without log access.
+- `GET /health` carries `lastRestartAt`, `reaped` (this boot), `interrupted` (this process
+  lifetime), `draining`, `jobs.running` / `jobs.queued` and the cgroup `memory` ratio — enough
+  for a keyword monitor with no log access to see load, shedding and shutdown state. Only
+  `status` gates anything; a draining container still serves polls correctly, so it stays `ok`.
 - **A kernel OOM kill leaves no container log line, and `docker inspect` on the restarted
   container reports `ExitCode: 0` / `OOMKilled: false`** — both describe the *current* run.
   That is how 2026-07-31 and 2026-09-04 both read as "mystery exit 0"; the VPS kernel journal
@@ -241,8 +279,9 @@ terminal `error` ("lost, resubmit"). That reap is the thing to watch:
   error level when the cgroup's `memory.current` crosses 85% of its limit (sampled every
   5 s, with the `memory.events` counters) — the only in-process warning a SIGKILL allows. `process.exit` / `beforeExit` / `uncaughtException` / `unhandledRejection`
   are logged too, for every exit that *is* in-process.
-- Markdown-only pushes do not deploy (`paths-ignore`); everything else does, so check
-  `/health/render` for `active: 0` before pushing code.
+- Markdown-only pushes do not deploy (`paths-ignore`); everything else does. With the drain in
+  place a deploy mid-job is survivable rather than destructive, but `GET /health`'s `jobs`
+  counts still tell you whether you are about to add ten minutes to the deploy tail.
 
 ## Deploy
 

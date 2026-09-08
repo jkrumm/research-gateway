@@ -55,6 +55,12 @@ export interface JobDb {
   put(job: JobRecord): void
   delete(jobId: string): void
   all(): JobRecord[]
+  /**
+   * One job by id, read fresh from the file. The in-memory cache in job-store.ts is hydrated
+   * once at boot and only kept current for jobs THIS process owns, so a job belonging to a
+   * sibling replica must be re-read here rather than trusted from that snapshot.
+   */
+  get(jobId: string): JobRecord | undefined
   /** Stamp the liveness heartbeat for a job. The only writer of `heartbeat_at`. */
   touchHeartbeat(jobId: string, heartbeatAt: number): void
   /**
@@ -146,6 +152,11 @@ export function openJobDb(dbPath: string): JobDb {
     'UPDATE job SET heartbeat_at = $heartbeatAt WHERE job_id = $jobId',
   )
 
+  // Single-row read by primary key. Exists for the one case the in-memory map cannot answer:
+  // a job owned by the OTHER replica during a rolling deploy, whose row this process only ever
+  // saw once (at boot) while the owner keeps writing to it. See job-store.ts's `getJob`.
+  const getStmt = db.prepare('SELECT * FROM job WHERE job_id = ?')
+
   const reapStmt = db.prepare(`
     UPDATE job SET status = 'error', error = $error, finished_at = $finishedAt
     WHERE status IN ('queued', 'running')
@@ -175,6 +186,11 @@ export function openJobDb(dbPath: string): JobDb {
 
     all(): JobRecord[] {
       return (db.query('SELECT * FROM job').all() as JobRow[]).map(toRecord)
+    },
+
+    get(jobId: string): JobRecord | undefined {
+      const row = getStmt.get(jobId) as JobRow | null
+      return row === null ? undefined : toRecord(row)
     },
 
     touchHeartbeat(jobId: string, heartbeatAt: number): void {

@@ -9,6 +9,14 @@ import { log } from './log.js'
 // `POST /research` route and the MCP `research` submit tool so the two stay in
 // lockstep. The caller retrieves the result by polling (REST `GET /research/:id`
 // or MCP `job_wait` / `job_status`) — this never blocks the submit response.
+// Both failure paths below end the same way, and they are far enough apart in the file to
+// drift: the inner one covers `runResearch` throwing, the outer one covers the job never
+// getting a slot at all (see the comment on the `.catch` below).
+function markFailed(jobId: string, err: unknown): void {
+  log('job.error', { jobId, error: String(err) })
+  updateJob(jobId, { status: 'error', error: String(err), finishedAt: Date.now() })
+}
+
 export function startResearchJob(job: Job): void {
   // Starts BEFORE `withSlot`, not inside it: `withSlot`'s `await acquire()` blocks until a
   // concurrency slot frees up, and with `RESEARCH_MAX_CONCURRENCY=3` and deep jobs running
@@ -55,9 +63,17 @@ export function startResearchJob(job: Job): void {
       )
       updateJob(job.jobId, { status: 'done', result, finishedAt: Date.now() })
     } catch (err) {
-      log('job.error', { jobId: job.jobId, error: String(err) })
       if (lastStats) emit(lastStats, 'error')
-      updateJob(job.jobId, { status: 'error', error: String(err), finishedAt: Date.now() })
+      markFailed(job.jobId, err)
     }
-  }).finally(() => stopHeartbeat())
+  })
+    .catch((err) => {
+      // The inner try/catch above only wraps `runResearch` — a job still waiting on `acquire()`
+      // (queued behind RESEARCH_MAX_CONCURRENCY) never reaches it. `beginDraining` (job-store.ts)
+      // rejects exactly that waiter on shutdown, and this is the only place that rejection can
+      // land: the job's status was never flipped to 'running', so without this it would sit at
+      // 'queued' until the heartbeat staleness reap caught it up to 90s later.
+      markFailed(job.jobId, err)
+    })
+    .finally(() => stopHeartbeat())
 }

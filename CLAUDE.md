@@ -49,21 +49,33 @@ regression against issue #1's case. Full model: README § Grounding.
 ## Deploy-on-push, and what it costs
 
 Push to `master` deploys via rollhook (label-driven, OIDC) unless the diff is
-markdown-only (`paths-ignore`). **A deploy kills every running job** — status-only job
-durability means in-flight work is not resumed; the reap terminal-errors anything whose
-heartbeat is >90s stale. Before pushing code: check `GET /health/render` shows `active: 0`
-and the job store has nothing running long. `deploy/DEPLOY.md` § Traps has the rest
-(`make research-gateway-redeploy`, never `down && up` — that rolls back to `:latest`).
+markdown-only (`paths-ignore`). A deploy no longer kills running jobs outright: SIGTERM
+**drains** —
+stops admitting, fails the still-queued ones with "never started, resubmit", and waits up to
+`SHUTDOWN_DRAIN_MS` (600s) for the running ones. That works only because rollhook starts the
+new container and waits for it to be healthy before stopping the old one, and both replicas
+share the same sqlite job store — a client polling the new container sees the old replica's
+job finish. It is real only while the compose `stop_grace_period` (630s, vps repo) stays
+above `SHUTDOWN_DRAIN_MS`; Docker's default 10s would SIGKILL through the whole drain.
+The cost is a longer deploy tail, so `GET /health`'s `jobs` counts are still worth a look. A
+job that outlives the window is still cut — `process.drained` with `remaining > 0` is the
+error-level line that says so, and closing that last gap needs agent-loop checkpointing.
+`deploy/DEPLOY.md` § Traps has the rest (`make research-gateway-redeploy`, never
+`down && up` — that rolls back to `:latest`).
 
-## Memory watchdog
+## Memory watchdog, and load shedding
 
-The VPS container runs at `mem_limit: 1g` (vps repo's compose). `src/lib/memory-watch.ts`
-logs `process.memory_pressure` at **error** severity when cgroup `memory.current` crosses
-85% of that limit — the only in-process warning a SIGKILL allows, since an OOM kill leaves
-no application log line (`docker inspect` reports the *restarted* container's `ExitCode: 0`).
-Two confirmed OOM kills (2026-07-31, 2026-09-04) both first looked like a mystery clean
+The VPS container runs at `mem_limit: 2g` (vps repo's compose, raised from 1g on 2026-09-08).
+`src/lib/memory-watch.ts` samples the cgroup every 5s; at 85% of the limit it logs
+`process.memory_pressure` at **error** severity *and* calls `setMemoryPressure(true)`, which
+makes `admission()` refuse new jobs with a 503 until it re-arms below 75%
+(`process.memory_recovered`). The log line is the only in-process warning a SIGKILL allows —
+an OOM kill leaves no application log (`docker inspect` reports the *restarted* container's
+`ExitCode: 0`) — but logging alone is what let the 2026-09-04 kill take all three concurrent
+jobs. Two confirmed OOM kills (2026-07-31, 2026-09-04) both first looked like a mystery clean
 exit; `ssh vps sudo journalctl -k | grep oom` is the actual record. `GET /health` carries
-`lastRestartAt` / `reaped` / `interrupted` for a keyword monitor with no log access.
+`lastRestartAt` / `reaped` / `interrupted` / `draining` / `jobs` / `memory` for a keyword
+monitor with no log access.
 
 ## Local dev
 
@@ -91,7 +103,10 @@ Anything importing `env.ts` is untested by design — factor pure logic out inst
 - `src/agent/fetch-chain.ts` + `site-adapters.ts` + `lightpanda.ts` + `archive.ts` — the
   5-step `fetchPage` chain (Readability → site adapter → lightpanda sidecar → Tavily
   Extract → Wayback)
-- `src/lib/job-store.ts` + `job-db.ts` — sqlite job durability + heartbeat reaping
+- `src/lib/job-store.ts` + `job-db.ts` — sqlite job durability + heartbeat reaping; also owns
+  the drain (`beginDraining` / `waitForDrain`) and the admission state
+- `src/lib/admission.ts` — the pure "may a new job start" decision (draining > memory pressure
+  > queue full); `memory-watch.ts` feeds it, `index.ts`'s SIGTERM path flips it
 - `src/lib/otel.ts` + `otel-format.ts` — SDK-free OTLP export, job id = trace id
 - `src/lib/cost.ts` + `usage.ts` — per-job spend, reported to argo
 - `lightpanda/` — the rendering sidecar, its own Dockerfile and deploy workflow

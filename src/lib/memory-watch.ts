@@ -54,7 +54,25 @@ function readCgroupEvents(): { max: number; oom: number } | null {
   }
 }
 
-export function startMemoryWatch(): void {
+// Read on demand by `/health` (via `memorySnapshot`) — same cgroup files the watch timer
+// samples, exposed as a pure read with no side effect. `null` off-cgroup (unreadable, or
+// `memory.max` is 0/absent) — every local dev run and every test run.
+export function memorySnapshot(): { currentBytes: number; limitBytes: number; ratio: number } | null {
+  const limitBytes = readCgroupNumber('memory.max')
+  if (limitBytes === null || limitBytes === 0) return null
+  const currentBytes = readCgroupNumber('memory.current')
+  if (currentBytes === null) return null
+  return { currentBytes, limitBytes, ratio: currentBytes / limitBytes }
+}
+
+// `onPressureChange` is how the watchdog stops being observability-only and starts shedding
+// load: `index.ts` wires it straight to `job-store.ts`'s `setMemoryPressure`, which
+// `admission()` reads on every new job. Called exactly on each transition — `true` the
+// moment the ratio crosses PRESSURE_RATIO (same place the pressure line already logged),
+// `false` when it re-arms below REARM_RATIO. Required, not optional: a watchdog that only
+// logs is the exact gap the 2026-09-04 OOM kill exposed (all 3 concurrent jobs died with the
+// process because nothing upstream ever stopped admitting more).
+export function startMemoryWatch(onPressureChange: (under: boolean) => void): void {
   const limitBytes = readCgroupNumber('memory.max')
   if (limitBytes === null || limitBytes === 0) return
 
@@ -73,9 +91,16 @@ export function startMemoryWatch(): void {
         eventsMax: events?.max,
         eventsOom: events?.oom,
       })
+      onPressureChange(true)
       return
     }
-    if (!armed && ratio < REARM_RATIO) armed = true
+    if (!armed && ratio < REARM_RATIO) {
+      armed = true
+      // Invisible today without this: the pressure line above is unreadable in isolation —
+      // it says load was shed, never says when it stopped being necessary.
+      log('process.memory_recovered', { currentBytes, limitBytes, ratio: Number(ratio.toFixed(3)) })
+      onPressureChange(false)
+    }
   }, SAMPLE_INTERVAL_MS)
   // Unref'd like every other housekeeping timer here: it must never be what keeps the
   // process alive.

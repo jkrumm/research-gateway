@@ -1,7 +1,7 @@
 import { Elysia } from 'elysia'
 import { z } from 'zod'
 import { ResearchInput, ResearchReport } from '../agent/schema.js'
-import { atCapacity, createJob, getJob } from '../lib/job-store.js'
+import { admission, createJob, getJob } from '../lib/job-store.js'
 import { startResearchJob } from '../lib/run-job.js'
 import { log } from '../lib/log.js'
 import { env } from '../env.js'
@@ -9,10 +9,12 @@ import { env } from '../env.js'
 export const researchRoutes = new Elysia({ prefix: '/research' })
   .post(
     '/',
-    ({ body, status }) => {
-      if (atCapacity()) {
-        log('job.rejected', { reason: 'at_capacity' })
-        return status(429, { error: 'Research queue is full, retry shortly' })
+    ({ body, status, set }) => {
+      const refusal = admission()
+      if (refusal) {
+        log('job.rejected', { reason: refusal.reason })
+        set.headers['Retry-After'] = String(refusal.retryAfterSeconds)
+        return status(refusal.httpStatus, { error: refusal.message })
       }
       const depth = body.depth ?? 'standard'
       const job = createJob({ query: body.query, depth })
@@ -31,6 +33,7 @@ export const researchRoutes = new Elysia({ prefix: '/research' })
           status: z.string(),
         }),
         429: z.object({ error: z.string() }),
+        503: z.object({ error: z.string() }),
       },
       detail: {
         tags: ['Research'],

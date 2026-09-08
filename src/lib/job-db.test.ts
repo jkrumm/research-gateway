@@ -215,6 +215,43 @@ describe('openJobDb — heartbeat-based reaping', () => {
   })
 })
 
+// `get()` is what job-store.ts's `getJob` reaches for when the polled job belongs to the OTHER
+// replica of a rolling deploy: its in-memory copy of that job is frozen at boot while the owner
+// keeps heartbeating the row, so trusting the cache reaped a live job out from under it.
+describe('openJobDb — single-row read', () => {
+  it('returns undefined for a job id that was never written', () => {
+    const db = openJobDb(':memory:')
+    expect(db.get(crypto.randomUUID())).toBeUndefined()
+    db.close()
+  })
+
+  it('reads back a row the same shape all() gives, result included', () => {
+    const db = openJobDb(':memory:')
+    const id = crypto.randomUUID()
+    const record = job({ jobId: id, status: 'done', result: report(), finishedAt: Date.now() })
+    db.put(record)
+
+    const got = db.get(id)
+    expect(got?.status).toBe('done')
+    expect(got?.result).toEqual(record.result as ResearchReport)
+    expect(got).toEqual(db.all().find((j) => j.jobId === id) as JobRecord)
+    db.close()
+  })
+
+  it('sees a heartbeat written after the row was read once — the whole reason it exists', () => {
+    const db = openJobDb(':memory:')
+    const id = crypto.randomUUID()
+    db.put(job({ jobId: id, status: 'running', startedAt: Date.now() }))
+    const beforeTouch = db.get(id)
+    expect(beforeTouch?.heartbeatAt).toBeUndefined()
+
+    const now = Date.now()
+    db.touchHeartbeat(id, now)
+    expect(db.get(id)?.heartbeatAt).toBe(now)
+    db.close()
+  })
+})
+
 describe('openJobDb — schema migration', () => {
   it('opens a database file created before heartbeat_at existed without crashing, and migrates it', () => {
     const dbPath = tmpDbPath()

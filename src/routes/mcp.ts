@@ -2,7 +2,7 @@ import { Elysia } from 'elysia'
 import { createMcpHandler, McpServer } from '@modelcontextprotocol/server'
 import { z } from 'zod'
 import { Depth, JobHandle, JobState, type ResearchReport } from '../agent/schema.js'
-import { atCapacity, createJob, getJob, type Job } from '../lib/job-store.js'
+import { admission, createJob, getJob, type Job } from '../lib/job-store.js'
 import { startResearchJob } from '../lib/run-job.js'
 import { env } from '../env.js'
 import { log } from '../lib/log.js'
@@ -103,9 +103,10 @@ function buildMcpServer(): McpServer {
       outputSchema: JobHandle,
     },
     async (args): Promise<CallToolResult> => {
-      if (atCapacity()) {
+      const refusal = admission()
+      if (refusal) {
         return {
-          content: [{ type: 'text', text: 'Research gateway at capacity — retry shortly.' }],
+          content: [{ type: 'text', text: refusal.message }],
           isError: true,
         }
       }

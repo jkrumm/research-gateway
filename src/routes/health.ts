@@ -2,7 +2,8 @@ import { Elysia } from 'elysia'
 import { z } from 'zod'
 import { env } from '../env.js'
 import { fetchTavilyUsage } from '../lib/tavily-account.js'
-import { restartStats } from '../lib/job-store.js'
+import { restartStats, isDraining, jobCounts } from '../lib/job-store.js'
+import { memorySnapshot } from '../lib/memory-watch.js'
 
 async function readYtdlpVersion(): Promise<string> {
   const proc = Bun.spawn([env.YTDLP_PATH, '--version'], {
@@ -23,22 +24,47 @@ export const healthRoute = new Elysia()
   // The restart fields are visibility for a keyword monitor: `reaped` > 0 means this boot found
   // queued/running jobs with a stale heartbeat — the process before it died without finishing
   // them (2026-09-04: a cgroup OOM kill, 15 jobs). They reset on the next clean deploy.
-  .get('/health', () => ({ status: 'ok' as const, ...restartStats() }), {
-    response: z.object({
-      status: z.literal('ok'),
-      lastRestartAt: z.string().describe('ISO time this process booted — the last (re)start'),
-      reaped: z.number().describe('Jobs reaped as interrupted at this boot (stale heartbeat)'),
-      interrupted: z
-        .number()
-        .describe('Jobs reaped in this process lifetime: the boot reap plus any reaped later on read'),
+  .get(
+    '/health',
+    () => ({
+      status: 'ok' as const,
+      ...restartStats(),
+      draining: isDraining(),
+      jobs: jobCounts(),
+      memory: memorySnapshot(),
     }),
-    detail: {
-      tags: ['System'],
-      summary: 'Liveness probe',
-      description:
-        'Returns `{ status: "ok" }` if the service process is up, plus `lastRestartAt` and the `reaped` / `interrupted` job counts of this process lifetime — an unclean restart shows as `reaped` > 0 until the next deploy. Only `status` gates anything (Docker healthcheck, rollhook); the counts exist for a keyword monitor. No auth required.',
+    {
+      response: z.object({
+        status: z.literal('ok'),
+        lastRestartAt: z.string().describe('ISO time this process booted — the last (re)start'),
+        reaped: z.number().describe('Jobs reaped as interrupted at this boot (stale heartbeat)'),
+        interrupted: z
+          .number()
+          .describe('Jobs reaped in this process lifetime: the boot reap plus any reaped later on read'),
+        draining: z
+          .boolean()
+          .describe('True once SIGTERM/SIGINT began a graceful drain — new jobs are being refused'),
+        jobs: z.object({
+          running: z.number().describe('Jobs currently holding a concurrency slot'),
+          queued: z.number().describe('Jobs waiting for a concurrency slot'),
+        }),
+        memory: z
+          .object({
+            currentBytes: z.number(),
+            limitBytes: z.number(),
+            ratio: z.number(),
+          })
+          .nullable()
+          .describe('cgroup memory usage against its limit; null off-cgroup (local dev, tests)'),
+      }),
+      detail: {
+        tags: ['System'],
+        summary: 'Liveness probe',
+        description:
+          'Returns `{ status: "ok" }` if the service process is up, plus `lastRestartAt` and the `reaped` / `interrupted` job counts of this process lifetime — an unclean restart shows as `reaped` > 0 until the next deploy. `draining`, `jobs`, and `memory` are monitor-facing visibility into load and shutdown state, added alongside the restart fields. Only `status` gates anything (Docker healthcheck, rollhook) — a draining container still serves polls correctly, so none of the new fields degrade it. No auth required.',
+      },
     },
-  })
+  )
   // DELIBERATELY a separate path from `/health`, not a field on it.
   //
   // `/health` is what the Docker healthcheck and rollhook's rollout gate read. The renderer

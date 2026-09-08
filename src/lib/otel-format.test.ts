@@ -60,6 +60,14 @@ describe('severityFor', () => {
     expect(severityFor('process.beforeExit', { code: 0 })).toBe('info')
   })
 
+  it('is error for process.drained when jobs were still running past the shutdown deadline', () => {
+    expect(severityFor('process.drained', { remaining: 2, waitedMs: 600_000 })).toBe('error')
+  })
+
+  it('is NOT error for process.drained on a clean drain', () => {
+    expect(severityFor('process.drained', { remaining: 0, waitedMs: 1_200 })).toBe('info')
+  })
+
   it('is warn when fields carry a truthy error key, even without a matching event name', () => {
     expect(severityFor('tool.fetchPage', { error: 'HTTP 403' })).toBe('warn')
     expect(severityFor('tool.searchWeb', { error: 'search failed: timeout' })).toBe('warn')
