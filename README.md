@@ -71,7 +71,8 @@ dashboard report one number. `tavilyCredits` counts **search only**; extraction 
 invisible at this call shape ([measurements](./docs/measurements.md#what-tavilycredits-cannot-see)).
 
 Runs are **async**: submit returns a `jobId` immediately; poll until `status` is `done`
-(measured p50: quick 38s, standard 111s, deep 366s — full distribution under Restarts). `RESEARCH_MAX_CONCURRENCY` caps concurrent jobs
+(measured p50: quick 38s, standard 111s, deep 366s —
+[full distribution](./docs/measurements.md#job-duration-by-depth--the-30-day-span-record)). `RESEARCH_MAX_CONCURRENCY` caps concurrent jobs
 and `RESEARCH_MAX_QUEUE` the backlog.
 
 Submission is admission-controlled (`lib/admission.ts`, one pure decision function), and the
@@ -249,20 +250,15 @@ healthy *before* stopping the old one, and both replicas write through to the sa
 store — so a client polling through the new container still sees the old replica's job reach
 `done`. The cost is a longer deploy tail when a job is in flight.
 
-The window is sized off the measured distribution, not a guess. 30 days of `research.done` in
-ClickStack (159 jobs):
-
-| depth | n | p50 | p90 | p95 | max | over 600s |
-|-|-:|-:|-:|-:|-:|-:|
-| quick | 26 | 38s | 55s | 68s | 94s | 0 |
-| standard | 71 | 111s | 259s | 322s | 628s | 1 |
-| deep | 62 | 366s | 1133s | 1181s | 1237s | **24 (39%)** |
-
-The first value here was 600s, sized off a single fast run, and it would have missed four out of
-ten deep jobs. At 1800s the observed maximum clears with headroom, and the ceiling stops being
-this number: a deep job's own summed phase timeouts cap it near 34 minutes anyway. A job that
-still outruns the window gets cut — `process.drained` logs `remaining` at **error** level when
-that happens, which is the number to re-read before anyone argues for agent-loop checkpointing.
+The window is sized off the measured distribution, not a guess:
+[docs/measurements.md § Job duration](./docs/measurements.md#job-duration-by-depth--the-30-day-span-record)
+is the single source for those numbers and the place to re-derive them. The short version is
+why the first value was wrong — 600s came from one fast deep run, and the span record says it
+would have missed 39% of deep jobs. At 1800s the observed maximum clears with headroom, and the
+ceiling stops being this number: a deep job's own summed phase timeouts cap it near 34 minutes
+anyway. A job that still outruns the window gets cut — `process.drained` logs `remaining` at
+**error** level when that happens, which is the number to re-read before anyone argues for
+agent-loop checkpointing.
 
 **Memory pressure sheds instead of dying.** `lib/memory-watch.ts` samples the cgroup every 5 s;
 at 85% of the limit it logs `process.memory_pressure` *and* flips admission to refuse new jobs,
@@ -317,11 +313,13 @@ timer — ever sees an idle connection.
 
 The client side is one setting. In Claude Code, the per-server `timeout` in its MCP entry is a
 hard wall-clock cap **and** the floor on its own idle timeout (5 minutes for HTTP by default);
-progress notifications do **not** raise that floor, only the `timeout` does. Set it above the
-longest job you expect — 40 minutes clears the ~34-minute structural ceiling a `deep` job has:
+progress notifications do **not** raise that floor, only the `timeout` does. Size it against
+**queue wait plus execution**, not execution alone: with `RESEARCH_MAX_CONCURRENCY=3` a fourth
+deep job waits for a slot before it starts running, and a budget that only covers the ~34-minute
+execution ceiling would abort a perfectly healthy call during a backlog.
 
 ```jsonc
-"research-gateway": { "type": "http", "url": "https://research.jkrumm.com/mcp", "timeout": 2400000 }
+"research-gateway": { "type": "http", "url": "https://research.jkrumm.com/mcp", "timeout": 7200000 }
 ```
 
 A call still running after two minutes moves to a Claude Code background task

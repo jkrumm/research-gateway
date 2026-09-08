@@ -24,6 +24,10 @@ import type { CallToolResult } from '@modelcontextprotocol/server'
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
 
+// One progress notification per 5 polls — ~10s, comfortably inside any client idle window and
+// inside the SDK's 15s keep-alive, without one frame every two seconds for twenty minutes.
+const PROGRESS_EVERY_N_TICKS = 5
+
 // Inline the report + citations + sources so text-only MCP clients get the full
 // picture even if they ignore structuredContent.
 function reportText(report: ResearchReport): string {
@@ -154,7 +158,12 @@ function buildMcpServer(): McpServer {
       while (shouldKeepWaiting({ status: job.status, now: Date.now(), deadline, aborted: signal.aborted })) {
         await sleep(POLL_INTERVAL_MS)
         tick++
-        if (progressToken !== undefined) {
+        // Not every tick. The 2s poll cadence is for status freshness; the notification is for
+        // the human watching, and the connection is kept alive by the SDK's own 15s SSE frames
+        // rather than by this. At one notification per tick a 20-minute wait would emit ~600
+        // frames — a cadence tuned for a 50s cap, left in place for a wait that now runs for
+        // the whole job.
+        if (progressToken !== undefined && tick % PROGRESS_EVERY_N_TICKS === 0) {
           const secs = Math.round((Date.now() - (job.startedAt ?? job.createdAt)) / 1000)
           // Heartbeat keeps the HTTP stream warm and surfaces progress to the client.
           // Best-effort: never let a notification failure abort the wait.

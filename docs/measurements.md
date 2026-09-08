@@ -86,6 +86,25 @@ Sonar asserts can be cited as verified. `max_tokens` is pinned at 16 (the API's 
 below that) to pay for as little discarded generation as possible.
 
 
+## Job duration, by depth — the 30-day span record
+
+Production spans, `research.done` in ClickStack, 2026-08-09 to 2026-09-08. 159 jobs over 17
+active days (13 days had none), so treat the deep tail as a low-sample estimate.
+
+| depth | n | p50 | p90 | p95 | max | over 600s |
+|-|-:|-:|-:|-:|-:|-:|
+| quick | 26 | 38s | 55s | 68s | 94s | 0 |
+| standard | 71 | 111s | 259s | 322s | 628s | 1 |
+| deep | 62 | 366s | 1133s | 1181s | 1237s | **24 (39%)** |
+
+This table decides two configured numbers, and it corrected both. `SHUTDOWN_DRAIN_MS` was first
+set to 600s from a single 159s deep run — it would have missed four out of ten deep jobs, so it
+is 1800s (compose `stop_grace_period` 1860s). And the long-standing "~28 minutes at deep" figure
+asserted across this repo was never measured: the real maximum is 1237s, ~21 minutes. Both
+mistakes have the same shape — a number quoted from one run. Re-read this table before changing
+either, and re-derive it after any change to depth routing, since deep wall time tracks
+`rounds` x `workers`.
+
 ## Measured baseline
 
 `standard`, 15 runs — 5 heterogeneous queries x 3 repetitions via

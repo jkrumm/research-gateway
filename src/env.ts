@@ -76,25 +76,23 @@ const Env = z.object({
   RESEARCH_MAX_QUEUE: z.coerce.number().default(50),
   JOB_TTL_MINUTES: z.coerce.number().default(30),
   // How long index.ts's shutdown path waits for RUNNING jobs to finish before force-exiting
-  // (see `drainThenExit`, `waitForDrain`). Safe to be generous: rollhook's rollout is
-  // start-new -> wait-healthy -> stop-old (rollhook/internal/jobs/steps/rollout.go:102-110,
-  // `container.StopOptions{}` with no timeout — Docker applies the compose `stop_grace_period`
-  // instead), so the OLD container draining for minutes only costs deploy-tail latency; the
-  // NEW container is already serving traffic, and both replicas share the same sqlite job
-  // store, so a client polling through the new container still sees the old replica's job
-  // finish. 10 minutes covers every observed real job (a measured `deep` run on 2026-09-08
-  // finished in 159s wall) while still bounding a wedged one. MUST stay strictly below the
-  // compose `stop_grace_period` (1860s) or SIGKILL wins first and the drain buys nothing.
+  // (see `drainThenExit`, `waitForDrain`).
   //
-  // 600s was the first value here and it was sized off ONE observation. The 30-day span record
-  // (159 jobs, ClickStack) says otherwise: deep is p50 366s / p90 1133s / p95 1181s / max
-  // 1237s, and **24 of 62 deep jobs — 39% — ran longer than 600s**. Standard (p50 111s, 1 of 71
-  // over 600s) and quick (max 94s) were always covered; deep never was. 1800s clears the
-  // observed max with headroom and stays under the ~34-min structural ceiling a deep job has
-  // from its own summed phase timeouts (depth.ts), so the window is bounded by the job, not by
-  // this number. The cost is paid only when a deploy actually lands on a running deep job: the
-  // old container lives that much longer while the new one already serves. Traffic is 159 jobs
-  // / 30 days, 13 of those days idle — that is a rare collision.
+  // Being generous is nearly free: rollhook's rollout is start-new -> wait-healthy -> stop-old
+  // (rollhook/internal/jobs/steps/rollout.go:102-110, `container.StopOptions{}` with no timeout,
+  // so Docker applies the compose `stop_grace_period`), which means a long drain costs only
+  // deploy-tail latency — the new container is already serving, and both replicas share the
+  // same sqlite job store, so a client polling the new one still sees the old replica's job
+  // finish.
+  //
+  // **Size it off docs/measurements.md § Job duration, never off one run.** The first value
+  // here was 600s, taken from a single fast deep run, and the span record says that would have
+  // missed 39% of deep jobs. 1800s clears the measured maximum and stays under the ~34-minute
+  // structural ceiling a deep job already has from its own summed phase timeouts (depth.ts),
+  // so the bound is the job rather than this number.
+  //
+  // MUST stay strictly below the compose `stop_grace_period` (1860s, vps repo) or SIGKILL wins
+  // first and the drain buys nothing. `process.boot` logs this value so the drift is visible.
   SHUTDOWN_DRAIN_MS: z.coerce.number().default(1_800_000),
   // bun:sqlite job store (status-only durability — see lib/job-db.ts). Relative default
   // resolves against the process CWD: the repo root in local dev, /app (the Dockerfile

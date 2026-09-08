@@ -132,10 +132,12 @@ export const profiles: Record<Depth, DepthProfile> = {
   deep: {
     workers: 8,
     // Gap rounds are sequential wall-clock: round 1 carries the substance, later rounds
-    // chase footnotes. Two rounds, not three — a measured deep run took 17-28 minutes,
-    // and the third round is the least valuable slice of that (it chases what two rounds
-    // of eight-then-three workers already missed) while costing a full sequential round
-    // of worker timeout plus its Tavily credits. Raise it back if coverage visibly suffers.
+    // chase footnotes. Two rounds, not three — over 30 days of production spans a deep run
+    // is p50 366s / p95 1181s / max 1237s (docs/measurements.md), and the third round is the
+    // least valuable slice of that (it chases what two rounds of eight-then-three workers
+    // already missed) while costing a full sequential round of worker timeout plus its Tavily
+    // credits. Raise it back if coverage visibly suffers — and re-measure that table if you do,
+    // since deep wall time tracks rounds x workers directly.
     gapWorkers: 3,
     rounds: 2,
     workerMaxSteps: 9,

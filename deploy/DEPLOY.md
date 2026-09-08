@@ -95,9 +95,17 @@ For the renderer, the check that matters is a page whose text is not in its HTML
 
 ## Traps
 
-- **Pushing to master deploys and kills running jobs.** Check `/health/render` shows
-  `active: 0` and the job store has nothing running first. Markdown-only pushes are ignored
-  by the workflow (`paths-ignore`).
+- **Pushing to master deploys.** Since 2026-09-08 that drains rather than kills: SIGTERM stops
+  admitting, fails still-queued jobs with "never started, resubmit", and waits up to
+  `SHUTDOWN_DRAIN_MS` for the running ones. A job that outruns the window is still lost, so
+  `GET /health`'s `jobs` counts are worth a look — a running deep job adds up to 30 minutes of
+  deploy tail. Markdown-only pushes are ignored by the workflow (`paths-ignore`).
+- **`SHUTDOWN_DRAIN_MS` (this repo) must stay below `stop_grace_period` (vps repo), and the
+  ORDER matters.** Raising the drain window means landing the vps compose change FIRST
+  (`git pull` on the VPS, `make research-gateway-up`) and the code second. Do it the other way
+  round and Docker SIGKILLs through the longer drain — which produces the silent
+  mystery-exit shape this service has already chased twice. `process.boot` logs the configured
+  `drainMs` at every start, so the current value is always on the record.
 - **`make research-gateway-down && up` rolls code back** — it recreates from `:latest`,
   which RollHook never updates. Use `make research-gateway-redeploy`, also the documented way
   to apply a compose change.
@@ -106,11 +114,14 @@ For the renderer, the check that matters is a page whose text is not in its HTML
 - **compose `image:` needs the nested `${IMAGE_TAG:-…}`** or RollHook's validator rejects the
   service and silently stops shipping it.
 - **`mem_limit` and `RESEARCH_MAX_CONCURRENCY` are one decision.** The container was
-  OOM-killed at exactly 1 GiB on 2026-09-04 (15 jobs reaped at the restart) and wedged at
+  OOM-killed at exactly 1 GiB on 2026-09-04 (11 jobs reaped at the restart) and wedged at
   512 MiB on 2026-08-06; a kernel kill leaves no container log line — `journalctl -k | grep
-  oom` on the host is the record, `process.memory_pressure` in HyperDX the warning.
+  oom` on the host is the record, `process.memory_pressure` in HyperDX the warning. The limit
+  is 2 GiB since 2026-09-08, and the watchdog now sheds new work at 85% instead of only
+  logging — but shedding cannot protect the jobs already running, only headroom can.
 - **Job store durability is status-only.** A `done` result survives a redeploy; a job caught
-  mid-run comes back as a terminal `error` once its heartbeat is >90s stale — never as a
+  mid-run — one that outran the drain — comes back as a terminal `error` once its heartbeat is
+  >90s stale — never as a
   blanket "everything running at boot is dead", because rollhook's overlap has both replicas
   on the same sqlite file and the old one may still be genuinely working.
 - **The SSRF guard (`src/lib/ssrf.ts`) is load-bearing** — the gateway fetches pages itself.

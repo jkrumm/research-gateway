@@ -62,6 +62,10 @@ function flushThenExit(code: number): void {
 // explicitly asking to skip the wait, the same as `docker stop -t 0`.
 let shuttingDown = false
 
+// Long enough for an in-flight MCP response to reach the socket after the job that produced it
+// released its slot, short enough that it is invisible next to the drain itself.
+const RESPONSE_FLUSH_MS = 2_000
+
 // SIGTERM/SIGINT used to call flushThenExit(0) directly — every job running or queued died
 // mid-flight, which is exactly what a 2026-09-04 rolling deploy did to 11 of them. This now
 // stops admitting new work (`beginDraining`, read by `admission()` in job-store.ts) and gives
@@ -94,6 +98,15 @@ async function drainThenExit(code: number): Promise<void> {
   // Error severity when remaining > 0 (see otel-format.ts ERROR_EVENTS) — those are jobs
   // still running when the deadline elapsed, about to be lost exactly like a reap.
   log('process.drained', { remaining, waitedMs })
+
+  // `waitForDrain` watches the job SLOT, which frees the moment the agent loop returns — before
+  // the MCP `job_wait` holding that job's result has written its response back. Exiting on that
+  // instant would sever an open SSE stream at exactly the moment the drain exists to protect,
+  // handing the caller a broken connection for a job that actually succeeded. Not data loss
+  // (the result is in sqlite, `GET /research/:jobId` still has it), but it defeats "one
+  // job_wait call is the whole interaction". A short settle window is enough — this is a flush,
+  // not a second drain.
+  await new Promise<void>((resolve) => setTimeout(resolve, RESPONSE_FLUSH_MS))
   flushThenExit(code)
 }
 
@@ -123,6 +136,12 @@ process.on('unhandledRejection', (reason) => {
   log('process.unhandledRejection', { reason: String(reason), stack })
 })
 startMemoryWatch(setMemoryPressure)
+// The drain window is only real while the compose `stop_grace_period` (vps repo) stays above
+// it, and those two numbers live in two repos. If they ever drift the wrong way, Docker
+// SIGKILLs before `drainThenExit` gets to log anything — the identical silent shape this file
+// was instrumented to eliminate. Logging it at BOOT means the value is on the record before a
+// shutdown needs it.
+log('process.boot', { drainMs: env.SHUTDOWN_DRAIN_MS, pid: process.pid })
 
 // Elysia's error `code` is either a named framework error ('VALIDATION' | 'NOT_FOUND' |
 // 'PARSE' | 'INVALID_COOKIE_SIGNATURE' | 'INVALID_FILE_TYPE' | 'INTERNAL_SERVER_ERROR' |

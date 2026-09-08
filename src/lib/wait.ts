@@ -14,10 +14,19 @@
 //      MCP entry, which is also the floor on its 5-minute HTTP idle timeout — progress
 //      notifications do NOT extend that idle window, the keep-alive stream is what does.
 //
-// So the wait is unbounded BY DEFAULT and terminates on the only thing that always happens: the
-// job reaching a terminal status. That is guaranteed independently of this file — a job is
-// capped by its own summed phase timeouts (agent/depth.ts) and, failing that, reaped once its
-// heartbeat goes stale (lib/job-store.ts). `maxWaitMs` stays available for a caller that wants a
+// So the wait is unbounded BY DEFAULT and terminates on the job reaching a terminal status.
+// What guarantees that is NOT this file, and not the heartbeat reaper either — be precise about
+// which backstop covers what, because they are not interchangeable:
+//
+//   - A job whose PROCESS died is caught by the heartbeat going stale (lib/job-store.ts). That
+//     is the only case the reaper sees.
+//   - A job whose process is alive but stuck is caught by its own phase timeouts — every LLM
+//     call is armed with `AbortSignal.timeout` (agent/plan.ts, worker.ts, synthesize.ts) and
+//     `run-job.ts` turns the resulting rejection into a terminal `error`. The reaper cannot see
+//     this case at all: the process is fine and keeps heartbeating.
+//
+// If an abort signal ever failed to fire, there would be no server-side ceiling left — the old
+// 55s cap used to paper over that. The client's own wall-clock timeout is the last line. `maxWaitMs` stays available for a caller that wants a
 // bounded peek, but nothing imposes one on its behalf.
 //
 // Pure and `env`-free so both rules are unit-testable — same convention as `admission.ts`.
