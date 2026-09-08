@@ -8,7 +8,7 @@
 # Base is DEBIAN, not the alpine the gateway uses, and that is not a preference: the lightpanda
 # binary is dynamically linked against glibc (libc.so.6, ld-linux-x86-64.so.2), so it cannot
 # execute on musl at all. Verified with `ldd` on the release asset before this was written.
-FROM oven/bun:1.3-slim AS runner
+FROM oven/bun:1.4-slim AS runner
 
 # Pinned to a tagged release rather than the `nightly` tag the docs point at. Nightly is a
 # moving asset behind a fixed URL: the same build would pull different bytes on different days,

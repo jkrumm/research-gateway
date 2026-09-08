@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-FROM oven/bun:1.3-alpine AS builder
+FROM oven/bun:1.4-alpine AS builder
 WORKDIR /app
 
 COPY package.json bun.lock ./
@@ -11,7 +11,7 @@ RUN --mount=type=cache,target=/root/.bun/install/cache \
 COPY tsconfig.json ./
 COPY src ./src
 
-FROM oven/bun:1.3-alpine AS runner
+FROM oven/bun:1.4-alpine AS runner
 WORKDIR /app
 
 RUN apk add --no-cache curl ca-certificates \
@@ -21,7 +21,7 @@ RUN apk add --no-cache curl ca-certificates \
 # yt-dlp — a binary in the image, not an npm dependency (agent/ytdlp.ts spawns it directly).
 # Pinned, not `latest`, so a bump is deliberate and one line to change.
 ARG YTDLP_VERSION=2026.07.04
-# MUST be the `_musllinux` asset: this image is `oven/bun:1.3-alpine` (musl libc), and the
+# MUST be the `_musllinux` asset: this image is `oven/bun:1.4-alpine` (musl libc), and the
 # glibc `yt-dlp_linux` build does not run on it. Verified on the VPS 2026-08-06: the
 # musllinux binary's `--version` works inside this exact base image and produced 55,067
 # bytes of subtitles; the shape of the failure a glibc binary would hit here was not
