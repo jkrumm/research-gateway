@@ -84,8 +84,18 @@ const Env = z.object({
   // store, so a client polling through the new container still sees the old replica's job
   // finish. 10 minutes covers every observed real job (a measured `deep` run on 2026-09-08
   // finished in 159s wall) while still bounding a wedged one. MUST stay strictly below the
-  // compose `stop_grace_period` (630s) or SIGKILL wins first and the drain buys nothing.
-  SHUTDOWN_DRAIN_MS: z.coerce.number().default(600_000),
+  // compose `stop_grace_period` (1860s) or SIGKILL wins first and the drain buys nothing.
+  //
+  // 600s was the first value here and it was sized off ONE observation. The 30-day span record
+  // (159 jobs, ClickStack) says otherwise: deep is p50 366s / p90 1133s / p95 1181s / max
+  // 1237s, and **24 of 62 deep jobs — 39% — ran longer than 600s**. Standard (p50 111s, 1 of 71
+  // over 600s) and quick (max 94s) were always covered; deep never was. 1800s clears the
+  // observed max with headroom and stays under the ~34-min structural ceiling a deep job has
+  // from its own summed phase timeouts (depth.ts), so the window is bounded by the job, not by
+  // this number. The cost is paid only when a deploy actually lands on a running deep job: the
+  // old container lives that much longer while the new one already serves. Traffic is 159 jobs
+  // / 30 days, 13 of those days idle — that is a rare collision.
+  SHUTDOWN_DRAIN_MS: z.coerce.number().default(1_800_000),
   // bun:sqlite job store (status-only durability — see lib/job-db.ts). Relative default
   // resolves against the process CWD: the repo root in local dev, /app (the Dockerfile
   // WORKDIR) in the container, where the vps repo's apps/research-gateway/compose.yml mounts a

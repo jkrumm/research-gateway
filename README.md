@@ -153,7 +153,7 @@ do not mock env. `scripts/smoke.ts` runs one `runResearch()` end to end without 
 | `RESEARCH_MAX_CONCURRENCY` / `RESEARCH_MAX_QUEUE` | no (3 / 50) | concurrent *jobs* / accepted backlog |
 | `WORKER_MAX_CONCURRENCY` | no (8) | concurrent *workers within one job* |
 | `JOB_DB_PATH` | no (`./data/jobs.sqlite`) | `/app/data` in the container, a named volume |
-| `SHUTDOWN_DRAIN_MS` | no (600 000) | how long SIGTERM waits for RUNNING jobs before force-exiting. **Must stay below the compose `stop_grace_period` (630s)** or SIGKILL wins and the drain buys nothing |
+| `SHUTDOWN_DRAIN_MS` | no (1 800 000) | how long SIGTERM waits for RUNNING jobs before force-exiting. **Must stay below the compose `stop_grace_period` (1860s)** or SIGKILL wins and the drain buys nothing. Sized off the 30-day span record, not a guess — see Restarts |
 | `YTDLP_PATH` / `YTDLP_MAX_CONCURRENCY` / `YTDLP_TIMEOUT_MS` | no | bundled binary; concurrency 2 because YouTube rate-limits the datacenter IP under burst |
 
 Production values come from `vps/apps/research-gateway/.env.tpl` via `op inject`, which
@@ -249,13 +249,20 @@ healthy *before* stopping the old one, and both replicas write through to the sa
 store — so a client polling through the new container still sees the old replica's job reach
 `done`. The cost is a longer deploy tail when a job is in flight.
 
-The window is not unlimited, and the docs should not pretend otherwise: a `deep` job may run
-longer than `SHUTDOWN_DRAIN_MS`, and one that does still gets cut — the drain falls through to
-the same flush-and-exit as before, and Docker SIGKILLs shortly after. That is a smaller loss
-than the old behaviour (which killed *everything, always*) but it is not zero, and closing it
-needs agent-loop checkpointing, not a bigger timer. `process.drained` logs `remaining`, at
-**error** level when the deadline elapsed with jobs still running — that number is exactly how
-often this ceiling is being hit.
+The window is sized off the measured distribution, not a guess. 30 days of `research.done` in
+ClickStack (159 jobs):
+
+| depth | n | p50 | p90 | p95 | max | over 600s |
+|-|-:|-:|-:|-:|-:|-:|
+| quick | 26 | 38s | 55s | 68s | 94s | 0 |
+| standard | 71 | 111s | 259s | 322s | 628s | 1 |
+| deep | 62 | 366s | 1133s | 1181s | 1237s | **24 (39%)** |
+
+The first value here was 600s, sized off a single fast run, and it would have missed four out of
+ten deep jobs. At 1800s the observed maximum clears with headroom, and the ceiling stops being
+this number: a deep job's own summed phase timeouts cap it near 34 minutes anyway. A job that
+still outruns the window gets cut — `process.drained` logs `remaining` at **error** level when
+that happens, which is the number to re-read before anyone argues for agent-loop checkpointing.
 
 **Memory pressure sheds instead of dying.** `lib/memory-watch.ts` samples the cgroup every 5 s;
 at 85% of the limit it logs `process.memory_pressure` *and* flips admission to refuse new jobs,
