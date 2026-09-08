@@ -102,10 +102,19 @@ export interface FetchChainOptions {
   /**
    * Called for EVERY lightpanda attempt this chain makes — success, parse-failure, and
    * thrown error alike — so renders are countable even though none of those three outcomes
-   * terminates the chain the same way. Not called when `env.LIGHTPANDA_URL` is unset, since
-   * then no attempt was made at all.
+   * terminates the chain the same way. Not called when the render step is off, since then no
+   * attempt was made at all.
    */
   onRender?: (r: { ok: boolean; ms: number }) => void
+  /**
+   * Base URL of the rendering sidecar; falsy takes the render step out of the chain. Defaults
+   * to `env.LIGHTPANDA_URL`, which is what production wants — the parameter exists so which
+   * steps run is an ARGUMENT rather than ambient state. `env.ts` parses `process.env` once at
+   * first import, so a test that assigns the variable and then asserts on the waterfall was
+   * asserting on module load order; on the CI runner that ordering differed and the chain fell
+   * through to the network. Injecting it removes the coupling instead of re-timing it.
+   */
+  renderBaseUrl?: string | undefined
   /**
    * Called for EVERY yt-dlp transcript attempt this chain makes (skipToExtract URLs only) —
    * success and failure alike, mirroring `onRender` above exactly. Not called for non-video
@@ -189,6 +198,7 @@ function attempt(
 export async function runFetchChain(url: string, opts: FetchChainOptions): Promise<FetchChainResult> {
   const { ledger, onTavilyCredits, onRender, onYtdlp, onArchive } = opts
   const jobId = opts.jobId ?? '-'
+  const renderBaseUrl = opts.renderBaseUrl ?? env.LIGHTPANDA_URL
   const attempts: FetchAttempt[] = []
 
   // Some hosts need a different address, a different reader, or both (site-adapters.ts).
@@ -353,10 +363,10 @@ export async function runFetchChain(url: string, opts: FetchChainOptions): Promi
     // Sits between Readability and Tavily Extract because it handles the one failure Tavily
     // cannot — a page whose text simply is not in the HTML — while Tavily remains the better
     // fallback for a page that IS static but whose structure Readability could not parse.
-    if (env.LIGHTPANDA_URL) {
+    if (renderBaseUrl) {
       const t2 = performance.now()
       try {
-        const res = await fetch(renderUrl(env.LIGHTPANDA_URL), {
+        const res = await fetch(renderUrl(renderBaseUrl), {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ url: fetchUrl }),

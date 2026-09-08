@@ -13,19 +13,15 @@ process.env['TAVILY_API_KEY'] ??= 'test-key'
 // A literal, public, non-routable IP (TEST-NET-3): the render step fetches this directly with
 // no SSRF/DNS round trip, so the stub below is the only thing it can reach.
 //
-// Assigned, NOT `??=`. This one steers routing: the waterfall test recognises the render step
-// by matching this host, so an inherited value sends the chain past lightpanda into
-// tavily-extract and wayback and the assertion fails. CI has a real LIGHTPANDA_URL in scope,
-// which is exactly how that happened.
-process.env['LIGHTPANDA_URL'] = 'http://203.0.113.10:7781'
+// Passed to the chain as `renderBaseUrl` rather than set in `process.env`: `env.ts` parses
+// process.env ONCE at first import and `bun test` shares the module registry across files, so
+// an env assignment here only lands if no earlier file imported env.js. It did not on CI —
+// the chain then skipped the render step, fell through to tavily-extract, and reached the
+// real network. Which steps run is an argument now, so file order cannot change it.
+const RENDER_BASE = 'http://203.0.113.10:7781'
+const RENDER_HOST = new URL(RENDER_BASE).host
 
 const { runFetchChain } = await import('./fetch-chain.js')
-// The chain reads env.LIGHTPANDA_URL, and `env.ts` parses process.env ONCE at first import.
-// Under `bun test` the module registry is shared across files, so if any earlier file imported
-// it the assignment above arrived too late and the chain calls the inherited URL instead. Read
-// back what the chain will actually use and match the stub against that, so this test is
-// correct under any import order.
-const RENDER_HOST = new URL((await import('../env.js')).env.LIGHTPANDA_URL ?? 'http://203.0.113.10:7781').host
 const { createLedger } = await import('./ledger.js')
 const { buildTools } = await import('./tools.js')
 const { _test, withSpan } = await import('../lib/otel.js')
@@ -59,7 +55,7 @@ async function chain(url: string): Promise<{ attempts: Array<{ step: string }>; 
   const result = await withSpan(
     'tool.fetchPage',
     {},
-    async () => runFetchChain(url, { ledger: createLedger() }),
+    async () => runFetchChain(url, { ledger: createLedger(), renderBaseUrl: RENDER_BASE }),
     'client',
   )
   const span = spans.find((s) => s.name === 'tool.fetchPage')
