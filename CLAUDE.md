@@ -19,7 +19,8 @@ agent needs before touching code; don't restate what README already owns.
 
 Everything is submit-then-poll — never expect a synchronous result.
 
-- HTTP: `POST /research` → `{ jobId, status }`; poll `GET /research/:jobId` until
+- HTTP (Hermes's and sideclaw's lane): `POST /research` → `{ jobId, status }`; **poll**
+  `GET /research/:jobId` — it returns current state at once and never blocks — until
   `status: "done"` — measured p50 quick 38s / standard 111s / deep 366s, full distribution in
   `docs/measurements.md` § Job duration.
 - MCP (`/mcp`, bearer): tools `research`, `job_status`, `job_wait` — same submit → poll

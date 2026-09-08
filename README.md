@@ -57,7 +57,7 @@ talk to — and plain bearer HTTP for everything else (Hermes, scripts, curl).
 | `GET /health/ytdlp` | public | — | `{ ytdlp, version, error }` — `yt-dlp --version` inside the container |
 | `GET /openapi`, `/openapi/json` | public | — | Scalar UI, raw spec |
 | `POST /research` | bearer | `{ query, depth? }` (`quick \| standard \| deep`) | `{ jobId, status }` (async) |
-| `GET /research/:jobId` | bearer | — | `{ status, result?, error? }` |
+| `GET /research/:jobId` | bearer | — | `{ status, result?, error? }` — a **poll**: returns current state at once, never blocks |
 | `POST /mcp` | bearer | streamable-http (stateless, 2026-07-28) | tools `research`, `job_wait`, `job_status` — same engine. `job_wait` blocks for the whole job, so one call is normally the whole interaction |
 | `POST /probe/fetch` | bearer | `{ url }` | one URL through the real fetch chain, no LLM — which step terminated it, chars and ms per step. Drives `scripts/fetch-bench.ts` |
 
@@ -70,10 +70,21 @@ tavilyExtractCalls }` — read from the same per-job meters that feed argo, so t
 dashboard report one number. `tavilyCredits` counts **search only**; extraction is billed but
 invisible at this call shape ([measurements](./docs/measurements.md#what-tavilycredits-cannot-see)).
 
-Runs are **async**: submit returns a `jobId` immediately; poll until `status` is `done`
-(measured p50: quick 38s, standard 111s, deep 366s —
-[full distribution](./docs/measurements.md#job-duration-by-depth--the-30-day-span-record)). `RESEARCH_MAX_CONCURRENCY` caps concurrent jobs
-and `RESEARCH_MAX_QUEUE` the backlog.
+Runs are **async**: submit returns a `jobId` immediately (measured p50: quick 38s, standard
+111s, deep 366s —
+[full distribution](./docs/measurements.md#job-duration-by-depth--the-30-day-span-record)).
+`RESEARCH_MAX_CONCURRENCY` caps concurrent jobs and `RESEARCH_MAX_QUEUE` the backlog.
+
+**How you then wait differs per door, and only one of them blocks:**
+
+| Door | Consumer | How to wait |
+|-|-|-|
+| REST `GET /research/:jobId` | Hermes, sideclaw, anything on the tailnet | **Poll it.** Each call returns the current state immediately. There is no blocking variant — a client that calls it once and stops has only read `queued` |
+| MCP `job_wait` | Claude Code | **One call.** It blocks until the job is terminal over a kept-alive stream; call it again only if it returns `stillRunning` |
+
+Do not port the MCP shape onto the REST door. They are different endpoints on purpose: the
+REST poll is a cheap read any HTTP client can drive, while the blocking wait needs a stream the
+client keeps open.
 
 Submission is admission-controlled (`lib/admission.ts`, one pure decision function), and the
 refusal says which of three reasons it was, with a `Retry-After`:
