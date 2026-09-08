@@ -121,6 +121,13 @@ ends up interleaving waits by hand.
 → **`job_wait_all({ jobIds })`** returning as each completes, or a single call
 that blocks until all are done, would collapse that.
 
+> **Mostly resolved 2026-09-08.** The 50s cap is gone — `job_wait` now blocks for
+> the whole job, so the eight sequential calls above would be one. The 50s number
+> was a guess at an MCP transport budget that does not exist; what actually keeps
+> a long call alive is the SDK's 15s SSE keep-alive, now armed for every call via
+> `responseMode: 'sse'`. `job_wait_all` would still help a genuine fan-out, but
+> the chattiness that motivated it is not there any more.
+
 ### Follow-up the same day: one `depth=deep` run, and a new failure class
 
 A single `depth=deep` job on "does a structured Wild Rift item/rune data source

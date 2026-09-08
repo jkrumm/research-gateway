@@ -19,7 +19,8 @@ import type { Depth, JobStatus, ResearchReport } from '../agent/schema.js'
 // rollhook's rolling deploy briefly runs two replicas against the SAME sqlite file (the
 // `research-gateway-data` volume). If boot reaped every queued/running row unconditionally,
 // the NEW replica would kill jobs the OLD replica is still actively executing (or still has
-// legitimately queued — deep jobs run ~28 minutes, so with `RESEARCH_MAX_CONCURRENCY=3` a
+// legitimately queued — a deep job runs up to ~21 minutes (measured max), so with
+// `RESEARCH_MAX_CONCURRENCY=3` a
 // queued job can wait well over half an hour) the moment it starts — the exact bug this
 // heartbeat exists to prevent. A row only gets reaped once its `heartbeat_at` is stale (or was
 // never set), which means no process is currently proving it alive — see job-store.ts's

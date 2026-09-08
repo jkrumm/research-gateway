@@ -15,11 +15,11 @@ WHERE TraceId = replaceAll('e1aafd34-83b2-4207-b47a-b9e937a5d577', '-', '')
 gives you the plan, every worker, every page fetch with its fallback waterfall, the synthesis,
 and the grounding verdict — plus every `log()` line, which now carries the same `TraceId`.
 Nothing else joins those together; container logs rotate away inside 72h and a deep job runs
-~28 minutes.
+for minutes (measured p50 366s, max 1237s over 30 days).
 
 A span exports when it **ends**, so a running job shows up as a partial trace: workers and
 tool calls land within seconds of finishing, while `research.job` itself only appears when the
-job does — up to ~28 minutes later at `depth=deep`. A root-less trace is *usually* a job still
+job does — up to ~21 minutes later at `depth=deep`, measured. A root-less trace is *usually* a job still
 running — but a SIGKILL or an uncaught exception mid-job leaves the identical shape, because
 `research.job` never ends and so never exports. Disambiguate against the sqlite job store
 (`GET /research/:jobId`), not against the trace: a job the store calls terminal with no root
@@ -220,6 +220,47 @@ FROM otel_traces WHERE ServiceName='research-gateway' AND StatusCode='Error'
 `TraceId`/`SpanId`, so a `worker.failed` or `synthesis.rejected` line clicks straight through
 to the trace that produced it. The narrative stays in logs; the numbers you group by live in
 spans.
+
+**10. Lifecycle & shedding (table)** — the events that say whether a restart cost anything.
+These have no span: they happen outside a job, or to jobs that never finished one. This is the
+tile to read after any deploy or restart.
+
+```sql
+SELECT Timestamp, SeverityText, Body, LogAttributes
+FROM otel_logs
+WHERE ServiceName='research-gateway'
+  AND Body IN ('process.draining','process.drained','job.drain_queued','job.reaped',
+               'job.reaped_on_read','process.memory_pressure','process.memory_recovered',
+               'process.signal','process.uncaughtException','job.rejected')
+  AND Timestamp > now() - INTERVAL 7 DAY
+ORDER BY Timestamp DESC LIMIT 200
+```
+
+How to read it:
+
+| Event | What it means |
+|-|-|
+| `process.draining` | SIGTERM arrived. `running`/`queued` are what was in flight, `drainMs` the configured window |
+| `process.drained` | The drain finished. `remaining: 0` is the good case; **`remaining > 0` is ERROR severity** and means the window elapsed with jobs still alive — the number that decides whether agent-loop checkpointing is worth building |
+| `job.drain_queued` | Jobs failed fast because they were still queued at shutdown. Expected, not a fault |
+| `job.reaped` / `job.reaped_on_read` | A job whose owner died without draining — a SIGKILL or an OOM kill. **Not** expected on a clean deploy any more |
+| `process.memory_pressure` / `process.memory_recovered` | Admission shed new work at 85% of the cgroup limit and released it below 75%. A pressure line with no recovery line is the shape to alert on |
+| `job.rejected` | Group by `reason`: `queue_full` \| `memory_pressure` \| `draining` |
+
+**11. Did one `job_wait` cover the job? (table)** — `job_wait` blocks for the whole job, so the
+healthy shape is one record per job with a terminal `status`. A `stillRunning` state with
+`bounded: false` means the *client* hung up, which points at its per-server `timeout`, not at
+this service.
+
+```sql
+SELECT Timestamp, LogAttributes['jobId'] job_id, LogAttributes['status'] status,
+       toFloat64OrZero(LogAttributes['waitedMs'])/1000 waited_s,
+       LogAttributes['bounded'] bounded, LogAttributes['aborted'] aborted
+FROM otel_logs
+WHERE ServiceName='research-gateway' AND Body='mcp.job_wait'
+  AND Timestamp > now() - INTERVAL 7 DAY
+ORDER BY Timestamp DESC LIMIT 100
+```
 
 ## One-job forensics
 

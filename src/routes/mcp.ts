@@ -3,6 +3,7 @@ import { createMcpHandler, McpServer } from '@modelcontextprotocol/server'
 import { z } from 'zod'
 import { Depth, JobHandle, JobState, type ResearchReport } from '../agent/schema.js'
 import { admission, createJob, getJob, type Job } from '../lib/job-store.js'
+import { POLL_INTERVAL_MS, shouldKeepWaiting, waitDeadline } from '../lib/wait.js'
 import { startResearchJob } from '../lib/run-job.js'
 import { env } from '../env.js'
 import { log } from '../lib/log.js'
@@ -10,9 +11,9 @@ import type { CallToolResult } from '@modelcontextprotocol/server'
 
 // MCP facade over the research engine, modelled on sideclaw's async-job contract:
 // `research` submits and returns a jobId immediately, then `job_wait` / `job_status`
-// retrieve the eventual report. This keeps every request well under the MCP HTTP
-// transport's ~60s first-byte budget — a blocking call that ran the full agentic
-// loop (often 60–120s) would otherwise be aborted by the client mid-flight.
+// retrieve the eventual report. The submit stays non-blocking because a job runs for
+// minutes and a submit must not; `job_wait` then blocks for as long as the job takes
+// (lib/wait.ts explains why that is safe, and why the old 50s cap was not a requirement).
 //
 // Served through `createMcpHandler`, the SDK's per-request entry: every request gets a
 // fresh server instance, so no state can leak between calls, and the same endpoint serves
@@ -21,9 +22,6 @@ import type { CallToolResult } from '@modelcontextprotocol/server'
 // transport by hand instead — the previous wiring — pins the endpoint to the legacy era
 // and never installs the mandatory `server/discover` RPC.
 
-const POLL_INTERVAL_MS = 2_000
-const DEFAULT_WAIT_MS = 50_000
-const MAX_WAIT_MS = 55_000 // stay under the MCP HTTP transport's ~60s first-byte budget
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
 
 // Inline the report + citations + sources so text-only MCP clients get the full
@@ -95,7 +93,7 @@ function buildMcpServer(): McpServer {
     {
       title: 'Agentic Research (submit)',
       description:
-        'Submit an agentic web research job: fans out Tavily searches, fetches and reads source pages, cross-verifies claims, and produces a cited markdown report. Returns IMMEDIATELY with a jobId — it does NOT block and does NOT return the report. Call job_wait({ jobId }) to wait for and retrieve the report (loop while stillRunning is true), or job_status({ jobId }) for a non-blocking peek. depth=quick is fastest (fewer steps/sources); depth=standard (default) balances quality and speed; depth=deep is most thorough but slowest.',
+        'Submit an agentic web research job: fans out Tavily searches, fetches and reads source pages, cross-verifies claims, and produces a cited markdown report. Returns IMMEDIATELY with a jobId — it does NOT block and does NOT return the report. Call job_wait({ jobId }) to block until the report is ready — it waits for the whole job, so one call is normally all you need — or job_status({ jobId }) for a non-blocking peek. depth=quick is fastest (fewer steps/sources); depth=standard (default) balances quality and speed; depth=deep is most thorough but slowest.',
       inputSchema: z.object({
         query: z.string().min(3).describe('The research question or topic to investigate'),
         depth: Depth.optional().describe('Research depth: quick | standard (default) | deep'),
@@ -118,7 +116,7 @@ function buildMcpServer(): McpServer {
       const handle: z.infer<typeof JobHandle> = {
         jobId: job.jobId,
         status: job.status,
-        message: `Submitted as background research job. Call job_wait({ jobId: "${job.jobId}" }) to block until it finishes and get the report (loop while stillRunning), or job_status({ jobId: "${job.jobId}" }) for a one-shot check. This call did NOT return the report — do not treat it as the answer.`,
+        message: `Submitted as background research job. Call job_wait({ jobId: "${job.jobId}" }) once to block until it finishes and get the report, or job_status({ jobId: "${job.jobId}" }) for a one-shot check. This call did NOT return the report — do not treat it as the answer.`,
       }
       return { content: [{ type: 'text', text: JSON.stringify(handle) }], structuredContent: handle }
     },
@@ -130,13 +128,15 @@ function buildMcpServer(): McpServer {
     {
       title: 'Wait for Research Job',
       description:
-        "Wait for a research job to finish, then return its state. The normal way to consume `research`: submit → job_wait → use result. Polls internally with progress heartbeats, so it is safe for long jobs and won't trip the MCP timeout. Waits up to ~50s per call; if the job is still running when the window elapses it returns with stillRunning:true — simply call job_wait again with the same jobId (loop until stillRunning is false). When status is 'done', `result` holds the cited ResearchReport; when 'error', `error` explains why. The report carries `status` ('ok' | 'partial') and a code-counted `grounding` block: on 'partial' the run lost evidence, so treat any prose not backed by a `citations` entry as unconfirmed and read `unverified` for what could not be checked. Every citation carries a `confidence` derived from what was actually retrieved.",
+        "Block until a research job finishes, then return its state. The normal way to consume `research`: submit → job_wait → use result. It waits as long as the job takes — minutes for `standard`, up to ~20 for `deep` — holding the stream open with keep-alives, so ONE call is normally enough and there is no polling loop to write. Pass `maxWaitMs` only if you deliberately want to stop waiting early; a call that returns with stillRunning:true was bounded that way (or aborted), and calling job_wait again with the same jobId resumes waiting. When status is 'done', `result` holds the cited ResearchReport; when 'error', `error` explains why. The report carries `status` ('ok' | 'partial') and a code-counted `grounding` block: on 'partial' the run lost evidence, so treat any prose not backed by a `citations` entry as unconfirmed and read `unverified` for what could not be checked. Every citation carries a `confidence` derived from what was actually retrieved.",
       inputSchema: z.object({
         jobId: z.string().describe('The job id returned by research.'),
         maxWaitMs: z
           .number()
           .optional()
-          .describe(`Max time to block this call, in ms. Default ${DEFAULT_WAIT_MS}, capped at ${MAX_WAIT_MS}.`),
+          .describe(
+            'Optional. Stop blocking after this many ms and return with stillRunning:true. Omit it — the default is to wait for the job to actually finish.',
+          ),
       }),
       outputSchema: JobState,
       annotations: { readOnlyHint: true, idempotentHint: false },
@@ -145,18 +145,13 @@ function buildMcpServer(): McpServer {
       let job = getJob(args.jobId)
       if (!job) return notFound(args.jobId)
 
-      const budget = Math.min(Math.max(args.maxWaitMs ?? DEFAULT_WAIT_MS, 1_000), MAX_WAIT_MS)
-      const deadline = Date.now() + budget
+      const startedWaitingAt = Date.now()
+      const deadline = waitDeadline(startedWaitingAt, args.maxWaitMs)
       const progressToken = ctx.mcpReq._meta?.progressToken
       const signal = ctx.mcpReq.signal
 
       let tick = 0
-      while (
-        job.status !== 'done' &&
-        job.status !== 'error' &&
-        Date.now() < deadline &&
-        !signal.aborted
-      ) {
+      while (shouldKeepWaiting({ status: job.status, now: Date.now(), deadline, aborted: signal.aborted })) {
         await sleep(POLL_INTERVAL_MS)
         tick++
         if (progressToken !== undefined) {
@@ -174,6 +169,19 @@ function buildMcpServer(): McpServer {
         }
         job = getJob(args.jobId) ?? job
       }
+
+      // The line that says whether one call really covered a whole job. `bounded` separates a
+      // caller who asked to stop early from a wait that ran to completion, so a rise in
+      // `stillRunning: true` with `bounded: false` means the client hung up on us — the signal
+      // that its per-server timeout is set too low, not that the job misbehaved.
+      log('mcp.job_wait', {
+        jobId: args.jobId,
+        status: job.status,
+        waitedMs: Date.now() - startedWaitingAt,
+        ticks: tick,
+        bounded: deadline !== null,
+        aborted: signal.aborted,
+      })
 
       return stateResult(job)
     },
@@ -204,6 +212,14 @@ function buildMcpServer(): McpServer {
 
 const handler = createMcpHandler(() => buildMcpServer(), {
   onerror: (error) => log('mcp.error', { error: String(error) }),
+  // NOT the default 'auto', and this is what makes an unbounded `job_wait` viable at all.
+  // Under 'auto' the SDK only upgrades a response to a stream once the handler emits a
+  // notification, so a wait on a client that sent no `progressToken` would sit on a silent,
+  // buffered response — and Bun closes an idle socket after `idleTimeout` (255s, its maximum,
+  // set in index.ts). 'sse' upgrades before the tool body runs, which arms the SDK's 15s
+  // keep-alive comment frames for every call. Bytes therefore flow the whole time, and no
+  // layer in the path — Bun, Traefik, the client's idle timer — sees an idle connection.
+  responseMode: 'sse',
 })
 
 // Elysia plugin: mount POST and GET on the prefix root so the handler sees both the

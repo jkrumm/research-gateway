@@ -20,9 +20,16 @@ agent needs before touching code; don't restate what README already owns.
 Everything is submit-then-poll — never expect a synchronous result.
 
 - HTTP: `POST /research` → `{ jobId, status }`; poll `GET /research/:jobId` until
-  `status: "done"` (tens of seconds to ~28 min at `depth: deep`).
+  `status: "done"` (measured p50 over 30 days: quick 38s, standard 111s, deep 366s; deep max
+  1237s — README § Restarts carries the full distribution).
 - MCP (`/mcp`, bearer): tools `research`, `job_status`, `job_wait` — same submit → poll
-  contract, `job_wait` blocks ~50s per call. This is the primary client path (Claude Code's
+  contract — but `job_wait` blocks for the WHOLE job, not a 50s slice, so one call is normally
+  the entire interaction. `responseMode: 'sse'` is what makes that safe: the SDK writes a
+  keep-alive frame every 15s, so nothing in the path (Bun's 255s `idleTimeout`, Traefik, the
+  client's own idle timer) ever sees an idle connection. A client still needs a generous
+  per-server `timeout` in its MCP entry — in Claude Code that value is also the floor on its
+  5-minute HTTP idle timeout, and progress notifications do NOT raise it. This is the primary
+  client path (Claude Code's
   `/research` skill, sideclaw); plain bearer HTTP is for everything else.
 - `result.status` can be `"partial"` — evidence was lost and the report prepends a banner.
   A text-only MCP client sees only the prose, so **always surface `unverified` and a

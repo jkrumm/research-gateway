@@ -31,7 +31,7 @@ research is non-uniform; every query needs a different number of calls and depth
 | Extraction | Readability → Tavily Extract on thin content; heavier extractors only on a real gap | → site adapters ahead of everything, a **self-hosted lightpanda sidecar** ahead of Tavily, Jina Reader **retired** (third party learning every URL read), Wayback as the last rescue, yt-dlp for YouTube |
 | Exa | later, on recall gaps | never needed |
 | Auth | single shared bearer, per-client tokens deferred | unchanged; the tailnet is the gate, the bearer is defense-in-depth, compared constant-time |
-| Delivery | async job: submit → jobId → poll | unchanged; MCP `job_wait` long-polls ~50s per call to stay under the transport's ~60s first-byte budget |
+| Delivery | async job: submit → jobId → poll | unchanged; MCP `job_wait` blocks for the whole job (2026-09-08 — the old 50s cap was a guess at a transport budget that does not exist, and cost a model turn every 50s) |
 | Job store | in-memory v1 | → **`bun:sqlite`, status-only durability, heartbeat-reaped** — a restart no longer 404s every job; a job caught mid-run comes back as a terminal `error`. Heartbeat, not "everything running at boot is dead", because rollhook's overlap runs two replicas on the same file |
 | Caching | deferred TTL cache on `(query, depth)` | still deferred; the field notes' `context` parameter is the cheaper lever |
 | Ingress | ~~public subdomain behind Cloudflare Tunnel~~ | **Tailscale-only**: grey-cloud A record → Traefik, same as argo / audio-gateway |

@@ -3,11 +3,12 @@ name: Deploy
 on:
   push:
     branches: [master]
-    # A deploy restarts the container; job durability is status-only, so any in-flight
-    # research job is reaped to error on the next boot, not resumed (a deep run is 10-20
-    # minutes of work). A documentation commit has no business doing that. This was not
-    # hypothetical: a README-only push during a 15-run benchmark killed the run that was
-    # executing.
+    # A deploy restarts the container. Since 2026-09-08 SIGTERM drains rather than kills, so an
+    # in-flight job usually survives — but only until SHUTDOWN_DRAIN_MS, and job durability is
+    # still status-only: a job that outruns the window is reaped to error, never resumed. A
+    # documentation commit has no business risking that, and this was never hypothetical — a
+    # README-only push during a 15-run benchmark killed the run that was executing, back when
+    # every deploy killed everything.
     #
     # Only markdown and repo metadata. The compose file and .env.tpl live in the vps repo,
     # so nothing deploy-shaped is left here to accidentally match.

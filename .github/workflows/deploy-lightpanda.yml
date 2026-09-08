@@ -6,9 +6,9 @@ name: Deploy lightpanda sidecar
 # everything else.
 #
 # A push touching BOTH directories starts both workflows; they build different images and
-# rolling-update different containers, so they do not fight. The gateway restart still kills
-# in-flight jobs (in-memory job store) — the sidecar restart does not, because a research job
-# holds no state there.
+# rolling-update different containers, so they do not fight. The gateway restart only loses a
+# job that outruns SHUTDOWN_DRAIN_MS; the sidecar restart loses none at all, because a research
+# job holds no state there.
 on:
   push:
     branches: [master]

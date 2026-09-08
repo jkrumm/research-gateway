@@ -58,7 +58,7 @@ talk to — and plain bearer HTTP for everything else (Hermes, scripts, curl).
 | `GET /openapi`, `/openapi/json` | public | — | Scalar UI, raw spec |
 | `POST /research` | bearer | `{ query, depth? }` (`quick \| standard \| deep`) | `{ jobId, status }` (async) |
 | `GET /research/:jobId` | bearer | — | `{ status, result?, error? }` |
-| `POST /mcp` | bearer | streamable-http | tools `research`, `job_wait`, `job_status` — same engine, sideclaw's submit → wait → read contract |
+| `POST /mcp` | bearer | streamable-http (stateless, 2026-07-28) | tools `research`, `job_wait`, `job_status` — same engine. `job_wait` blocks for the whole job, so one call is normally the whole interaction |
 | `POST /probe/fetch` | bearer | `{ url }` | one URL through the real fetch chain, no LLM — which step terminated it, chars and ms per step. Drives `scripts/fetch-bench.ts` |
 
 `result` shape: `{ report, citations: [{ claim, url, confidence }], sources, unverified,
@@ -71,7 +71,7 @@ dashboard report one number. `tavilyCredits` counts **search only**; extraction 
 invisible at this call shape ([measurements](./docs/measurements.md#what-tavilycredits-cannot-see)).
 
 Runs are **async**: submit returns a `jobId` immediately; poll until `status` is `done`
-(tens of seconds to ~28 minutes at `deep`). `RESEARCH_MAX_CONCURRENCY` caps concurrent jobs
+(measured p50: quick 38s, standard 111s, deep 366s — full distribution under Restarts). `RESEARCH_MAX_CONCURRENCY` caps concurrent jobs
 and `RESEARCH_MAX_QUEUE` the backlog.
 
 Submission is admission-controlled (`lib/admission.ts`, one pure decision function), and the
@@ -301,8 +301,32 @@ the `vps` repo** (`apps/research-gateway/`); this repo has no copy. [`deploy/DEP
 | Client | Path |
 |-|-|
 | Claude Code `/research` (every session, both Macs) | the `research-gateway` MCP at `/mcp`, registered at user scope by dotfiles `make setup` |
-| Hermes | direct bearer HTTP |
+| Hermes | direct bearer HTTP — `POST /research` then poll `GET /research/{jobId}`; not an MCP client |
 | anything else on the tailnet | bearer HTTP, or the MCP endpoint |
 
 This service replaced the sideclaw `research` tool; the MCP facade that was once "deferred, only
 if an MCP-only client needs it" became the main door the moment Claude Code was the main client.
+
+### What an MCP client has to configure
+
+`job_wait` blocks for the entire job, which is only useful if the client is willing to wait that
+long. The server holds its side up: `createMcpHandler` runs with `responseMode: 'sse'`, so the
+SDK upgrades every response to a stream before the tool body runs and writes a keep-alive frame
+every 15s. Nothing in the path — Bun's `idleTimeout` (255s, its maximum), Traefik, a client idle
+timer — ever sees an idle connection.
+
+The client side is one setting. In Claude Code, the per-server `timeout` in its MCP entry is a
+hard wall-clock cap **and** the floor on its own idle timeout (5 minutes for HTTP by default);
+progress notifications do **not** raise that floor, only the `timeout` does. Set it above the
+longest job you expect — 40 minutes clears the ~34-minute structural ceiling a `deep` job has:
+
+```jsonc
+"research-gateway": { "type": "http", "url": "https://research.jkrumm.com/mcp", "timeout": 2400000 }
+```
+
+A call still running after two minutes moves to a Claude Code background task
+(`CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS`, default 120 000) and its result arrives as a notification,
+so a long wait costs no model turns. That is the same benefit the MCP **Tasks** extension is
+designed to give, which is why Tasks is not adopted here: the installed SDK marks its task
+vocabulary `@deprecated … with no SDK runtime`, never emits `resultType: "task"`, and its 2026
+codec strips `execution.taskSupport` / `capabilities.tasks` as deleted fields.

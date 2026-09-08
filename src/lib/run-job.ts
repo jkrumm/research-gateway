@@ -20,7 +20,8 @@ function markFailed(jobId: string, err: unknown): void {
 export function startResearchJob(job: Job): void {
   // Starts BEFORE `withSlot`, not inside it: `withSlot`'s `await acquire()` blocks until a
   // concurrency slot frees up, and with `RESEARCH_MAX_CONCURRENCY=3` and deep jobs running
-  // ~28 minutes, a queued job can legitimately wait well over half an hour for its turn. If the
+  // up to ~21 minutes (measured max), a queued job can legitimately wait well over half an hour
+  // for its turn. If the
   // heartbeat only started once the job began RUNNING, that entire queued wait would look
   // heartbeat-less to any other process sharing the DB (e.g. the sibling replica during a
   // rolling deploy) — which would falsely reap the whole backlog on every deploy that lands
