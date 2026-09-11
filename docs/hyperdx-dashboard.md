@@ -266,6 +266,34 @@ WHERE ServiceName='research-gateway' AND Body='mcp.job_wait'
 ORDER BY Timestamp DESC LIMIT 100
 ```
 
+## Alerts
+
+Five, all tile-backed on this dashboard, all firing into the Slack `#alerts` webhook. The
+config is exported to `vps/observability/alerts/` — Mongo is not backed up, the repo is.
+
+| Alert | Tile | Fires at | What it means |
+|-|-|-|-|
+| `job.reaped >= 1 (15m)` | 10 | ≥1 | A job's owner died without draining — SIGKILL or OOM. Counts `job.reaped` *and* `job.reaped_on_read`: the 2026-09-04 OOM produced 1 of the first and 8 of the second, and the alert used to see only the one |
+| `job.error >= 1 (15m)` | 11 | ≥1 | A job ended terminal-`error`. Zero of these in the 14 days before 2026-09-11 — because a zero-evidence job used to report `done` + `partial` instead |
+| `LLM provider failures >= 3 (15m)` | 12 | ≥3 | `worker.failed` + `plan.fallback`. The **earlier** signal: a burst means the IU endpoint is down while individual jobs may still finish degraded. Threshold 3 so a lone worker timeout stays quiet |
+| `memory pressure >= 1 (15m)` | 13 | ≥1 | Admission shed at 85% of the cgroup limit. The only in-process warning a SIGKILL allows |
+| `drain cut live jobs >= 1 (1h)` | 14 | ≥1 | `process.drained` with `remaining > 0` — the drain window elapsed with jobs still running |
+
+`thresholdType: "above"` is **inclusive** (`above_exclusive` is the strict one), so
+`threshold: 1` fires at 1.
+
+Liveness is not here and should not be: Uptime Kuma owns it (`Research Gateway - HTTP` on
+`/health`, plus `- Renderer -` and `- Tavily Plan -`), because a container that is down
+emits no logs for an alert to count. Keep those keyword matches pinned to a **field**
+(`"status":"ok"`), never to a whole object — `'{"status":"ok"}'` stopped matching the moment
+`/health` grew fields, and that monitor sat DOWN from 2026-08-20 to 2026-09-11 after a single
+state-change notification.
+
+To verify the pipeline end to end rather than trusting it: add a temporary number tile whose
+count is certainly non-zero, hang a `5m` alert off it, and watch `state` go `OK` → `ALERT`
+with `executionErrors: []` (delivery failures land there). Remove both afterwards — there is
+no `delete_alert` MCP tool, the door is `hdx.py prod rest DELETE /alerts/<id>`.
+
 ## One-job forensics
 
 ```sql

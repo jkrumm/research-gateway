@@ -283,7 +283,10 @@ upstream ever stopped admitting more.
 What survives neither is a SIGKILL. The next boot reaps any job whose heartbeat is >90s stale to
 a terminal `error` ("lost, resubmit"), and that reap is the thing to watch:
 
-- `job.reaped` is logged at **error** level with a `count` — the HyperDX alert fires on it.
+- `job.reaped` is logged at **error** level with a `count` — the HyperDX alert fires on it,
+  and on `job.reaped_on_read` too. Four more alerts cover the failures that are not a hard
+  kill: `job.error`, an `worker.failed`/`plan.fallback` burst, memory pressure, and a drain
+  that cut live jobs. Thresholds and the reasoning: `docs/hyperdx-dashboard.md` § Alerts.
 - `GET /health` carries `lastRestartAt`, `reaped` (this boot), `interrupted` (this process
   lifetime), `draining`, `jobs.running` / `jobs.queued` and the cgroup `memory` ratio — enough
   for a keyword monitor with no log access to see load, shedding and shutdown state. Only
