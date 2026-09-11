@@ -12,6 +12,14 @@ import { readSearchSpend, readRenderStats } from './tools.js'
 import type { UsageStats } from '../lib/usage.js'
 import { env } from '../env.js'
 import { traceIdFromJobId, withRootSpan, withSpan } from '../lib/otel.js'
+import {
+  shouldRetryRound,
+  describeFailures,
+  collectRoundOutcome,
+  ROUND_RETRY_BACKOFF_MS,
+  type RoundResult,
+  type WorkerOutcome,
+} from './round.js'
 
 // Re-exported for compatibility and direct unit-testing — the implementation lives in
 // `assemble.ts` because it has no `env.js` import chain (schema.js only), so it can be
@@ -57,15 +65,11 @@ async function withLimit<T>(sem: Semaphore, fn: () => Promise<T>): Promise<T> {
   }
 }
 
-interface RoundResult {
-  digests: WorkerDigest[]
-  usage: UsageStats
-  ledgers: LedgerSnapshot[]
-}
-
 // Runs one round's sub-questions as workers in parallel, bounded by WORKER_MAX_CONCURRENCY.
 // A worker that throws is caught inside runWorker itself; Promise.allSettled here is a
-// second, defensive layer so an unexpected throw can never abort the round.
+// second, defensive layer so an unexpected throw can never abort the round. The settled-outcome
+// classification itself (rejected / digest / error / neither) lives in `collectRoundOutcome`
+// (round.ts) — pure and env-free, so it is unit-testable without this module's env.js chain.
 async function dispatchRound(
   subQuestions: SubQuestion[],
   depth: Depth,
@@ -74,7 +78,7 @@ async function dispatchRound(
   researchDeadlineAt: number,
 ): Promise<RoundResult> {
   const sem = new Semaphore(env.WORKER_MAX_CONCURRENCY)
-  const settled = await Promise.allSettled(
+  const settled = await Promise.allSettled<WorkerOutcome>(
     subQuestions.map((sq) =>
       withLimit(sem, () =>
         runWorker({ subQuestion: sq.question, depth, jobId, round, researchDeadlineAt }),
@@ -82,18 +86,40 @@ async function dispatchRound(
     ),
   )
 
-  let usage = emptyUsage()
-  const digests: WorkerDigest[] = []
-  const ledgers: LedgerSnapshot[] = []
+  return collectRoundOutcome(settled)
+}
 
-  for (const outcome of settled) {
-    if (outcome.status !== 'fulfilled') continue
-    usage = addUsage(usage, outcome.value.usage)
-    ledgers.push(outcome.value.ledger)
-    if (outcome.value.digest) digests.push(outcome.value.digest)
-  }
-
-  return { digests, usage, ledgers }
+// One round's span + dispatch. Both the first pass and the retry pass go through here so the
+// two can never drift in what they record — a retry is the SAME round re-run, distinguished
+// only by `research.round_retry`.
+function tracedRound(args: {
+  subQuestions: SubQuestion[]
+  depth: Depth
+  jobId: string
+  round: number
+  researchDeadlineAt: number
+  retry: boolean
+}): Promise<RoundResult> {
+  return withSpan(
+    'research.round',
+    {
+      'research.round': args.round,
+      'research.workers_dispatched': args.subQuestions.length,
+      'research.gap_round': args.round > 1,
+      ...(args.retry ? { 'research.round_retry': true } : {}),
+    },
+    async (s) => {
+      const result = await dispatchRound(
+        args.subQuestions,
+        args.depth,
+        args.jobId,
+        args.round,
+        args.researchDeadlineAt,
+      )
+      s.setAttributes({ 'research.digests_returned': result.digests.length })
+      return result
+    },
+  )
 }
 
 export async function runResearch(
@@ -124,6 +150,12 @@ export async function runResearch(
       const askedLower = new Set<string>()
       const allLedgers: LedgerSnapshot[] = []
       let workersDispatchedTotal = 0
+      // Job-level failure causes, across every round and the one retry — feeds both the
+      // zero-evidence throw's message and `shouldRetryRound`'s decision. A job-level latch:
+      // one retry per JOB, not per round, so a job with two zero-digest rounds doesn't
+      // silently double its worker spend chasing the same upstream outage.
+      const allFailures: string[] = []
+      let alreadyRetried = false
 
       // No span wrapper here — planResearch opens `research.plan` itself, so the quick-depth
       // path (which makes no LLM call at all) produces no zero-duration span. Same for
@@ -144,32 +176,68 @@ export async function runResearch(
       while (currentQuestions.length > 0) {
         for (const sq of currentQuestions) askedLower.add(sq.question.trim().toLowerCase())
 
-        const { digests, usage, ledgers } = await withSpan(
-          'research.round',
-          {
-            'research.round': round,
-            'research.workers_dispatched': currentQuestions.length,
-            'research.gap_round': round > 1,
-          },
-          async (s) => {
-            const result = await dispatchRound(
-              currentQuestions,
+        // What this round has to show — the first pass alone, unless the retry below runs, in
+        // which case it also carries that pass's digests. Used for the gap-question decision
+        // after this block, so a retry that DID recover evidence still informs what the next
+        // round asks.
+        const roundDigests: WorkerDigest[] = []
+        const absorb = (result: RoundResult): void => {
+          workerUsage = addUsage(workerUsage, result.usage)
+          allDigests.push(...result.digests)
+          roundDigests.push(...result.digests)
+          workersDispatchedTotal += currentQuestions.length
+          allLedgers.push(...result.ledgers)
+          allFailures.push(...result.failures)
+        }
+
+        const first = await tracedRound({
+          subQuestions: currentQuestions,
+          depth,
+          jobId,
+          round,
+          researchDeadlineAt,
+          retry: false,
+        })
+        absorb(first)
+
+        // One retry per JOB, not per round (see `alreadyRetried` above): a round that lost
+        // EVERY worker to a fast upstream failure still has nearly its whole research budget
+        // left, so a second full pass over the SAME questions is worth it — but only when
+        // there's genuinely enough of the research window left for one. See round.ts's
+        // header for the evidence and the exact rule.
+        if (
+          shouldRetryRound({
+            digests: first.digests.length,
+            failures: first.failures.length,
+            now: Date.now(),
+            researchDeadlineAt,
+            workerTimeoutMs: profile.workerTimeoutMs,
+            alreadyRetried,
+          })
+        ) {
+          log('round.retry', {
+            jobId,
+            round,
+            failures: first.failures.length,
+            reason: describeFailures(first.failures),
+          })
+          await new Promise((resolve) => setTimeout(resolve, ROUND_RETRY_BACKOFF_MS))
+          alreadyRetried = true
+          absorb(
+            await tracedRound({
+              subQuestions: currentQuestions,
               depth,
               jobId,
               round,
               researchDeadlineAt,
-            )
-            s.setAttributes({ 'research.digests_returned': result.digests.length })
-            return result
-          },
-        )
-        workerUsage = addUsage(workerUsage, usage)
-        allDigests.push(...digests)
-        workersDispatchedTotal += currentQuestions.length
-        allLedgers.push(...ledgers)
+              retry: true,
+            }),
+          )
+        }
 
-        // Emit a cumulative snapshot per round, not just once at the end. argo upserts
-        // on (source, source_id, machine), so each snapshot overwrites the last rather
+        // Emit a cumulative snapshot per round, not just once at the end (this also covers
+        // the retry above, if one ran — workerUsage already includes it by this point). argo
+        // upserts on (source, source_id, machine), so each snapshot overwrites the last rather
         // than double-counting — and a job that dies mid-flight still leaves the tokens
         // it had already burned behind instead of reporting nothing at all.
         if (onUsage) {
@@ -185,7 +253,7 @@ export async function runResearch(
           jobId,
           round,
           workersDispatched: currentQuestions.length,
-          digestsReturned: digests.length,
+          digestsReturned: roundDigests.length,
         })
 
         if (round >= profile.rounds) break
@@ -193,44 +261,71 @@ export async function runResearch(
         const elapsed = Date.now() - start
         if (elapsed + profile.synthesisTimeoutMs >= profile.totalTimeoutMs) break
 
-        const gapQuestions = nextRoundQuestions(digests, askedLower, profile.gapWorkers)
+        const gapQuestions = nextRoundQuestions(roundDigests, askedLower, profile.gapWorkers)
         if (gapQuestions.length === 0) break
 
         currentQuestions = gapQuestions
         round += 1
       }
 
-      let submitted: SubmittedReport | null = null
-      let reason: 'submit_report' | 'assembled' | 'empty' = 'empty'
-
-      if (allDigests.length > 0) {
-        const { report: synthesized, usage: synthesisUsage } = await synthesize({
-          query: input.query,
-          digests: allDigests,
-          depth,
-          jobId,
+      // Guard clause: no digest was ever produced — every worker failed or timed out on every
+      // round, plus the one retry above. This used to fall through to a hardcoded stub
+      // ("Research could not gather any evidence... before the budget was exhausted"),
+      // returned as a normal `done` + `partial` job. That was a lie whenever the real cause
+      // was an upstream failure rather than the budget: 2026-09-10, three jobs died in 66ms
+      // out of a 300 000ms worker budget on `AI_APICallError: Forbidden`, and the report told
+      // the human "budget exhausted" anyway. A zero-evidence job IS a failed job — throwing
+      // here lets it surface as a terminal `error` naming the actual cause. `runInSpan`
+      // (lib/otel.ts) already marks the span error + records the exception on any throw, and
+      // `run-job.ts`'s `markFailed` already turns the rejection into `status: 'error'` — both
+      // handle this without any further code here.
+      if (allDigests.length === 0) {
+        // Same round/worker/digest attribute names the success path sets below, plus
+        // `research.failures` (unique to this branch) — so a zero-evidence job's own trace
+        // still carries round/worker context instead of ending on a bare `research.reason`,
+        // which is exactly what's needed to confirm "instant and budget-untouched" from the
+        // trace alone. No `report.status` / `cost.*` / `grounding.*` here: this branch never
+        // reaches grounding, and cost already reaches argo via the `onUsage` snapshot below.
+        span.setAttributes({
+          'research.reason': 'empty',
+          'research.rounds': round,
+          'research.workers': workersDispatchedTotal,
+          'research.digests': 0,
+          'research.failures': allFailures.length,
         })
-        leadUsage = addUsage(leadUsage, synthesisUsage)
 
-        if (synthesized) {
-          submitted = synthesized
-          reason = 'submit_report'
-        } else {
-          // Deterministic fallback — assembled in code, no LLM call. See assemble.ts.
-          submitted = assembleReport(allDigests)
-          reason = 'assembled'
+        // Report what was spent before throwing — a zero-evidence job still burned real
+        // plan/worker tokens against the upstream failures above, and the caller should see
+        // that spend rather than nothing at all.
+        if (onUsage) {
+          onUsage({
+            ...addUsage(leadUsage, workerUsage),
+            durationMs: Date.now() - start,
+            lead: leadUsage,
+            worker: workerUsage,
+          })
         }
+
+        throw new Error(`Research produced no evidence: ${describeFailures(allFailures)}`)
       }
 
-      // Last-resort degraded stub: no digest was ever produced (every worker failed/timed out).
-      if (!submitted) {
-        submitted = {
-          report: 'Research could not gather any evidence for this query before the budget was exhausted.',
-          citations: [],
-          sources: [],
-          unverified: [],
-        }
-        reason = 'empty'
+      const { report: synthesized, usage: synthesisUsage } = await synthesize({
+        query: input.query,
+        digests: allDigests,
+        depth,
+        jobId,
+      })
+      leadUsage = addUsage(leadUsage, synthesisUsage)
+
+      let submitted: SubmittedReport
+      let reason: 'submit_report' | 'assembled'
+      if (synthesized) {
+        submitted = synthesized
+        reason = 'submit_report'
+      } else {
+        // Deterministic fallback — assembled in code, no LLM call. See assemble.ts.
+        submitted = assembleReport(allDigests)
+        reason = 'assembled'
       }
 
       // The job-level gate. Every citation the synthesis model asserted is checked against the

@@ -12,6 +12,7 @@ import { log } from '../lib/log.js'
 import { withSpan } from '../lib/otel.js'
 import { emptyUsage, toUsageStats } from '../lib/usage.js'
 import type { UsageStats } from '../lib/usage.js'
+import { WORKER_ABORT_GRACE_MS } from './round.js'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyTool = Tool<any, any>
@@ -32,7 +33,7 @@ export async function runWorker(args: {
   // synthesis always keeps its full budget. A worker still running past this point banks
   // its digest (forced submit_digest) rather than being aborted — see prepareStep below.
   researchDeadlineAt: number
-}): Promise<{ digest: WorkerDigest | null; usage: UsageStats; ledger: LedgerSnapshot }> {
+}): Promise<{ digest: WorkerDigest | null; usage: UsageStats; ledger: LedgerSnapshot; error?: string }> {
   const { subQuestion, depth, jobId, round, researchDeadlineAt } = args
   const profile = profiles[depth]
   const start = Date.now()
@@ -119,9 +120,11 @@ export async function runWorker(args: {
             return {}
           },
           // See synthesize.ts — totalMs bounds retries too; abortSignal is the outer backstop.
+          // The grace beyond workerTimeoutMs is WORKER_ABORT_GRACE_MS (round.ts), which
+          // shouldRetryRound's margin also accounts for — stated once, not as two literals.
           timeout: { totalMs: profile.workerTimeoutMs },
           maxRetries: 2,
-          abortSignal: AbortSignal.timeout(profile.workerTimeoutMs + 30_000),
+          abortSignal: AbortSignal.timeout(profile.workerTimeoutMs + WORKER_ABORT_GRACE_MS),
           onStepEnd: (step) => {
             stepCount++
             log('worker.step', { jobId, round, tools: step.toolCalls.map((c) => c.toolName) })
@@ -191,6 +194,10 @@ export async function runWorker(args: {
           digest: null,
           usage: { ...emptyUsage(), durationMs: Date.now() - start },
           ledger: snapshot,
+          // Threaded up through dispatchRound so a zero-digest round can name the real
+          // upstream cause instead of the job falling back to a generic "budget exhausted"
+          // stub — see round.ts's header for the evidence.
+          error: String(err).slice(0, 300),
         }
       }
     },

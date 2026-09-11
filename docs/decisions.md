@@ -38,6 +38,7 @@ research is non-uniform; every query needs a different number of calls and depth
 | MCP shim | "later, only if an MCP-only client needs it — HTTP is the foundation" | **the primary path.** Claude Code is the main client and speaks MCP; `/mcp` mirrors sideclaw's submit → wait → read contract |
 | Telemetry | argo `POST /usage/records` as `source: research-gateway` | unchanged, grown to seven records per job; plus OTLP traces/logs to ClickStack, SDK-free |
 | Grounding | (not in the PRD) | the retrieval ledger, after issue #1: a rate-limited run cited unfetched URLs at `high`. Code counts evidence; the model never asserts verification |
+| Zero-evidence job | `done` + `partial` with a hardcoded "budget was exhausted" stub | **2026-09-11: terminal `error` naming the real upstream cause**, plus one round retry when the research budget is still nearly untouched. 14-day telemetry: 9 of 19 `partial` jobs had zero worker digests, and every one traced to a fast upstream IU-endpoint failure (e.g. a worker dying in 66ms out of a 300 000ms budget on `AI_APICallError: Forbidden`) — never to the budget itself |
 
 ## The fan-out architecture (2026-07-17)
 

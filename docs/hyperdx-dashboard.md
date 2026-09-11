@@ -44,12 +44,16 @@ research.job                    server, root — traceId = jobId
 |-|-|
 | `research.job` | `research.depth` · `research.query` (200 chars) · `research.reason` submit_report/assembled/empty · `research.rounds` · `research.workers` · `research.digests` · `report.status` ok/partial · `report.citations` · `report.sources` · `grounding.pages_retrieved` / `.pages_failed` / `.citations_dropped` / `.confidence_capped` · `llm.input_tokens` / `.cached_input_tokens` / `.output_tokens` / `.reasoning_tokens` · `cost.llm_usd` / `.search_usd` / `.total_usd` · `search.calls` · `render.count` / `.failures` |
 | `research.plan` | `llm.model` · `plan.sub_questions` · `plan.fallback` |
-| `research.round` | `research.round` · `research.workers_dispatched` · `research.digests_returned` · `research.gap_round` |
+| `research.round` | `research.round` · `research.workers_dispatched` · `research.digests_returned` · `research.gap_round` · `research.round_retry` (only on a retry pass — a round that lost EVERY worker is re-dispatched once over the same questions, so one `research.round` number can legitimately carry two spans) |
 | `research.worker` | `worker.sub_question` (200) · **`worker.forced_submit`** step_cap/context_cap/worker_deadline/job_deadline, absent = finished naturally · `worker.steps` · `worker.digest` · `worker.findings_kept` / `.findings_stripped` · `ledger.retrieved` / `.failed` / `.snippet` · `llm.*` |
 | `research.synthesis` | `synthesis.digests` · `synthesis.outcome` submitted/salvaged/rejected_no_call/rejected_guard/failed |
 | `research.ground` | the four `grounding.*` counts + `report.status` |
 | `tool.fetchPage` | `fetch.url` · `fetch.host` · `fetch.via` · `fetch.ok` · `fetch.chars` · `fetch.attempts` · `fetch.error` · events `fetch.step` {step, ok, chars, error, ms} and `fetch.rewrite` |
 | `tool.searchWeb` | `search.query` (200) · `search.via` cache/budget/dual/tavily/sonar · `search.results` |
+
+A zero-evidence job (`research.reason=empty`) is the one exception to that `research.job` row:
+its span still carries `research.rounds` / `.workers` / `.digests` (0) / `.failures`, but no
+`report.status` / `cost.*` / `grounding.*` — it throws before synthesis and grounding ever run.
 
 No personal API key is cached on the mini, so the dashboard is built once in the UI
 (Dashboards → New → add tiles). Each tile is a HyperDX search + chart; the SQL below is the

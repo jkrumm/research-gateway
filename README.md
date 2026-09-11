@@ -124,6 +124,9 @@ fully-read page is information and is kept). Gating runs at two boundaries:
 A URL in `unverified` is structurally ineligible as a `citations[].url`, so the two can never
 contradict each other. When evidence was lost the report comes back `status: "partial"` with a
 banner prepended to the markdown — text-only MCP clients read the prose and nothing else.
+A job that retrieved **nothing at all** is not a `partial` report: it is a terminal
+`status: "error"` whose message names the upstream cause (e.g. an IU-endpoint 403/503), one
+retry already spent trying to recover it.
 An archived (Wayback) page is `retrieved` but the worker is told to cap it at `medium` and
 name the snapshot date.
 
