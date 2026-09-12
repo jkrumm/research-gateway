@@ -1,7 +1,6 @@
 import { generateText, tool } from 'ai'
 import type { Tool } from 'ai'
 import { leadModel } from '../lib/llm.js'
-import { profiles } from './depth.js'
 import { synthesisPrompt } from './prompt.js'
 import { resolveSynthesisReport } from './extract.js'
 import { SubmittedReport, WorkerDigest } from './schema.js'
@@ -11,6 +10,7 @@ import { withSpan } from '../lib/otel.js'
 import { env } from '../env.js'
 import { emptyUsage, toUsageStats } from '../lib/usage.js'
 import type { UsageStats } from '../lib/usage.js'
+import { createIdleWatchdog } from '../lib/idle-watchdog.js'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyTool = Tool<any, any>
@@ -41,7 +41,6 @@ export async function synthesize(args: {
   jobId: string
 }): Promise<{ report: SubmittedReport | null; usage: UsageStats }> {
   const { query, digests, depth, jobId } = args
-  const profile = profiles[depth]
   const start = Date.now()
 
   const submitReportTool: AnyTool = tool({
@@ -54,6 +53,12 @@ export async function synthesize(args: {
     'research.synthesis',
     { 'llm.model': env.IU_LEAD_MODEL, 'synthesis.digests': digests.length },
     async (span) => {
+      // No wall-clock ceiling (settled 2026-09-12) — only an idle watchdog: aborted when a
+      // step has produced no activity for `RESEARCH_IDLE_TIMEOUT_MS`. See idle-watchdog.ts.
+      // Synthesis can legitimately run long writing out a large report; what it must never
+      // do is go silent.
+      const idle = createIdleWatchdog(env.RESEARCH_IDLE_TIMEOUT_MS)
+      idle.arm()
       try {
         const result = await generateText({
           model: leadModel,
@@ -61,12 +66,11 @@ export async function synthesize(args: {
           prompt: renderDigests(query, digests),
           tools: { submit_report: submitReportTool },
           toolChoice: { type: 'tool', toolName: 'submit_report' },
-          // `timeout.totalMs` bounds the whole call INCLUDING retries; a bare abortSignal
-          // does not, which let a synthesis overrun its ceiling in testing. The abortSignal
-          // is kept as an outer backstop (verified to fire correctly under Bun).
-          timeout: { totalMs: profile.synthesisTimeoutMs },
           maxRetries: 2,
-          abortSignal: AbortSignal.timeout(profile.synthesisTimeoutMs + 30_000),
+          abortSignal: idle.signal,
+          onStepEnd: () => idle.arm(),
+          onToolExecutionStart: () => idle.arm(),
+          onToolExecutionEnd: () => idle.arm(),
         })
 
         const usage = toUsageStats(result.usage, Date.now() - start)
@@ -112,6 +116,8 @@ export async function synthesize(args: {
         span.setStatus('error', String(err).slice(0, 300))
         log('synthesis.failed', { jobId, error: String(err) })
         return { report: null, usage: { ...emptyUsage(), durationMs: Date.now() - start } }
+      } finally {
+        idle.clear()
       }
     },
     'client',

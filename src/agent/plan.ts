@@ -10,6 +10,7 @@ import { withSpan } from '../lib/otel.js'
 import { env } from '../env.js'
 import { emptyUsage, toUsageStats } from '../lib/usage.js'
 import type { UsageStats } from '../lib/usage.js'
+import { createIdleWatchdog } from '../lib/idle-watchdog.js'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyTool = Tool<any, any>
@@ -53,6 +54,10 @@ export async function planResearch(args: {
     'research.plan',
     { 'llm.model': env.IU_LEAD_MODEL },
     async (span) => {
+      // No wall-clock ceiling (settled 2026-09-12) — only an idle watchdog: aborted when a
+      // step has produced no activity for `RESEARCH_IDLE_TIMEOUT_MS`. See idle-watchdog.ts.
+      const idle = createIdleWatchdog(env.RESEARCH_IDLE_TIMEOUT_MS)
+      idle.arm()
       try {
         const result = await generateText({
           model: leadModel,
@@ -60,10 +65,11 @@ export async function planResearch(args: {
           prompt: query,
           tools: { submit_plan: submitPlanTool },
           toolChoice: { type: 'tool', toolName: 'submit_plan' },
-          // See synthesize.ts — totalMs bounds retries too; abortSignal is the outer backstop.
-          timeout: { totalMs: profile.planTimeoutMs },
           maxRetries: 2,
-          abortSignal: AbortSignal.timeout(profile.planTimeoutMs + 30_000),
+          abortSignal: idle.signal,
+          onStepEnd: () => idle.arm(),
+          onToolExecutionStart: () => idle.arm(),
+          onToolExecutionEnd: () => idle.arm(),
         })
 
         const usage = toUsageStats(result.usage, Date.now() - start)
@@ -98,6 +104,8 @@ export async function planResearch(args: {
         span.setStatus('error', String(err).slice(0, 300))
         log('plan.fallback', { jobId, reason: String(err) })
         return { plan: fallback, usage: { ...emptyUsage(), durationMs: Date.now() - start } }
+      } finally {
+        idle.clear()
       }
     },
     'client',

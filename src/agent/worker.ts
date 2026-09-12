@@ -1,4 +1,4 @@
-import { generateText, tool, isStepCount, hasToolCall } from 'ai'
+import { generateText, tool, hasToolCall } from 'ai'
 import type { Tool, StopCondition, ToolSet } from 'ai'
 import { workerModel } from '../lib/llm.js'
 import { buildTools } from './tools.js'
@@ -12,7 +12,8 @@ import { log } from '../lib/log.js'
 import { withSpan } from '../lib/otel.js'
 import { emptyUsage, toUsageStats } from '../lib/usage.js'
 import type { UsageStats } from '../lib/usage.js'
-import { WORKER_ABORT_GRACE_MS } from './round.js'
+import { createIdleWatchdog } from '../lib/idle-watchdog.js'
+import { env } from '../env.js'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyTool = Tool<any, any>
@@ -29,12 +30,8 @@ export async function runWorker(args: {
   depth: Depth
   jobId: string
   round: number
-  // Wall-clock deadline for the WHOLE job's research phase (all rounds), reserved so
-  // synthesis always keeps its full budget. A worker still running past this point banks
-  // its digest (forced submit_digest) rather than being aborted — see prepareStep below.
-  researchDeadlineAt: number
 }): Promise<{ digest: WorkerDigest | null; usage: UsageStats; ledger: LedgerSnapshot; error?: string }> {
-  const { subQuestion, depth, jobId, round, researchDeadlineAt } = args
+  const { subQuestion, depth, jobId, round } = args
   const profile = profiles[depth]
   const start = Date.now()
 
@@ -81,8 +78,13 @@ export async function runWorker(args: {
     async (span) => {
       let stepCount = 0
       // Which ceiling cut this worker off, or undefined if it finished on its own terms.
-      // FIRST reason only — once the digest is forced, every later step trivially forces too.
-      let forcedReason: 'step_cap' | 'context_cap' | 'worker_deadline' | 'job_deadline' | undefined
+      let forcedReason: 'context_cap' | undefined
+
+      // No step/turn limit and no wall-clock ceiling (settled 2026-09-12) — a worker runs
+      // until it submits its digest, or this fires because a step has produced NO
+      // step/tool activity for `RESEARCH_IDLE_TIMEOUT_MS`. See lib/idle-watchdog.ts.
+      const idle = createIdleWatchdog(env.RESEARCH_IDLE_TIMEOUT_MS)
+      idle.arm()
 
       try {
         const result = await generateText({
@@ -90,45 +92,27 @@ export async function runWorker(args: {
           instructions: workerPrompt(depth),
           prompt: subQuestion,
           tools: allTools,
-          stopWhen: [isStepCount(profile.workerMaxSteps), hasToolCall('submit_digest'), contextGuard],
-          // Force the digest in-loop before any ceiling is hit — step, context, worker
-          // wall-clock, OR the job's research deadline. A worker that runs out of time dies
-          // with all its evidence; one that submits early banks a digest instead. The
-          // deadline arms matter most: they turn the dominant failure (timeout = total loss)
-          // into a partial win — and NEVER a hard kill (that reintroduces the exact bug class
-          // already fixed: a missing try/catch on searchWeb losing 60% of workers).
-          prepareStep: ({ stepNumber, steps }) => {
+          stopWhen: [hasToolCall('submit_digest'), contextGuard],
+          // Force the digest in-loop before the context ceiling is hit — a worker that
+          // never submits still banks a digest instead of being cut off empty-handed.
+          prepareStep: ({ steps }) => {
             const last = steps[steps.length - 1]
             const nearContext = (last?.usage?.inputTokens ?? 0) > profile.maxContextTokens * 0.8
-            const nearDeadline = Date.now() - start > profile.workerTimeoutMs * 0.6
-            // Job-level force arm: the research phase's whole budget is nearly spent, so bank
-            // now rather than risk running past the point synthesis needs its full timeout.
-            const nearJobDeadline = Date.now() > researchDeadlineAt - 30_000
-            const stepCap = stepNumber >= profile.workerMaxSteps - 1
-            if (stepCap || nearContext || nearDeadline || nearJobDeadline) {
-              // Same order the condition above evaluates in, so the label always names the
-              // arm that actually fired.
-              forcedReason ??= stepCap
-                ? 'step_cap'
-                : nearContext
-                  ? 'context_cap'
-                  : nearDeadline
-                    ? 'worker_deadline'
-                    : 'job_deadline'
+            if (nearContext) {
+              forcedReason ??= 'context_cap'
               return { activeTools: ['submit_digest'], toolChoice: { type: 'tool', toolName: 'submit_digest' } }
             }
             return {}
           },
-          // See synthesize.ts — totalMs bounds retries too; abortSignal is the outer backstop.
-          // The grace beyond workerTimeoutMs is WORKER_ABORT_GRACE_MS (round.ts), which
-          // shouldRetryRound's margin also accounts for — stated once, not as two literals.
-          timeout: { totalMs: profile.workerTimeoutMs },
           maxRetries: 2,
-          abortSignal: AbortSignal.timeout(profile.workerTimeoutMs + WORKER_ABORT_GRACE_MS),
+          abortSignal: idle.signal,
           onStepEnd: (step) => {
             stepCount++
+            idle.arm()
             log('worker.step', { jobId, round, tools: step.toolCalls.map((c) => c.toolName) })
           },
+          onToolExecutionStart: () => idle.arm(),
+          onToolExecutionEnd: () => idle.arm(),
         })
 
         const usage = toUsageStats(result.usage, Date.now() - start)
@@ -174,7 +158,6 @@ export async function runWorker(args: {
           'worker.findings_stripped': 0,
           'worker.error': String(err).slice(0, 300),
           'worker.elapsed_ms': Date.now() - start,
-          'worker.budget_ms': profile.workerTimeoutMs,
           'ledger.retrieved': snapshot.retrieved.length,
           'ledger.failed': snapshot.failed.length,
           'ledger.snippet': snapshot.snippet.length,
@@ -186,7 +169,6 @@ export async function runWorker(args: {
           jobId,
           round,
           elapsedMs: Date.now() - start,
-          budgetMs: profile.workerTimeoutMs,
           subQuestion: subQuestion.slice(0, 200),
           error: String(err),
         })
@@ -199,6 +181,8 @@ export async function runWorker(args: {
           // stub — see round.ts's header for the evidence.
           error: String(err).slice(0, 300),
         }
+      } finally {
+        idle.clear()
       }
     },
     'internal',

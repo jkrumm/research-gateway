@@ -900,9 +900,9 @@ export function buildDirectSourceTools(
     githubRepo: buildGithubRepoTool(ledger, jobId),
     findPackages: buildFindPackagesTool(ledger, jobId),
     // Tool definitions are re-sent in EVERY step's context, for EVERY worker, on EVERY job
-    // (8 workers x 3 concurrent jobs measured) against a workerMaxSteps of 5/7/9 (depth.ts) —
-    // a `standard` worker can make 7 tool calls total, so 12 tool definitions in front of a
-    // 7-call budget is the wrong trade. That is why crates/go/docker above are three new
+    // (8 workers x 3 concurrent jobs measured) against how few tool calls a worker actually
+    // needs (depth.ts's directive: "1-3 searches", "2-3 pages") — 12 tool definitions in
+    // front of that is the wrong trade. That is why crates/go/docker above are three new
     // `packageInfo` ecosystems rather than three new tools: zero extra definitions.
     // academicSearch and findVideos below are the two genuinely new tools added on top of that
     // baseline, because each answers a different KIND of question that no existing tool's

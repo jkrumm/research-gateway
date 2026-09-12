@@ -189,8 +189,8 @@ trimmed per depth (`maxSearchResults` 5 / 12 / 20), and a hard per-worker search
 (`maxSearches` 2 / 4 / 6) enforced in the tool — prompts asking for fewer searches did not
 hold, the same way citation instructions did not hold before the ledger. Sonar and Tavily
 overlap on only 14 of ~80 domains; a dual-backend merge exists behind `dualSearchFirstRound`
-and is **off**, because extra candidates produced no extra reading — the worker's ceiling is
-`workerMaxSteps`, not candidate supply. Numbers: [measurements](./docs/measurements.md#web-search-backend--why-sonar-and-the-two-pinned-settings).
+and is **off**, because extra candidates produced no extra reading — the worker reads as much
+as it decides to (there is no step cap since 2026-09-12), not as much as it is given. Numbers: [measurements](./docs/measurements.md#web-search-backend--why-sonar-and-the-two-pinned-settings).
 
 ## Source-of-truth lookups
 
@@ -205,8 +205,8 @@ and is **off**, because extra candidates produced no extra reading — the worke
 | what a practitioner said, at length, out loud | `findVideos` | `yt-dlp` search, keyless; `fetchPage` on a watch URL returns the transcript |
 | current API surface of a library | `libraryDocs` | Context7 |
 
-**Nine tools, not twelve.** Definitions are re-sent every step, every worker, every job against
-a `workerMaxSteps` of 5 / 7 / 9, so new *ecosystems* go on existing tools (`packageInfo`,
+**Nine tools, not twelve.** Definitions are re-sent every step, every worker, every job, so
+new *ecosystems* go on existing tools (`packageInfo`,
 `academicSearch`) rather than becoming new definitions. Adding a source is cheap; adding a
 tool is not. Podcasts needed no code: episode pages are ordinary web pages Readability reads.
 
@@ -332,8 +332,13 @@ The client side is one setting. In Claude Code, the per-server `timeout` in its 
 hard wall-clock cap **and** the floor on its own idle timeout (5 minutes for HTTP by default);
 progress notifications do **not** raise that floor, only the `timeout` does. Size it against
 **queue wait plus execution**, not execution alone: with `RESEARCH_MAX_CONCURRENCY=3` a fourth
-deep job waits for a slot before it starts running, and a budget that only covers the ~34-minute
-execution ceiling would abort a perfectly healthy call during a backlog.
+deep job waits for a slot before it starts running. There is no server-side execution ceiling
+to size against any more — depth (`src/agent/depth.ts`) controls breadth (workers, sources,
+rounds), not a time budget, and the only per-call bound left is an idle watchdog
+(`RESEARCH_IDLE_TIMEOUT_MS`) that aborts a single LLM call gone silent, not the job. Size the
+client `timeout` generously against the measured distribution
+([job duration](./docs/measurements.md#job-duration-by-depth--the-30-day-span-record)) plus
+queue wait, not a promised maximum.
 
 ```jsonc
 "research-gateway": { "type": "http", "url": "https://research.jkrumm.com/mcp", "timeout": 7200000 }

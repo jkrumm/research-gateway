@@ -20,9 +20,12 @@
 //
 //   - A job whose PROCESS died is caught by the heartbeat going stale (lib/job-store.ts). That
 //     is the only case the reaper sees.
-//   - A job whose process is alive but stuck is caught by its own phase timeouts — every LLM
-//     call is armed with `AbortSignal.timeout` (agent/plan.ts, worker.ts, synthesize.ts) and
-//     `run-job.ts` turns the resulting rejection into a terminal `error`. The reaper cannot see
+//   - A job whose process is alive but a single LLM call has gone silent is caught by that
+//     call's idle watchdog — every `generateText` call is armed with an `AbortSignal` that
+//     fires after `RESEARCH_IDLE_TIMEOUT_MS` of no step/tool activity (agent/plan.ts,
+//     worker.ts, synthesize.ts; env.ts; lib/idle-watchdog.ts), and `run-job.ts` turns the
+//     resulting rejection into a terminal `error`. There is no longer a wall-clock ceiling on
+//     the run itself (settled 2026-09-12) — only this liveness check. The reaper cannot see
 //     this case at all: the process is fine and keeps heartbeating.
 //
 // If an abort signal ever failed to fire, there would be no server-side ceiling left — the old

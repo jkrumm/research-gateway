@@ -1,40 +1,21 @@
 import { describe, it, expect } from 'bun:test'
-import {
-  shouldRetryRound,
-  describeFailures,
-  collectRoundOutcome,
-  ROUND_RETRY_BACKOFF_MS,
-  WORKER_ABORT_GRACE_MS,
-  type WorkerOutcome,
-} from './round.js'
+import { shouldRetryRound, describeFailures, collectRoundOutcome, ROUND_RETRY_BACKOFF_MS, type WorkerOutcome } from './round.js'
 import type { WorkerDigest } from './schema.js'
 import type { LedgerSnapshot } from './ledger.js'
 
 const base = {
   digests: 0,
   failures: 1,
-  now: 0,
-  researchDeadlineAt: 300_000,
-  workerTimeoutMs: 60_000,
   alreadyRetried: false,
 }
 
-// base's needed margin: workerTimeoutMs(60_000) + ROUND_RETRY_BACKOFF_MS(20_000) +
-// WORKER_ABORT_GRACE_MS(30_000) = 110_000ms.
-
 describe('shouldRetryRound', () => {
-  it('retries a round that failed fast with the budget untouched', () => {
+  it('retries a round that lost every worker', () => {
     expect(shouldRetryRound(base)).toBe(true)
   })
 
   it('does not retry once a job has already retried once', () => {
     expect(shouldRetryRound({ ...base, alreadyRetried: true })).toBe(false)
-  })
-
-  it('does not retry when the remaining window is smaller than one worker budget', () => {
-    // Only 50_000ms left before the research deadline, but a worker needs far more once
-    // backoff + abort grace are counted.
-    expect(shouldRetryRound({ ...base, now: 250_000 })).toBe(false)
   })
 
   it('does not retry when at least one digest came back', () => {
@@ -43,22 +24,6 @@ describe('shouldRetryRound', () => {
 
   it('does not retry when nothing failed (an empty round with no worker dispatched)', () => {
     expect(shouldRetryRound({ ...base, failures: 0 })).toBe(false)
-  })
-
-  it('no longer retries at the old (bare workerTimeoutMs) boundary', () => {
-    // Window is workerTimeoutMs + 1 — enough under the old gate, not under the widened one.
-    expect(shouldRetryRound({ ...base, now: base.researchDeadlineAt - (60_000 + 1) })).toBe(false)
-  })
-
-  it('does not retry when the window exactly equals the full widened margin', () => {
-    // Deadline math is a strict `>`, so equality is still "not enough".
-    const needed = 60_000 + ROUND_RETRY_BACKOFF_MS + WORKER_ABORT_GRACE_MS
-    expect(shouldRetryRound({ ...base, now: base.researchDeadlineAt - needed })).toBe(false)
-  })
-
-  it('retries when the window is one millisecond more than the full widened margin', () => {
-    const needed = 60_000 + ROUND_RETRY_BACKOFF_MS + WORKER_ABORT_GRACE_MS
-    expect(shouldRetryRound({ ...base, now: base.researchDeadlineAt - (needed + 1) })).toBe(true)
   })
 })
 
@@ -97,10 +62,9 @@ describe('describeFailures', () => {
   })
 })
 
-describe('ROUND_RETRY_BACKOFF_MS / WORKER_ABORT_GRACE_MS', () => {
-  it('are positive numbers of milliseconds', () => {
+describe('ROUND_RETRY_BACKOFF_MS', () => {
+  it('is a positive number of milliseconds', () => {
     expect(ROUND_RETRY_BACKOFF_MS).toBeGreaterThan(0)
-    expect(WORKER_ABORT_GRACE_MS).toBeGreaterThan(0)
   })
 })
 

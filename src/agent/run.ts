@@ -75,15 +75,10 @@ async function dispatchRound(
   depth: Depth,
   jobId: string,
   round: number,
-  researchDeadlineAt: number,
 ): Promise<RoundResult> {
   const sem = new Semaphore(env.WORKER_MAX_CONCURRENCY)
   const settled = await Promise.allSettled<WorkerOutcome>(
-    subQuestions.map((sq) =>
-      withLimit(sem, () =>
-        runWorker({ subQuestion: sq.question, depth, jobId, round, researchDeadlineAt }),
-      ),
-    ),
+    subQuestions.map((sq) => withLimit(sem, () => runWorker({ subQuestion: sq.question, depth, jobId, round }))),
   )
 
   return collectRoundOutcome(settled)
@@ -97,7 +92,6 @@ function tracedRound(args: {
   depth: Depth
   jobId: string
   round: number
-  researchDeadlineAt: number
   retry: boolean
 }): Promise<RoundResult> {
   return withSpan(
@@ -109,13 +103,7 @@ function tracedRound(args: {
       ...(args.retry ? { 'research.round_retry': true } : {}),
     },
     async (s) => {
-      const result = await dispatchRound(
-        args.subQuestions,
-        args.depth,
-        args.jobId,
-        args.round,
-        args.researchDeadlineAt,
-      )
+      const result = await dispatchRound(args.subQuestions, args.depth, args.jobId, args.round)
       s.setAttributes({ 'research.digests_returned': result.digests.length })
       return result
     },
@@ -164,13 +152,6 @@ export async function runResearch(
       leadUsage = addUsage(leadUsage, planUsage)
       log('research.plan', { jobId, subQuestions: plan.subQuestions.length })
 
-      // Synthesis MUST always retain its full budget — the research phase (plan + worker
-      // rounds) is only ever allowed to eat the remainder. Threaded into each worker so a
-      // worker running past this point BANKS its digest (forced submit_digest) instead of
-      // being aborted — an abort here would lose the whole digest, reintroducing the exact
-      // failure class (missing try/catch on searchWeb killing 60% of workers) already fixed.
-      const researchDeadlineAt = start + (profile.totalTimeoutMs - profile.synthesisTimeoutMs)
-
       let currentQuestions: SubQuestion[] = plan.subQuestions
       let round = 1
       while (currentQuestions.length > 0) {
@@ -195,23 +176,18 @@ export async function runResearch(
           depth,
           jobId,
           round,
-          researchDeadlineAt,
           retry: false,
         })
         absorb(first)
 
         // One retry per JOB, not per round (see `alreadyRetried` above): a round that lost
-        // EVERY worker to a fast upstream failure still has nearly its whole research budget
-        // left, so a second full pass over the SAME questions is worth it — but only when
-        // there's genuinely enough of the research window left for one. See round.ts's
-        // header for the evidence and the exact rule.
+        // EVERY worker to a fast upstream failure is nearly free to retry once — there is no
+        // research budget left to protect (settled 2026-09-12). See round.ts's header for the
+        // evidence and the exact rule.
         if (
           shouldRetryRound({
             digests: first.digests.length,
             failures: first.failures.length,
-            now: Date.now(),
-            researchDeadlineAt,
-            workerTimeoutMs: profile.workerTimeoutMs,
             alreadyRetried,
           })
         ) {
@@ -229,7 +205,6 @@ export async function runResearch(
               depth,
               jobId,
               round,
-              researchDeadlineAt,
               retry: true,
             }),
           )
@@ -257,9 +232,6 @@ export async function runResearch(
         })
 
         if (round >= profile.rounds) break
-
-        const elapsed = Date.now() - start
-        if (elapsed + profile.synthesisTimeoutMs >= profile.totalTimeoutMs) break
 
         const gapQuestions = nextRoundQuestions(roundDigests, askedLower, profile.gapWorkers)
         if (gapQuestions.length === 0) break

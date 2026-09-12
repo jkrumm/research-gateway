@@ -97,7 +97,7 @@ function buildMcpServer(): McpServer {
     {
       title: 'Agentic Research (submit)',
       description:
-        'Submit an agentic web research job: fans out Tavily searches, fetches and reads source pages, cross-verifies claims, and produces a cited markdown report. Returns IMMEDIATELY with a jobId — it does NOT block and does NOT return the report. Call job_wait({ jobId }) to block until the report is ready — it waits for the whole job, so one call is normally all you need — or job_status({ jobId }) for a non-blocking peek. depth=quick is fastest (fewer steps/sources); depth=standard (default) balances quality and speed; depth=deep is most thorough but slowest.',
+        'Submit an agentic web research job: fans out Tavily searches, fetches and reads source pages, cross-verifies claims, and produces a cited markdown report. Returns IMMEDIATELY with a jobId — it does NOT block and does NOT return the report. Call job_wait({ jobId }) to block until the report is ready — it waits for the whole job, so one call is normally all you need — or job_status({ jobId }) for a non-blocking peek. depth controls breadth, not a time budget: depth=quick uses one worker and fewer sources; depth=standard (default) fans out to more workers and sources; depth=deep uses the most workers, sources, and cross-verification rounds — it typically takes longer because it does more work, not because it is bounded to run longer.',
       inputSchema: z.object({
         query: z.string().min(3).describe('The research question or topic to investigate'),
         depth: Depth.optional().describe('Research depth: quick | standard (default) | deep'),

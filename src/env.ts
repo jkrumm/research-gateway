@@ -22,6 +22,13 @@ const Env = z.object({
   IU_LEAD_MODEL: z.string().default('gpt-5.6-luna'),
   IU_WORKER_MODEL: z.string().default('gpt-5.6-luna'),
   WORKER_MAX_CONCURRENCY: z.coerce.number().default(8),
+  // Idle watchdog for every LLM call in the agent loop (plan, worker, synthesis): aborted
+  // when no step/tool activity has been observed for this long. Replaces the old per-phase
+  // wall-clock ceilings (`workerTimeoutMs` et al.) — there is no longer a total time budget
+  // for a run, only a liveness check that a call is still doing something. `generateText` is
+  // non-streaming here, so "activity" is step/tool-execution boundaries, not token chunks —
+  // see worker.ts/plan.ts/synthesize.ts and `lib/idle-watchdog.ts`.
+  RESEARCH_IDLE_TIMEOUT_MS: z.coerce.number().default(300_000),
   // Which backend `searchWeb` uses. Sonar is the default: it runs over IU_BASE_URL on the
   // work key, costs about the same per call as a Tavily basic search, and returns ~20 dated
   // sources instead of 5 (measured 2026-08-02). Tavily is kept as a one-shot per-call

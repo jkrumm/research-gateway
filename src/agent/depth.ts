@@ -5,18 +5,13 @@ export interface DepthProfile {
   workers: number
   gapWorkers: number // workers per gap-filling round; round 1 uses `workers`
   rounds: number // max gap-filling rounds (>=1)
-  workerMaxSteps: number
   maxContextTokens: number // context-size guard for a worker loop
-  planTimeoutMs: number
-  workerTimeoutMs: number
-  synthesisTimeoutMs: number
-  totalTimeoutMs: number
   searchDepth: 'basic' | 'advanced' // Tavily
   searchContextSize: SonarContextSize // Sonar — the same knob, priced per request
   // How many search hits a worker is handed. This is the fan-out dial, and it is the
   // expensive one: every extra candidate is a page a worker may decide to fetch, so it
-  // drives worker tokens and wall-clock far more than it drives search spend (which is a
-  // flat per-request fee either way). Sonar returns 17-20 regardless; this trims them.
+  // drives worker tokens far more than it drives search spend (which is a flat per-request
+  // fee either way). Sonar returns 17-20 regardless; this trims them.
   //
   // Measured 2026-08-02, first live `standard` job on Sonar: handing workers all 20 hits
   // produced a genuinely better report (50 citations / 35 pages vs ~15 citations before)
@@ -41,41 +36,33 @@ export interface DepthProfile {
   //
   // OFF EVERYWHERE, because that turned out to relieve a constraint that was not binding.
   // Pages actually read across three deep jobs: 100 and 109 without it, 107 with it. The
-  // extra candidates produced no extra reading, because a worker's ceiling is
-  // `workerMaxSteps` (9), not candidate supply — it reads ~9 pages whether it was handed 20
-  // URLs or 31. Citations landed at 152, inside the 66-158 range the two runs without it
-  // already spanned. It cost 16 Tavily credits per deep job against the personal plan and
-  // bought nothing measurable.
+  // extra candidates produced no extra reading — a worker reads about as much as it needs to
+  // answer its sub-question whether it was handed 20 URLs or 31. Citations landed at 152,
+  // inside the 66-158 range the two runs without it already spanned. It cost 16 Tavily
+  // credits per deep job against the personal plan and bought nothing measurable.
   //
-  // The mechanism to revisit is `workerMaxSteps`, not this: pages-read predicts citations at
-  // r=+0.78 while searches-issued manages +0.52. Widen the reading budget before widening the
-  // candidate list. (n=1 with it vs n=2 without, and deep's variance is large — but the
+  // The mechanism to revisit is worker reading depth, not this: pages-read predicts citations
+  // at r=+0.78 while searches-issued manages +0.52. Widen the reading budget before widening
+  // the candidate list. (n=1 with it vs n=2 without, and deep's variance is large — but the
   // asymmetry decides it: leaving it on spends real money on an unproven effect, and turning
   // it back on is one boolean.)
   dualSearchFirstRound: boolean
   directive: string
 }
 
-// Timeouts are sized against MEASURED live throughput (2026-07-17): DeepSeek-V4-Pro
-// ~40 tok/s, V4-Flash ~80 tok/s — roughly half the figures in modelpick's benchmark.
-// Synthesis is the long pole: a report of N output tokens needs N/40 seconds on the
-// lead, so shrinking these re-introduces the truncated-report failure they replaced.
-//
-// The lead now runs Flash too (see env.ts), which roughly halves the tokens-per-second
-// cost of synthesis and so leaves MORE headroom inside these same ceilings. That is why
-// tuning for wall-clock cuts a gap round rather than a timeout: rounds are work we chose
-// to do, timeouts are the margin that keeps a long report from being truncated mid-write.
+// Depth is a BREADTH setting only: how many workers fan out, how many search hits and
+// searches each gets, how many gap-filling rounds run, and the directive telling the model
+// how thoroughly to read what it finds. There is no time or step ceiling here — a worker (or
+// the lead) runs until it submits its result or an idle watchdog decides it is wedged (see
+// `RESEARCH_IDLE_TIMEOUT_MS` in env.ts, and worker.ts/plan.ts/synthesize.ts). `quick` is
+// "fewer workers, fewer sources, a narrower directive", not "fastest" — a quick job with an
+// unusually stubborn source can still take longer than a lucky standard one.
 export const profiles: Record<Depth, DepthProfile> = {
   quick: {
     workers: 1,
     gapWorkers: 0,
     rounds: 1,
-    workerMaxSteps: 5,
     maxContextTokens: 40_000,
-    planTimeoutMs: 0,
-    workerTimeoutMs: 180_000,
-    synthesisTimeoutMs: 300_000,
-    totalTimeoutMs: 600_000,
     searchDepth: 'basic',
     // `low` at EVERY depth, deliberately. Sonar prices context size per request — $0.005
     // (low) / $0.008 (medium) / $0.012 (high) — and the intuition that a deep pass should
@@ -87,7 +74,7 @@ export const profiles: Record<Depth, DepthProfile> = {
     // evidence is waste. Raise this only if worker triage visibly picks worse pages.
     searchContextSize: 'low',
     maxSearchResults: 5,
-    // One worker, 5 steps — a second search is already the wrong call here.
+    // One worker, a narrow directive — a second search is already the wrong call here.
     maxSearches: 2,
     dualSearchFirstRound: false,
     directive:
@@ -97,12 +84,7 @@ export const profiles: Record<Depth, DepthProfile> = {
     workers: 4,
     gapWorkers: 0,
     rounds: 1,
-    workerMaxSteps: 7,
     maxContextTokens: 60_000,
-    planTimeoutMs: 120_000,
-    workerTimeoutMs: 300_000,
-    synthesisTimeoutMs: 600_000,
-    totalTimeoutMs: 1_500_000,
     searchDepth: 'basic',
     searchContextSize: 'low',
     // 12, not 8. A/B on one query showed the dial is much more sensitive than "trim the
@@ -131,25 +113,18 @@ export const profiles: Record<Depth, DepthProfile> = {
   },
   deep: {
     workers: 8,
-    // Gap rounds are sequential wall-clock: round 1 carries the substance, later rounds
-    // chase footnotes. Two rounds, not three — over 30 days of production spans a deep run
-    // is p50 366s / p95 1181s / max 1237s (docs/measurements.md), and the third round is the
-    // least valuable slice of that (it chases what two rounds of eight-then-three workers
-    // already missed) while costing a full sequential round of worker timeout plus its Tavily
-    // credits. Raise it back if coverage visibly suffers — and re-measure that table if you do,
-    // since deep wall time tracks rounds x workers directly.
+    // Gap rounds run sequentially: round 1 carries the substance, later rounds chase
+    // footnotes. Two rounds, not three — the third round is the least valuable slice of
+    // coverage (it chases what two rounds of eight-then-three workers already missed) while
+    // doubling the number of sequential worker fan-outs a job runs. Raise it back if
+    // coverage visibly suffers.
     gapWorkers: 3,
     rounds: 2,
-    workerMaxSteps: 9,
     maxContextTokens: 80_000,
-    planTimeoutMs: 180_000,
-    workerTimeoutMs: 420_000,
-    synthesisTimeoutMs: 900_000,
-    totalTimeoutMs: 3_000_000,
     searchDepth: 'advanced',
     searchContextSize: 'low',
-    // Deep keeps the full width — it has the step budget to actually read what it finds,
-    // and breadth of independent domains is the whole point of the tier.
+    // Deep keeps the full width — a deep worker is told to actually read what it finds, and
+    // breadth of independent domains is the whole point of the tier.
     maxSearchResults: 20,
     // Generous against the prompt's own "1-3", and still well under the ~6.7/worker
     // measured before this existed.

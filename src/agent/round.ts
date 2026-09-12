@@ -4,39 +4,23 @@
 //
 // The motivating evidence (14-day telemetry, 2026-09-11): 9 of 19 `partial` jobs produced ZERO
 // worker digests, and every one traces to an upstream IU-endpoint failure that died in
-// milliseconds, not to the research budget running out —
-//   2026-09-10 12:22-12:32Z: `worker.failed … elapsedMs:66, budgetMs:300000,
-//     error:"AI_APICallError: Forbidden"` — a worker that had 300 000 ms to work with died in
-//     66 ms. Three jobs, all instant.
-//   2026-08-31 10:35-11:00Z: `AI_RetryError: … Service Unavailable` across 6 workers + 3 plans,
-//     plus `research.plan` hitting `TimeoutError` at exactly 120 003 ms.
-// A round that fails THAT fast leaves its research budget almost entirely untouched, so a second
-// pass is nearly free — but only if there is genuinely enough time left for a FULL worker pass,
-// including the retry's own backoff sleep and its worker's own outer abort grace (see the exact
-// arithmetic on `shouldRetryRound` below). That is the whole principle behind the deadline check:
-// a retry must never eat into the window synthesis is reserved (see run.ts's
-// `researchDeadlineAt`). It also self-selects the right cases for free — a round that failed
-// fast (provider 403/503) has budget left and retries; a round that actually consumed its
-// budget chasing real work does not.
-//
-// The gate also assumes a round's workers all fit in one `WORKER_MAX_CONCURRENCY` batch (the
-// worker-count check against `researchDeadlineAt` treats the whole round as running in
-// parallel). If that env var ever drops below a round's worker count, the round runs in
-// sequential batches and this under-estimates the true wall-clock cost of a retry — harmless
-// today because worker.ts's `nearJobDeadline` arm force-submits regardless, but the gate would
-// no longer actually be checking the invariant it claims to.
+// milliseconds, not to a research budget running out —
+//   2026-09-10 12:22-12:32Z: `worker.failed … elapsedMs:66, error:"AI_APICallError: Forbidden"`
+//     — three jobs, all instant.
+//   2026-08-31 10:35-11:00Z: `AI_RetryError: … Service Unavailable` across 6 workers + 3 plans.
+// A round that fails THAT fast is nearly free to retry once. There is no research deadline to
+// protect any more (settled 2026-09-12 — the agent loop has no wall-clock ceiling), so the gate
+// is just "did every worker fail, and have we not already used the one retry this job gets" —
+// see `shouldRetryRound` below.
 
 import type { WorkerDigest } from './schema.js'
 import type { LedgerSnapshot } from './ledger.js'
 import type { UsageStats } from '../lib/usage.js'
 
+// Fixed pause before a retried round starts — not a step/turn or wall-clock ceiling on the
+// agent loop, just a deliberate backoff so a retry doesn't immediately re-hit a provider that
+// just 403'd or 503'd.
 export const ROUND_RETRY_BACKOFF_MS = 20_000
-
-// The grace `worker.ts`'s outer `AbortSignal.timeout` adds on top of a worker's own timeout
-// budget, so a worker that is about to be force-submitted (its in-loop deadline arms) still has
-// room to actually finish that last step before the hard abort lands. Stated once here — and
-// imported by worker.ts — instead of the same number living in two files.
-export const WORKER_ABORT_GRACE_MS = 30_000
 
 export interface RoundResult {
   digests: WorkerDigest[]
@@ -115,37 +99,19 @@ export function collectRoundOutcome(settled: PromiseSettledResult<WorkerOutcome>
   return { digests, usage, ledgers, failures }
 }
 
-// Whether a round that lost every worker deserves a second try.
-//
-// Worst-case arithmetic for the margin below: taking the retry costs `ROUND_RETRY_BACKOFF_MS`
-// (20s) of sleep before the retried round even starts, and the retried worker's own outer
-// backstop is `AbortSignal.timeout(workerTimeoutMs + WORKER_ABORT_GRACE_MS)` (worker.ts) — up
-// to 30s more than a bare `workerTimeoutMs` budget. A gate that only checked
-// `> workerTimeoutMs` could clear and still let the retry overrun the window synthesis is
-// reserved. Requiring the full `workerTimeoutMs + ROUND_RETRY_BACKOFF_MS +
-// WORKER_ABORT_GRACE_MS` is what actually protects that invariant.
-//
-// Sanity-checked against `depth.ts`'s real profiles — all three still clear this widened gate
-// on a fast (near-zero-elapsed) failure, worst case (now == start):
-//   quick:    window = totalTimeoutMs(600s) - synthesisTimeoutMs(300s) = 300s vs needed
-//             workerTimeoutMs(180s) + 20s + 30s = 230s
-//   standard: window = 1500s - 600s = 900s vs needed 300s + 20s + 30s = 350s
-//   deep:     window = 3000s - 900s = 2100s vs needed 420s + 20s + 30s = 470s
+// Whether a round that lost every worker deserves a second try. With no research deadline to
+// protect (settled 2026-09-12), the only guards left are the ones that make the retry
+// meaningful at all: it actually lost every worker, and this job hasn't already spent its one
+// retry.
 export function shouldRetryRound(args: {
   digests: number
   failures: number
-  now: number
-  researchDeadlineAt: number
-  workerTimeoutMs: number
   alreadyRetried: boolean
 }): boolean {
   if (args.digests !== 0) return false
   if (args.failures === 0) return false
   if (args.alreadyRetried) return false
-  return (
-    args.researchDeadlineAt - args.now >
-    args.workerTimeoutMs + ROUND_RETRY_BACKOFF_MS + WORKER_ABORT_GRACE_MS
-  )
+  return true
 }
 
 // Turns a round's raw worker error strings into one short, human-readable cause for the
