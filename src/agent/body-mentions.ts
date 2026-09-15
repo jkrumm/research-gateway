@@ -74,49 +74,103 @@ const LEFT = `(?<![\\p{L}\\p{N}\\p{M}\\-./@])`
 // `/caf%C3%A9`), while the report body may carry the raw spelling — and both are the same page.
 // So both forms are matched.
 //
-// Decoding is per-ESCAPE, not whole-string, and reserved delimiters are NOT decoded:
-//   - `decodeURIComponent` on the whole segment also decodes RFC 3986 structural delimiters
-//     (`%2F` `%3F` `%23` `%26` `%3D` `%2B`). A blocked `example.com/a%2Fb` is ONE segment whose
-//     data is the literal `a/b`; decoding it to `/a/b` would make it structurally a different,
-//     two-segment path, so body prose naming `example.com/a/b` was falsely flagged.
-//   - Bailing out whenever the decoded form contains `%` was too blunt the other way: a ledger
-//     entry for `50%25-off.html` (a valid encoding of a literal `%`) never matched prose naming
-//     the same page in raw form. Only escapes that still need another pass are skipped.
+// The decoded form comes from ONE left-to-right scan (`percentDecode`), which is what keeps the
+// three ways this can go wrong from happening:
+//   - Reserved delimiters (`%2F` `%3F` `%23` …) are never decoded: they change a URL's
+//     STRUCTURE, not its data. A blocked `example.com/a%2Fb` is one segment whose data is the
+//     literal `a/b`; decoding it would make it structurally equal to `example.com/a/b`.
+//   - Output is never re-scanned. A two-pass design decoded `%25` to a literal `%` and then
+//     re-read the result, so `50%2541-off` recombined into a fresh `%41` and decoded again.
+//   - An adjacent reserved escape does not veto a decodable neighbour: the scan decodes each
+//     escape on its own merits, so `caf%C3%A9%2Fmenu` still yields `café%2Fmenu`.
 function alternatives(raw: string): string {
   const escaped = escape(raw)
-  // Decode only escapes that are NOT reserved delimiters and DO form a valid UTF-8 sequence.
-  const decoded = raw.replace(/%(?![0-9A-Fa-f]{2})|%([0-9A-Fa-f]{2})/g, (m, hex: string) => {
-    if (!hex) return m // malformed escape: leave as-is
-    const code = Number.parseInt(hex, 16)
-    // Reserved delimiters stay encoded — decoding them would change the URL's structure.
-    if (RESERVED.has(hex.toUpperCase())) return m
-    if (code < 0x80) return String.fromCharCode(code)
-    // Multi-byte: let the platform decode the whole run, then fall back if it is incomplete.
-    return m
-  })
-  // Multi-byte sequences need a second pass over the contiguous escape runs.
-  const fully = decodeRuns(decoded)
-  if (fully === raw) return escaped
-  return `(?:${escaped}|${escape(fully)})`
-}
-
-// Decode contiguous percent-escape runs that are not reserved delimiters, so multi-byte UTF-8
-// (`%C3%A9` -> `é`) decodes while `%2F` and friends stay literal. Incomplete runs are left
-// alone rather than throwing.
-function decodeRuns(s: string): string {
-  return s.replace(/(?:%[0-9A-Fa-f]{2})+/g, (run) => {
-    const parts = run.match(/%[0-9A-Fa-f]{2}/g) ?? []
-    if (parts.some((p) => RESERVED.has(p.slice(1).toUpperCase()))) return run
-    try {
-      return decodeURIComponent(run)
-    } catch {
-      return run
-    }
-  })
+  const { text: decoded, createdEscape } = percentDecode(raw)
+  // A decoded form that CREATED a live `%HH` escape is ambiguous with a genuinely-escaped URL
+  // and must not become an alternative. `a%252Fb` decodes to `a%2Fb`, which is byte-identical to
+  // the canonical form of the DIFFERENT url `a%2Fb` — emitting it made prose naming that other
+  // page match this one. A `%HH` that was PRESERVED (a reserved delimiter, or a malformed
+  // escape) is fine: it is the same escape the source had.
+  if (decoded === raw || createdEscape) return escaped
+  return `(?:${escaped}|${escape(decoded)})`
 }
 
 // RFC 3986 reserved characters. Decoding these changes a URL's STRUCTURE, not its data.
 const RESERVED = new Set(['2F', '3F', '23', '26', '3D', '2B', '3B', '40', '3A', '24', '2C'])
+
+// One left-to-right pass. Each `%XX` is classified in place and the emitted text is never
+// re-examined, so a decoded `%` cannot recombine with following digits into a new escape, and a
+// reserved escape cannot veto its neighbours. Contiguous non-reserved escapes are collected into
+// a run and decoded together, because a multi-byte UTF-8 character is several escapes
+// (`%C3%A9` -> `é`) and decoding them individually would yield mojibake. An incomplete run is
+// emitted as-is rather than throwing.
+//
+// `createdEscape` reports whether the output contains a `%HH` whose `%` was PRODUCED by decoding
+// (rather than preserved from the source) — the recombination case the caller must reject.
+function percentDecode(s: string): { text: string; createdEscape: boolean } {
+  const out: Array<{ text: string; fromDecode: boolean }> = []
+  let i = 0
+  while (i < s.length) {
+    const step = nextStep(s, i)
+    out.push({ text: step.text, fromDecode: step.fromDecode })
+    i = step.next
+  }
+  return {
+    text: out.map((c) => c.text).join(''),
+    createdEscape: hasCreatedEscape(out),
+  }
+}
+
+// Is `s[i]` the start of a well-formed `%HH` escape?
+function isEscape(s: string, i: number): boolean {
+  return s[i] === '%' && /^[0-9A-Fa-f]{2}$/.test(s.slice(i + 1, i + 3))
+}
+
+// Is the escape at `i` one of the RFC 3986 structural delimiters? Those are never decoded.
+function isReserved(s: string, i: number): boolean {
+  return RESERVED.has(s.slice(i + 1, i + 3).toUpperCase())
+}
+
+// Consume one unit at `i`: a plain character, a preserved reserved escape, or a contiguous run
+// of decodable escapes. Returns the emitted text, whether it came from decoding, and where to
+// continue. Keeping this per-unit is what makes the single pass comprehensible — the emitted
+// text is never re-examined, so a decoded `%` cannot recombine into a fresh escape.
+function nextStep(s: string, i: number): { text: string; fromDecode: boolean; next: number } {
+  if (!isEscape(s, i)) return { text: s[i] ?? '', fromDecode: false, next: i + 1 }
+  if (isReserved(s, i)) return { text: s.slice(i, i + 3), fromDecode: false, next: i + 3 }
+  const end = decodableRunEnd(s, i)
+  const run = s.slice(i, end)
+  try {
+    return { text: decodeURIComponent(run), fromDecode: true, next: end }
+  } catch {
+    return { text: run, fromDecode: false, next: end } // incomplete multi-byte sequence
+  }
+}
+
+// Where the contiguous run of decodable, non-reserved escapes starting at `i` ends.
+function decodableRunEnd(s: string, i: number): number {
+  let end = i
+  while (isEscape(s, end) && !isReserved(s, end)) end += 3
+  return end
+}
+
+// A live escape is "created" when its `%` came from decoding and is followed by two hex digits —
+// byte-identical to a genuine escape, so the caller must reject the decoded form.
+function hasCreatedEscape(parts: ReadonlyArray<{ text: string; fromDecode: boolean }>): boolean {
+  const text = parts.map((c) => c.text).join('')
+  let offset = 0
+  for (const part of parts) {
+    if (part.fromDecode) {
+      for (let k = 0; k < part.text.length; k++) {
+        if (part.text[k] === '%' && /^[0-9A-Fa-f]{2}$/.test(text.slice(offset + k + 1, offset + k + 3))) {
+          return true
+        }
+      }
+    }
+    offset += part.text.length
+  }
+  return false
+}
 
 // What may not IMMEDIATELY FOLLOW a match — the character that would mean the URL continues:
 //   - a letter/number/mark extends the host or a path segment (`nunu.ggx`, `patch-notes2`)

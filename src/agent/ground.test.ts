@@ -1079,6 +1079,68 @@ describe('groundReport — the job boundary', () => {
       }
     })
 
+    // Decoding each escape on its own merits: a reserved delimiter must not veto an ADJACENT
+    // decodable escape. The earlier run-atomic design left the whole run undecoded when any part
+    // was reserved, so `caf%C3%A9%2Fmenu` never matched prose writing `café%2Fmenu`.
+    it('decodes a decodable escape adjacent to a reserved one', () => {
+      const blocked = 'https://example.com/caf%C3%A9%2Fmenu'
+      const rawish = 'https://example.com/caf\u00e9%2Fmenu'
+      const ledger = createLedger()
+      ledger.recordRetrieved('https://good.example/x')
+      ledger.recordFailed(blocked, 'rendered page empty')
+      for (const body of [`See ${blocked} here.`, `See ${rawish} here.`]) {
+        const report = groundReport(
+          submitted({
+            report: body,
+            citations: [{ claim: 'ok', url: 'https://good.example/x', confidence: 'high' }],
+            unverified: [{ topic: 't', url: blocked, reason: 'rendered page empty' }],
+          }),
+          ledger,
+        )
+        expect(`${body} -> ${report.report.includes('Unverified in prose')}`).toBe(`${body} -> true`)
+      }
+    })
+
+    // A decoded `%` must not recombine with following digits into a fresh escape (a two-pass
+    // design decoded `%25` to `%` and then re-read `%41` as a new escape).
+    it('does not re-decode a percent produced by decoding', () => {
+      const blocked = 'https://nunu.gg/50%2541-off.html'
+      const ledger = createLedger()
+      ledger.recordRetrieved('https://good.example/x')
+      ledger.recordFailed(blocked, 'rendered page empty')
+      const report = groundReport(
+        submitted({
+          report: `See ${blocked} here.`,
+          citations: [{ claim: 'ok', url: 'https://good.example/x', confidence: 'high' }],
+          unverified: [{ topic: 't', url: blocked, reason: 'rendered page empty' }],
+        }),
+        ledger,
+      )
+      expect(report.report).toContain('Unverified in prose')
+    })
+
+    // A decoded form that CREATED a live `%HH` escape is byte-identical to the canonical form of
+    // a DIFFERENT url, so it must not become an alternative: `a%252Fb` decodes to `a%2Fb`, and
+    // emitting that made prose naming the unrelated `a%2Fb` match this entry.
+    it('does not emit a decoded form that created a live escape', () => {
+      const blocked = 'https://example.com/a%252Fb'
+      const other = 'https://example.com/a%2Fb'
+      const ledger = createLedger()
+      ledger.recordRetrieved('https://good.example/x')
+      ledger.recordFailed(blocked, 'rendered page empty')
+      const mk = (body: string) =>
+        groundReport(
+          submitted({
+            report: body,
+            citations: [{ claim: 'ok', url: 'https://good.example/x', confidence: 'high' }],
+            unverified: [{ topic: 't', url: blocked, reason: 'rendered page empty' }],
+          }),
+          ledger,
+        )
+      expect(mk(`See ${other} here.`).report).not.toContain('Unverified in prose')
+      expect(mk(`See ${blocked} here.`).report).toContain('Unverified in prose')
+    })
+
     // A non-null but unparseable URL must be skipped without throwing, and without taking a
     // real mention down with it.
     it('skips an unparseable url without throwing or mis-skipping a real mention', () => {
