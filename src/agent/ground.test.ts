@@ -883,6 +883,16 @@ describe('groundReport — the job boundary', () => {
       expect(report.report).not.toContain('[bait](https://evil.example/steal)')
     })
 
+    // A scheme-less URL carrying userinfo AND a path must canonicalize the same as its
+    // `https://` form. The earlier guard `/^[^/\s]*@/` returned null for the scheme-less one
+    // (raw-string key) while the scheme'd one canonicalized to `example.com/path`, so the two
+    // never matched and an honest citation was dropped depending on which form carried the
+    // scheme.
+    it('canonicalizes userinfo+path the same with and without a scheme', () => {
+      expect(normalizeUrl('user@example.com/path')).toBe(normalizeUrl('https://user@example.com/path'))
+      expect(normalizeUrl('user@example.com/path')).toBe('example.com/path')
+    })
+
     // A non-null but unparseable URL must be skipped without throwing, and without taking a
     // real mention down with it.
     it('skips an unparseable url without throwing or mis-skipping a real mention', () => {

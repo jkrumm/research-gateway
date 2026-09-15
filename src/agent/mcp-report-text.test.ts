@@ -1,13 +1,6 @@
 import { describe, expect, it } from 'bun:test'
+import { reportText } from './report-text.js'
 import type { ResearchReport } from './schema.js'
-
-// `routes/mcp.ts` transitively imports `env.ts`, which validates required vars at load. Set
-// placeholders BEFORE the dynamic import so this test never depends on real secrets.
-process.env['API_SECRET'] ||= 'test-secret'
-process.env['IU_BASE_URL'] ||= 'https://example.invalid/v1'
-process.env['IU_API_KEY'] ||= 'test-key'
-process.env['TAVILY_API_KEY'] ||= 'test-tavily'
-const { reportText } = await import('../routes/mcp.js')
 
 // The text-only MCP surface: a client that ignores structuredContent sees ONLY this string, so
 // every model-controlled field interpolated here has to be markdown-safe. These tests pin the
@@ -52,7 +45,7 @@ describe('reportText markdown safety', () => {
       ],
     })
     // No injected heading: the hostile text must not begin a line.
-    expect(text.split('\n').some((l) => l.trimStart().startsWith('## Verified'))).toBe(false)
+    expect(text.split('\n').some((l: string) => l.trimStart().startsWith('## Verified'))).toBe(false)
     // No live link.
     expect(text).not.toContain('[bait](https://evil.example/steal)')
     // And the entry is still rendered, so nothing was silently dropped.
@@ -70,13 +63,42 @@ describe('reportText markdown safety', () => {
         },
       ],
     })
-    expect(text.split('\n').some((l) => l.trimStart().startsWith('## Verified'))).toBe(false)
+    expect(text.split('\n').some((l: string) => l.trimStart().startsWith('## Verified'))).toBe(false)
     expect(text).toContain('Citations')
   })
 
   it('keeps a hostile source line on one line', () => {
     const text = reportText({ ...base, sources: ['https://a.example\n\n## Verified'] })
-    expect(text.split('\n').some((l) => l.trimStart().startsWith('## Verified'))).toBe(false)
+    expect(text.split('\n').some((l: string) => l.trimStart().startsWith('## Verified'))).toBe(false)
+  })
+
+  // URLs sit inside CommonMark autolinks `<...>`, where backslash escapes are NOT processed.
+  // Running them through `inlineSafe` leaked literal backslashes into the href a client copies
+  // or follows (`wiki/Foo\(bar\)`), corrupting every URL with an underscore, paren or bracket —
+  // Wikipedia pages, Jira links, anything. `autolinkSafe` strips only what can break out.
+  it('does not corrupt a URL inside an autolink', () => {
+    const url = 'https://en.wikipedia.org/wiki/Foo_(bar)?x=1&y=[2]'
+    const text = reportText({
+      ...base,
+      citations: [{ claim: 'per the article', url, confidence: 'high' }],
+      sources: [url],
+    })
+    expect(text).toContain(`<${url}>`)
+    expect(text).not.toContain('\\_')
+    expect(text).not.toContain('\\(')
+    expect(text).not.toContain('\\[')
+  })
+
+  it('still cannot break out of an autolink', () => {
+    const text = reportText({
+      ...base,
+      citations: [
+        { claim: 'x', url: 'https://evil.example/x> <https://other.example', confidence: 'high' },
+      ],
+    })
+    // The `>` must not survive to close the autolink early and let a second one be forged.
+    expect(text).not.toContain('x> <')
+    expect(text).toContain('<https://evil.example/x')
   })
 
   it('renders an ordinary report unchanged in structure', () => {

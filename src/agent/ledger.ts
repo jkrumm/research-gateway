@@ -52,9 +52,15 @@ export function urlParts(raw: string): { host: string; rest: string; hash: strin
   // A bare email address is not a web page. Prepending `https://` would make
   // `https://user@example.com` parse the part after the `@` as a HOST, canonicalizing
   // `user@example.com` to `example.com` — colliding with the real page `https://example.com`,
-  // so one bogus `unverified` entry could suppress citations to an unrelated site. Only
-  // applies with no scheme: `https://user@example.com` is a legitimate (if rare) URL form.
-  if (!hasScheme(t) && /^[^/\s]*@/.test(t)) return null
+  // so one bogus `unverified` entry could suppress citations to an unrelated site.
+  //
+  // Only a BARE address (no path) is rejected. An earlier form of this guard was
+  // `/^[^/\s]*@/`, which also swallowed a scheme-less URL carrying userinfo AND a path:
+  // `user@example.com/path` returned null (raw-string key) while `https://user@example.com/path`
+  // canonicalized to `example.com/path`, so the two forms never matched and an honest citation
+  // was dropped depending on which one carried the scheme. Requiring the whole string to be
+  // `local@domain` keeps the collision guard without breaking that pair.
+  if (!hasScheme(t) && /^[^/\s]*@[^/\s]*$/.test(t)) return null
   let parsed: URL
   try {
     parsed = new URL(withScheme(t))
