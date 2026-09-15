@@ -721,6 +721,45 @@ describe('groundReport — the job boundary', () => {
       expect(upper.report).not.toContain('Unverified in prose')
     })
 
+    // A host-less authority (`file:///etc/passwd`, `mailto:…`) parses to an EMPTY host. With
+    // the path and fragment optional, an empty host pattern collapses the whole regex to just
+    // the boundaries — matching almost any prose. `UnverifiedEntry.url` is an unrestricted
+    // string, so a synthesizer can put anything here.
+    it('does not flag prose for a blocked URL with no host', () => {
+      const ledger = createLedger()
+      ledger.recordRetrieved('https://good.example')
+      ledger.recordFailed('file:///etc/passwd', 'rendered page empty')
+      const blocked = { topic: 't', url: 'file:///etc/passwd', reason: 'rendered page empty' }
+      for (const body of ['The rate rose to 55%.', 'Revenue grew 12% year over year.', 'A short sentence.']) {
+        const report = groundReport(
+          submitted({
+            report: body,
+            citations: [{ claim: 'ok', url: 'https://good.example', confidence: 'high' }],
+            unverified: [blocked],
+          }),
+          ledger,
+        )
+        expect(report.report).not.toContain('Unverified in prose')
+      }
+    })
+
+    // A ported IDN host must match its Unicode spelling: `domainToUnicode` returns an empty
+    // string for `host:port`, so the port has to be split off before the domain is folded.
+    it('flags a ported IDN host mentioned in Unicode', () => {
+      const ledger = createLedger()
+      ledger.recordRetrieved('https://good.example')
+      ledger.recordFailed('https://müller.example:8443/x', 'rendered page empty')
+      const report = groundReport(
+        submitted({
+          report: 'See https://müller.example:8443/x here.',
+          citations: [{ claim: 'ok', url: 'https://good.example', confidence: 'high' }],
+          unverified: [{ topic: 't', url: 'https://müller.example:8443/x', reason: 'rendered page empty' }],
+        }),
+        ledger,
+      )
+      expect(report.report).toContain('Unverified in prose')
+    })
+
     // A non-null but unparseable URL must be skipped without throwing, and without taking a
     // real mention down with it.
     it('skips an unparseable url without throwing or mis-skipping a real mention', () => {

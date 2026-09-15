@@ -103,22 +103,32 @@ const RIGHT = `(?![\\p{L}\\p{N}\\p{M}\\-/%&=+$@?#])(?!:\\d)(?!\\.(?:\\p{L}|\\d))
 // matches, and the fragmentless one fails the RIGHT boundary at `#`.
 function patternFor(url: string): RegExp | null {
   const parts = urlParts(url)
-  if (!parts) return null
+  // A host-less authority (`file:///etc/passwd`, `mailto:…`) parses to an EMPTY host. Without
+  // this guard the host pattern is empty, and since the path and fragment are optional the
+  // whole regex collapses to just the boundaries — matching almost any prose ("The rate rose
+  // to 55%." was annotated as naming a blocked `file:///etc/passwd`). `UnverifiedEntry.url`
+  // is an unrestricted string, so a synthesizer can put anything here. Nothing to search for
+  // means nothing to flag.
+  if (!parts || !parts.host) return null
   const { host, rest, hash } = parts
   // A Unicode host is IDNA-encoded to punycode by `new URL()` (`münchen.de` ->
   // `xn--mnchen-3ya.de`), but the report body and the caller's own `unverified` entry both
   // carry the Unicode form. Accepting either spelling is the difference between flagging a
   // real mention and silently missing it, so the host alternation carries both.
   //
-  // `domainToUnicode` returns an EMPTY STRING for input that is not a bare domain — notably
-  // `host:port`, which is exactly what a ported URL has. An alternation with an empty branch
-  // always succeeds, and with `rest`/`hash` optional that made the whole pattern match almost
-  // any prose ("Revenue grew 12% year over year." annotated a blocked
-  // `https://internal.example:8443/dashboard`). Only build the alternation for a non-empty,
-  // genuinely different spelling.
-  const unicodeHost = domainToUnicode(host)
+  // `domainToUnicode` must be given the host WITHOUT its port: it returns an empty string for
+  // `host:port`, which is not a bare domain. An empty branch in the alternation would always
+  // succeed, and with the path optional that made a ported blocked URL match almost any prose
+  // ("Revenue grew 12% year over year." annotated a blocked
+  // `https://internal.example:8443/dashboard`). Split the port off, fold the domain, re-attach.
+  const portAt = host.lastIndexOf(':')
+  const domain = portAt === -1 ? host : host.slice(0, portAt)
+  const port = portAt === -1 ? '' : host.slice(portAt)
+  const unicodeDomain = domainToUnicode(domain)
   const hostPattern =
-    unicodeHost && unicodeHost !== host ? `(?:${ciClass(host)}|${ciClass(unicodeHost)})` : ciClass(host)
+    unicodeDomain && unicodeDomain !== domain
+      ? `(?:${ciClass(domain)}|${ciClass(unicodeDomain)})${escape(port)}`
+      : ciClass(host)
   // The `u` flag is load-bearing: without it `\p{L}` is an identity escape for a literal `p`,
   // so the boundary classes silently degrade to `[p{L}N...]` and stop excluding letters —
   // which is how `notnunu.gg` and `münchen.de` got flagged as `nunu.gg` and `nchen.de`.
