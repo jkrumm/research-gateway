@@ -1,0 +1,4 @@
+# src/agent/ground.ts carried a stray NUL byte in master (removed in this branch), which made
+# git and GitHub treat the whole file as binary and hide its diff. Force text treatment so a
+# diff against the pre-fix blob is reviewable.
+src/agent/ground.ts diff
