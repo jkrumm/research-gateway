@@ -1,5 +1,6 @@
 import { domainToUnicode } from 'node:url'
 import { normalizeUrl, urlParts } from './ledger.js'
+import { inlineSafe } from './markdown.js'
 import type { UnverifiedEntry } from './schema.js'
 
 // Issue #7: the citation gate does not reach the report PROSE. A synthesizer can still name
@@ -151,19 +152,23 @@ function patternFor(url: string): RegExp | null {
 }
 
 // Whether the body names this source.
+//
+// The body is normalized before matching: invisible Unicode format characters (Cf — zero-width
+// space, soft hyphen, word joiner, BOM) inserted inside a URL defeat a purely literal match
+// while rendering identically to a reader, so a synthesizer could name a blocked source in
+// prose and get `annotated: 0` with no warning. Stripping them is the same call the module
+// already makes for whitespace and casing: a difference a reader cannot see must not change
+// whether the source is flagged.
 function referencesBody(body: string, url: string): boolean {
   const pattern = patternFor(url)
-  return pattern !== null && pattern.test(body)
+  return pattern !== null && pattern.test(stripInvisible(body))
 }
 
-// Flatten a model-controlled string for safe interpolation into the blockquote note. `url` and
-// `reason` are free-form strings the synthesis model fully controls, and the note is markdown
-// in the report body: a reason containing a blank line plus `> **Verified:** …` would close
-// the blockquote early and forge a look-alike verification stamp directly beneath the real
-// one. Collapsing all whitespace to single spaces means the note can never contain a line
-// break, so it cannot escape its own blockquote or open a new block.
-function inline(s: string): string {
-  return s.replace(/\s+/g, ' ').trim()
+// Remove Unicode format characters (Cf) — the invisible ones. Deliberately NOT a general
+// "strip all non-ASCII": a legitimate IDN host is not a format character, and removing it
+// would break the Unicode-host matching this module supports.
+function stripInvisible(s: string): string {
+  return s.replace(/\p{Cf}/gu, '')
 }
 
 // Prepend one blockquote note per distinct disowned source the body names, carrying the
@@ -189,8 +194,8 @@ export function scrubBody(
     seen.add(key)
     if (!referencesBody(body, entry.url)) continue
     annotated++
-    // `inline()` on both fields: they are model-controlled and this is markdown (see above).
-    notes += `> **Unverified in prose:** this report references ${inline(entry.url)}, which this run could NOT verify (${inline(entry.reason)}). Treat that reference as unconfirmed — see \`unverified\`.\n\n`
+    // `inlineSafe()` on both fields: model-controlled, and this is markdown (see markdown.ts).
+    notes += `> **Unverified in prose:** this report references ${inlineSafe(entry.url)}, which this run could NOT verify (${inlineSafe(entry.reason)}). Treat that reference as unconfirmed — see \`unverified\`.\n\n`
   }
   return { body: notes + body, annotated }
 }

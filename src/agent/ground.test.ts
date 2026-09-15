@@ -829,6 +829,60 @@ describe('groundReport — the job boundary', () => {
       expect(report.report.split('\n').some((l) => l.trimStart().startsWith('> **Verified:**'))).toBe(false)
     })
 
+    // Invisible Unicode format characters (Cf) inserted inside a URL defeat a purely literal
+    // match while rendering identically to a reader — a synthesizer could name a blocked
+    // source and get `annotated: 0` with no warning. A difference a reader cannot see must not
+    // change whether the source is flagged.
+    it('sees through invisible Unicode format characters in the body', () => {
+      const ledger = createLedger()
+      ledger.recordRetrieved('https://good.example')
+      ledger.recordFailed('https://nunu.gg/patch-notes', 'rendered page empty')
+      const blocked = { topic: 't', url: 'https://nunu.gg/patch-notes', reason: 'rendered page empty' }
+      for (const [name, ch] of [
+        ['zero-width space', '\u200b'],
+        ['soft hyphen', '\u00ad'],
+        ['word joiner', '\u2060'],
+      ] as const) {
+        for (const body of [
+          `See https://nunu${ch}.gg/patch-notes here.`,
+          `See https://nunu.gg/patch${ch}-notes here.`,
+        ]) {
+          const report = groundReport(
+            submitted({
+              report: body,
+              citations: [{ claim: 'ok', url: 'https://good.example', confidence: 'high' }],
+              unverified: [blocked],
+            }),
+            ledger,
+          )
+          expect(`${name}: ${report.report.includes('Unverified in prose')}`).toBe(`${name}: true`)
+        }
+      }
+    })
+
+    // A model-controlled field must not render as live markdown inside the note: a `reason`
+    // carrying `[bait](https://evil.example)` would otherwise put a clickable link into the
+    // transparency annotation itself.
+    it('does not let a reason smuggle live markdown into the note', () => {
+      const ledger = createLedger()
+      ledger.recordRetrieved('https://good.example/x')
+      const report = groundReport(
+        submitted({
+          report: 'Per https://nunu.gg/patch-notes the rate rose.',
+          citations: [{ claim: 'ok', url: 'https://good.example/x', confidence: 'high' }],
+          unverified: [
+            {
+              topic: 't',
+              url: 'https://nunu.gg/patch-notes',
+              reason: 'see [bait](https://evil.example/steal)',
+            },
+          ],
+        }),
+        ledger,
+      )
+      expect(report.report).not.toContain('[bait](https://evil.example/steal)')
+    })
+
     // A non-null but unparseable URL must be skipped without throwing, and without taking a
     // real mention down with it.
     it('skips an unparseable url without throwing or mis-skipping a real mention', () => {
