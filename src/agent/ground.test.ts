@@ -1035,6 +1035,50 @@ describe('groundReport — the job boundary', () => {
       }
     })
 
+    // Decoding is per-escape and skips RFC 3986 reserved delimiters. `%2F` is a literal `/` in
+    // a segment's DATA, not a path separator: decoding it would make `example.com/a%2Fb` (one
+    // segment) structurally equal to `example.com/a/b` (two), so body prose naming the latter
+    // was falsely flagged as naming the former.
+    it('does not decode a reserved delimiter into a path separator', () => {
+      const blocked = 'https://example.com/a%2Fb'
+      const other = 'https://example.com/a/b'
+      const ledger = createLedger()
+      ledger.recordRetrieved('https://good.example/x')
+      ledger.recordFailed(blocked, 'rendered page empty')
+      const mk = (body: string) =>
+        groundReport(
+          submitted({
+            report: body,
+            citations: [{ claim: 'ok', url: 'https://good.example/x', confidence: 'high' }],
+            unverified: [{ topic: 't', url: blocked, reason: 'rendered page empty' }],
+          }),
+          ledger,
+        )
+      expect(mk(`See ${other} here.`).report).not.toContain('Unverified in prose')
+      expect(mk(`See ${blocked} here.`).report).toContain('Unverified in prose')
+    })
+
+    // `%25` is a valid encoding of a literal `%`. Bailing out of decoding whenever the result
+    // contained `%` was too blunt: prose naming the same page in raw form never matched.
+    it('matches a percent-escaped literal percent in either form', () => {
+      const blocked = 'https://nunu.gg/50%25-off.html'
+      const raw = 'https://nunu.gg/50%-off.html'
+      const ledger = createLedger()
+      ledger.recordRetrieved('https://good.example/x')
+      ledger.recordFailed(blocked, 'rendered page empty')
+      for (const body of [`See ${blocked} here.`, `See ${raw} here.`]) {
+        const report = groundReport(
+          submitted({
+            report: body,
+            citations: [{ claim: 'ok', url: 'https://good.example/x', confidence: 'high' }],
+            unverified: [{ topic: 't', url: blocked, reason: 'rendered page empty' }],
+          }),
+          ledger,
+        )
+        expect(`${body} -> ${report.report.includes('Unverified in prose')}`).toBe(`${body} -> true`)
+      }
+    })
+
     // A non-null but unparseable URL must be skipped without throwing, and without taking a
     // real mention down with it.
     it('skips an unparseable url without throwing or mis-skipping a real mention', () => {

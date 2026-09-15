@@ -67,24 +67,56 @@ const LEFT = `(?<![\\p{L}\\p{N}\\p{M}\\-./@])`
 
 // A literal for one RAW segment, plus its percent-decoded form when they differ. Takes the raw
 // string and escapes internally — passing an already-escaped value here was a bug: the escape
-// step would be skipped on the branch that returns early, leaving `?` and `+` in the pattern as
-// live regex metacharacters.
+// step would be skipped on the early-return branch, leaving `?` and `+` in the pattern as live
+// regex metacharacters.
 //
 // `urlParts` canonicalizes through `new URL()`, which percent-encodes non-ASCII (`/café` ->
-// `/caf%C3%A9`), while the report body may carry either spelling — and both are the same page.
-// Decoding is guarded: a malformed sequence (`%zz`) would throw, and a decoded form that is not
-// a plain literal (it still contains `%`) is skipped rather than risk a double-decode.
+// `/caf%C3%A9`), while the report body may carry the raw spelling — and both are the same page.
+// So both forms are matched.
+//
+// Decoding is per-ESCAPE, not whole-string, and reserved delimiters are NOT decoded:
+//   - `decodeURIComponent` on the whole segment also decodes RFC 3986 structural delimiters
+//     (`%2F` `%3F` `%23` `%26` `%3D` `%2B`). A blocked `example.com/a%2Fb` is ONE segment whose
+//     data is the literal `a/b`; decoding it to `/a/b` would make it structurally a different,
+//     two-segment path, so body prose naming `example.com/a/b` was falsely flagged.
+//   - Bailing out whenever the decoded form contains `%` was too blunt the other way: a ledger
+//     entry for `50%25-off.html` (a valid encoding of a literal `%`) never matched prose naming
+//     the same page in raw form. Only escapes that still need another pass are skipped.
 function alternatives(raw: string): string {
   const escaped = escape(raw)
-  let decoded: string
-  try {
-    decoded = decodeURIComponent(raw)
-  } catch {
-    return escaped
-  }
-  if (decoded === raw || decoded.includes('%')) return escaped
-  return `(?:${escaped}|${escape(decoded)})`
+  // Decode only escapes that are NOT reserved delimiters and DO form a valid UTF-8 sequence.
+  const decoded = raw.replace(/%(?![0-9A-Fa-f]{2})|%([0-9A-Fa-f]{2})/g, (m, hex: string) => {
+    if (!hex) return m // malformed escape: leave as-is
+    const code = Number.parseInt(hex, 16)
+    // Reserved delimiters stay encoded — decoding them would change the URL's structure.
+    if (RESERVED.has(hex.toUpperCase())) return m
+    if (code < 0x80) return String.fromCharCode(code)
+    // Multi-byte: let the platform decode the whole run, then fall back if it is incomplete.
+    return m
+  })
+  // Multi-byte sequences need a second pass over the contiguous escape runs.
+  const fully = decodeRuns(decoded)
+  if (fully === raw) return escaped
+  return `(?:${escaped}|${escape(fully)})`
 }
+
+// Decode contiguous percent-escape runs that are not reserved delimiters, so multi-byte UTF-8
+// (`%C3%A9` -> `é`) decodes while `%2F` and friends stay literal. Incomplete runs are left
+// alone rather than throwing.
+function decodeRuns(s: string): string {
+  return s.replace(/(?:%[0-9A-Fa-f]{2})+/g, (run) => {
+    const parts = run.match(/%[0-9A-Fa-f]{2}/g) ?? []
+    if (parts.some((p) => RESERVED.has(p.slice(1).toUpperCase()))) return run
+    try {
+      return decodeURIComponent(run)
+    } catch {
+      return run
+    }
+  })
+}
+
+// RFC 3986 reserved characters. Decoding these changes a URL's STRUCTURE, not its data.
+const RESERVED = new Set(['2F', '3F', '23', '26', '3D', '2B', '3B', '40', '3A', '24', '2C'])
 
 // What may not IMMEDIATELY FOLLOW a match — the character that would mean the URL continues:
 //   - a letter/number/mark extends the host or a path segment (`nunu.ggx`, `patch-notes2`)
