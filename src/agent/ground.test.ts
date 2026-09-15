@@ -1106,6 +1106,29 @@ describe('groundReport — the job boundary', () => {
       expect(miss.report).not.toContain('Unverified in prose')
     })
 
+    // The dedup key joins url and topic, so the separator must be a character that cannot occur
+    // in either — otherwise two distinct entries collide into one and a disavowal is silently
+    // dropped. A space does not qualify: url `https://a.example/x y` + topic `t` and url
+    // `https://a.example/x` + topic `y t` both join to `https://a.example/x y t`.
+    it('keeps two distinct entries that would collide on a space-joined key', () => {
+      const ledger = createLedger()
+      ledger.recordRetrieved('https://good.example')
+      ledger.recordFailed('https://a.example/x y', 'x')
+      ledger.recordFailed('https://a.example/x', 'y')
+      const report = groundReport(
+        submitted({
+          report: 'Nothing relevant here.',
+          citations: [{ claim: 'ok', url: 'https://good.example', confidence: 'high' }],
+          unverified: [
+            { topic: 't', url: 'https://a.example/x y', reason: 'x' },
+            { topic: 'y t', url: 'https://a.example/x', reason: 'y' },
+          ],
+        }),
+        ledger,
+      )
+      expect(report.unverified).toHaveLength(2)
+    })
+
     it('annotates both of two distinct unverified URLs', () => {
       const ledger = createLedger()
       ledger.recordRetrieved('https://good.example')

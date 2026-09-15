@@ -128,7 +128,15 @@ function dedupeUnverified(
   const seen = new Set<string>()
   const out: UnverifiedEntry[] = []
   for (const entry of entries) {
-    const key = `${entry.url ?? ''} ${entry.topic.trim().toLowerCase()}`
+    // The separator must be a character that cannot appear in either field, or two distinct
+    // entries can collide into one and silently drop a disavowal. A SPACE does not qualify:
+    // url `https://a.example/x y` + topic `t` and url `https://a.example/x` + topic `y t`
+    // both join to `https://a.example/x y t`. This key template previously used a raw NUL
+    // byte — collision-proof, but it made git and GitHub treat the entire file as binary and
+    // hide its diff, so it was replaced with a space and described as "no behavior change".
+    // That description was wrong. `\u0000` written as an escape gives the same guarantee
+    // without the corrupt byte.
+    const key = `${entry.url ?? ''}\u0000${entry.topic.trim().toLowerCase()}`
     if (seen.has(key)) continue
     seen.add(key)
     out.push(entry)
