@@ -760,6 +760,36 @@ describe('groundReport — the job boundary', () => {
       expect(report.report).toContain('Unverified in prose')
     })
 
+    // A bare email address is not a web page. Prepending `https://` made
+    // `https://user@example.com` parse the part after the `@` as a HOST, so a bogus
+    // `unverified` entry canonicalized to `example.com` and collided with the real page —
+    // one junk entry could suppress citations to an unrelated site. An opaque URI
+    // (`mailto:`) has no host either and must not be collapsed to one.
+    it('does not treat a bare email or opaque URI as a web page', () => {
+      expect(normalizeUrl('user@example.com')).toBe('user@example.com')
+      expect(normalizeUrl('mailto:user@example.com')).toBe('mailto:user@example.com')
+      expect(normalizeUrl('mailto:user@example.com')).not.toBe(normalizeUrl('https://example.com'))
+      expect(normalizeUrl('file:///etc/passwd')).toBe('file:///etc/passwd')
+    })
+
+    it('does not flag prose for a blocked mailto or bare-email entry', () => {
+      const ledger = createLedger()
+      ledger.recordRetrieved('https://good.example')
+      ledger.recordFailed('mailto:user@example.com', 'rendered page empty')
+      const blocked = { topic: 't', url: 'mailto:user@example.com', reason: 'rendered page empty' }
+      for (const body of ['The rate rose to 55%.', 'Contact support@example.com for help.']) {
+        const report = groundReport(
+          submitted({
+            report: body,
+            citations: [{ claim: 'ok', url: 'https://good.example', confidence: 'high' }],
+            unverified: [blocked],
+          }),
+          ledger,
+        )
+        expect(report.report).not.toContain('Unverified in prose')
+      }
+    })
+
     // A non-null but unparseable URL must be skipped without throwing, and without taking a
     // real mention down with it.
     it('skips an unparseable url without throwing or mis-skipping a real mention', () => {

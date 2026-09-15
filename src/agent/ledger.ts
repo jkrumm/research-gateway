@@ -43,16 +43,42 @@ export interface RetrievalLedger {
 // `rest` (path + query) and `hash` are returned separately because the two consumers need
 // different fragment semantics: for CITATION matching a fragment identifies a section of the
 // same page and is dropped, while the body matcher keeps it (see body-mentions.ts).
+//
+// Returns null for anything that is not a comparable http(s) web page, which is the honest
+// answer for an opaque URI or a bare email address: neither has a host, and inventing one
+// collides with real pages (see the two guards below).
 export function urlParts(raw: string): { host: string; rest: string; hash: string } | null {
+  const t = raw.trim()
+  // A bare email address is not a web page. Prepending `https://` would make
+  // `https://user@example.com` parse the part after the `@` as a HOST, canonicalizing
+  // `user@example.com` to `example.com` — colliding with the real page `https://example.com`,
+  // so one bogus `unverified` entry could suppress citations to an unrelated site. Only
+  // applies with no scheme: `https://user@example.com` is a legitimate (if rare) URL form.
+  if (!hasScheme(t) && /^[^/\s]*@/.test(t)) return null
   let parsed: URL
   try {
-    parsed = new URL(withScheme(raw.trim()))
+    parsed = new URL(withScheme(t))
   } catch {
     return null
   }
+  // Only http(s) is a comparable web page. An opaque scheme (`mailto:`, `xmpp:`) parses with
+  // an empty host, and returning null lets `normalizeUrl` fall back to the raw string rather
+  // than collapsing every `mailto:` to the same key.
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return null
   const host = parsed.host.toLowerCase().replace(/^www\./, '')
   const path = parsed.pathname.replace(/\/+$/, '')
   return { host, rest: `${path}${parsed.search}`, hash: parsed.hash }
+}
+
+// Whether the string already carries a URI scheme. Any scheme counts, not just `scheme://`:
+// an opaque URI (`mailto:user@example.com`) treated as scheme-less got `https://` prepended
+// on top, and the part before the `@` then parsed as a host — the collision described above.
+//
+// The `(?!\d)` is what keeps a `host:port` from being read as a scheme: `nunu.gg:8443` looks
+// like `scheme:` to a naive pattern, and misreading it would stop the scheme being prepended
+// and break every ported URL.
+function hasScheme(s: string): boolean {
+  return /^[a-z][a-z0-9+.-]*:(?!\d)/i.test(s)
 }
 
 // Canonical key for comparing a cited URL against a retrieved one. The model routinely
@@ -72,11 +98,10 @@ export function normalizeUrl(raw: string): string {
 }
 
 // Prepend `https://` unless the string already carries a scheme. One copy of this rule:
-// `normalizeUrl`'s callers and the body scanner all need it, and a second
-// hand-tuned copy is exactly the drift this module's own comments warn about.
+// `normalizeUrl`'s callers and the body scanner all need it, and a second hand-tuned copy is
+// exactly the drift this module's own comments warn about.
 function withScheme(raw: string): string {
-  const t = raw.trim()
-  return /^[a-z][a-z0-9+.-]*:\/\//i.test(t) ? t : `https://${t}`
+  return hasScheme(raw) ? raw : `https://${raw}`
 }
 
 export function createLedger(): RetrievalLedger {
