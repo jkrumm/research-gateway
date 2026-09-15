@@ -2,7 +2,7 @@
 // pure helpers can be unit-tested without booting the whole env/LLM import chain. Mirrors
 // the convention documented at the top of `assemble.ts`.
 
-import type { SubmittedReport, WorkerDigest } from './schema.js'
+import type { ConsistencyReview, SubmittedReport, WorkerDigest } from './schema.js'
 
 // Collapse extraction padding (huge whitespace runs Readability/Tavily leave behind in
 // table cells) without destroying document structure. This exact sequence was measured
@@ -128,4 +128,44 @@ export function resolveSynthesisReport(report: SubmittedReport, digests: WorkerD
     return { report: salvaged, salvaged: true }
   }
   return { report: isValidReport(report, digests) ? report : null, salvaged: false }
+}
+
+// ── Consistency-review adjudication (issue #5) ────────────────────────────────
+//
+// Same home as the synthesis guard, for the same reason: synthesize.ts's sibling (the review
+// pass in consistency.ts) pulls in `lib/llm.js`, so its import chain boots env.js — these
+// pure helpers must stay testable without secrets.
+
+export interface ConsistencyResolution {
+  // The report text to carry forward — the corrected text when the reviewer delivered one,
+  // otherwise the original untouched.
+  report: string
+  // True only when the reviewer actually returned a corrected body that was accepted. Drives
+  // the `consistency.outcome` span attribute, the `research.consistency_gate` span, and the
+  // report's own warning line.
+  corrected: boolean
+}
+
+// Adjudicates the consistency reviewer's submission against the report it reviewed. The
+// reviewer only ever contributes PROSE: a "consistent" verdict is accepted as-is, and a
+// correction is spliced in only when its replacement body is a plausible report — long
+// enough not to be a truncation or an echo, and not materially SHORTER than the original
+// (a rewrite is supposed to resolve contradictions, not delete the sections that contained
+// them). Anything else — no tool call, malformed args, an echoed verdict, a gutted report —
+// falls back to the original text: a flawed report that reaches the caller beats no report.
+//
+// The floor is generous (a correction is a near-copy of the original plus small rewrites),
+// which is the point: it catches only wholesale loss, not editorial latitude. This does not
+// defend the grounding invariant — citations are untouched here and groundReport re-derives
+// everything downstream regardless.
+export function resolveConsistencyReview(
+  original: string,
+  review: ConsistencyReview | null,
+): ConsistencyResolution {
+  if (!review || review.consistent) return { report: original, corrected: false }
+
+  const corrected = review.report?.trim() ?? ''
+  if (corrected.length < 200) return { report: original, corrected: false }
+  if (corrected.length < original.trim().length * 0.8) return { report: original, corrected: false }
+  return { report: corrected, corrected: true }
 }

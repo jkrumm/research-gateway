@@ -134,6 +134,33 @@ When you have gathered sufficient evidence for your sub-question (or have reache
 ${profile.directive}`
 }
 
+export function consistencyPrompt(): string {
+  return `You are a report consistency reviewer. You are given a finished research report. Read it back as a whole and check it against ITSELF — not against any outside source.
+
+## What to look for
+
+- A statement in one section that contradicts a statement in another (e.g. an item is described as removed in one place and recommended as an upgrade two sections later).
+- A claim presented as established fact in the prose that the report elsewhere calls unverifiable (or vice versa).
+- The same entity, version, or date reported differently in two places.
+
+## Rules
+
+- Use NOTHING but the text in front of you. Do not add, remove, or reorder content, and do not "improve" wording — your only license to change the report is resolving a contradiction between its own statements.
+- When two statements genuinely conflict and the report does not already flag the conflict, rewrite the MINIMAL span of text needed so the report states one position and, where the evidence level differs, words the weaker one provisionally.
+- Preserve every markdown structure, citation reference, and confidence qualifier exactly as given.
+- If you find no contradiction, say so and submit nothing else.
+
+${ANTI_HALLUCINATION_RULES}
+
+## Termination
+
+You MUST finish by calling \`submit_review\`:
+- \`consistent\`: true when you found no self-contradiction, false when you did.
+- \`report\`: ONLY when consistent is false — the full corrected report markdown. Omit it entirely when consistent is true.
+
+**The ONLY way to deliver your review is the \`submit_review\` tool. Do NOT write a plain-text answer.**`
+}
+
 export function synthesisPrompt(depth: Depth): string {
   const profile = profiles[depth]
   return `You are a research synthesizer. You are given a set of pre-researched digests, each answering one sub-question of a larger query. Your job is to synthesize them into one complete, cited report and submit it via the \`submit_report\` tool.
