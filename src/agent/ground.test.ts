@@ -438,12 +438,13 @@ describe('groundReport — the job boundary', () => {
     // Comparison runs through `normalizeUrl`, so host case, `www.`, scheme and a trailing
     // slash are one rule — and path case stays significant, as HTTP requires.
     const bodyCases: Array<{ body: string; want: boolean; why: string }> = [
-      { body: 'See https://nunu.gg/patch-notes here.', want: true, why: 'exact URL' },
-      { body: 'See [the notes](https://nunu.gg/patch-notes).', want: true, why: 'markdown link target' },
-      { body: 'Per nunu.gg the win rate rose.', want: true, why: 'bare host' },
-      { body: 'See https://www.nunu.gg/patch-notes.', want: true, why: 'www-prefixed' },
-      { body: 'Per https://nunu.gg/patch-notes.', want: true, why: 'sentence-final period' },
-      { body: 'See https://nunu.gg/patch-notes/ here.', want: true, why: 'trailing slash' },
+      { body: 'See https://nunu.gg/patch-notes here.', want: true, why: 'the exact URL' },
+      { body: 'See [the notes](https://nunu.gg/patch-notes).', want: true, why: 'a markdown link target' },
+      { body: 'Per nunu.gg the win rate rose.', want: true, why: 'a bare host' },
+      { body: 'See https://www.nunu.gg/patch-notes.', want: true, why: 'a www-prefixed URL' },
+      { body: 'Per https://nunu.gg/patch-notes.', want: true, why: 'a sentence-final period' },
+      { body: 'See https://nunu.gg/patch-notes/ here.', want: true, why: 'a trailing slash' },
+      { body: 'See nunu.gg/patch-notes here.', want: true, why: 'a scheme-less host/path' },
       { body: 'See https://NUNU.GG/patch-notes here.', want: true, why: 'host case is insignificant' },
       {
         body: 'See https://nunu.gg/patch-notes-archive-2026 for the archive.',
@@ -453,7 +454,10 @@ describe('groundReport — the job boundary', () => {
       { body: 'See https://sub.nunu.gg/patch-notes here.', want: false, why: 'a subdomain' },
       { body: 'See https://notnunu.gg/patch-notes here.', want: false, why: 'a host ending in the blocked one' },
       { body: 'See https://nunu.gg/Patch-Notes here.', want: false, why: 'path case IS significant (HTTP)' },
+      { body: 'See nunu.gg/Patch-Notes here.', want: false, why: 'path case, scheme-less' },
       { body: 'See https://nunu.gg/other-page here.', want: false, why: 'a different page on the same host' },
+      { body: 'Contact nunu.gg@example.com for help.', want: false, why: 'an email address' },
+      { body: 'See nunu.gg:8443/other-page here.', want: false, why: 'the host with a port and another path' },
     ]
 
     for (const { body, want, why } of bodyCases) {
@@ -515,6 +519,26 @@ describe('groundReport — the job boundary', () => {
       )
       expect(report.report.split('Unverified in prose')).toHaveLength(3)
       expect(report.status).toBe('partial')
+    })
+
+    it('emits ONE note for two string forms of the same page', () => {
+      const ledger = createLedger()
+      ledger.recordRetrieved('https://good.example')
+      ledger.recordFailed('https://nunu.gg/patch-notes', 'rendered page empty')
+      const report = groundReport(
+        submitted({
+          report: 'Per https://nunu.gg/patch-notes the win rate rose.',
+          citations: [{ claim: 'ok', url: 'https://good.example', confidence: 'high' }],
+          unverified: [
+            { topic: 'a', url: 'https://nunu.gg/patch-notes', reason: 'rendered page empty' },
+            { topic: 'b', url: 'https://www.nunu.gg/patch-notes/', reason: 'rendered page empty' },
+          ],
+        }),
+        ledger,
+      )
+      // Dedup keys on the canonical url: `www.` and a trailing slash are the same page, and
+      // keying on the raw string would emit a duplicate note for one real source.
+      expect(report.report.split('Unverified in prose')).toHaveLength(2)
     })
 
     // ── A scrub note is evidence lost, so it must reach `degraded`/`status`/`warnings`.

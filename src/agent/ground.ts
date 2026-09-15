@@ -1,5 +1,6 @@
 import type { Finding, Grounding, ResearchReport, SubmittedReport, WorkerDigest } from './schema.js'
-import { hostOnly, normalizeUrl } from './ledger.js'
+import { normalizeUrl } from './ledger.js'
+import { scrubBody } from './body-mentions.js'
 import type { RetrievalLedger, RetrievalTier } from './ledger.js'
 
 // One shared shape for an `unverified` entry — schema.ts owns the definition, and the
@@ -151,72 +152,6 @@ function banner(grounding: Grounding): string {
     parts.push(`${grounding.pagesFailed} page fetches failed against only ${grounding.pagesRetrieved} that succeeded`)
   }
   return `> **Partial result — evidence was lost during this run.** ${parts.join('; ')}. Anything below that is not backed by an entry in \`citations\` is unconfirmed; see \`unverified\` for what could not be checked.\n\n`
-}
-
-// Issue #7: the citation gate does not reach the report PROSE. A synthesizer can still name
-// a blocked source in the body — a raw URL, a markdown link target, or a bare host — while
-// listing it under `unverified`, and the structured gate has no say over that text. The
-// 2026-08-06 Nunu/Blitz.gg run shipped exactly this shape (docs/field-notes.md). Prompt-only
-// citation rules failed twice before the ledger existed; the body gets the same treatment
-// as the citation list: enforced in code.
-//
-// Annotates rather than deletes: removing sentences would silently drop claims the caller
-// paid for, so each disowned reference gets the run's own reason for distrusting it,
-// inserted as a blockquote on top of the body (the partial-result banner, if any, is
-// prepended after this and lands above the notes).
-// Tokens a body can name a source with: a scheme-ful URL (raw, or a markdown link target)
-// or a scheme-less host/path form ("nunu.gg/patch-notes", "per nunu.gg"). `)` is allowed
-// inside a token and trimmed by balance below, so a Wikipedia-style path keeps its parens
-// while a markdown wrapper loses its own.
-const URL_TOKEN = /https?:\/\/[^\s\]<>"'`]+|(?:www\.)?[\w-]+(?:\.[\w-]+)+(?:\/[^\s\]<>"'`]*)?/gi
-
-// Punctuation a sentence or a markdown wrapper leaves glued to a token.
-function trimToken(token: string): string {
-  let s = token.replace(/[\]}>"'`,;:.]+$/, '')
-  const count = (c: string) => s.split(c).length - 1
-  while (s.endsWith(')') && count(')') > count('(')) s = s.slice(0, -1)
-  return s
-}
-
-// Whether the body names this source. Comparison goes through `normalizeUrl` — the same
-// canonical form the citation gate uses — so host case, `www.`, scheme and a trailing
-// slash are all handled by one rule instead of a second, hand-tuned one here. Path case is
-// preserved (HTTP paths are case-sensitive) because `normalizeUrl` preserves it.
-//
-// A query string in the body does NOT match a blocked URL without one: `?ref=abc` is a
-// different document, the same call `normalizeUrl` already makes for citations.
-function referencesBody(body: string, url: string): boolean {
-  const target = normalizeUrl(url)
-  const targetHost = hostOnly(url)
-  for (const raw of body.match(URL_TOKEN) ?? []) {
-    const token = trimToken(raw)
-    if (!token) continue
-    if (normalizeUrl(token) === target) return true
-    // A bare-host mention ("per nunu.gg the …") names the source without a path — but only
-    // when the token carries no path of its own. `nunu.gg/other-page` is a different
-    // document and must not be read as a mention of `nunu.gg/patch-notes`.
-    if (!targetHost) continue
-    if (/[/?#]/.test(token.replace(/^https?:\/\//i, ''))) continue
-    if (hostOnly(token) === targetHost) return true
-  }
-  return false
-}
-
-function scrubBody(
-  body: string,
-  unverified: ReadonlyArray<UnverifiedEntry>,
-): { body: string; annotated: number } {
-  let notes = ''
-  let annotated = 0
-  const seen = new Set<string>()
-  for (const entry of unverified) {
-    if (!entry.url || seen.has(entry.url)) continue
-    seen.add(entry.url)
-    if (!referencesBody(body, entry.url)) continue
-    annotated++
-    notes += `> **Unverified in prose:** this report references ${entry.url}, which this run could NOT verify (${entry.reason}). Treat that reference as unconfirmed — see \`unverified\`.\n\n`
-  }
-  return { body: notes + body, annotated }
 }
 
 // Job boundary. Takes the model's submission and returns the public report, with every
