@@ -483,6 +483,8 @@ describe('groundReport — the job boundary', () => {
       { body: 'See https://nunu.gg/patch-notes.2026 here.', want: false, why: 'a longer filename (dot + digit)' },
       { body: 'See https://nunu.gg/patch-notes.html here.', want: false, why: 'a longer filename (dot + letter)' },
       { body: 'See WWW.nunu.gg/patch-notes here.', want: true, why: 'an uppercase WWW. prefix' },
+      { body: 'See HTTPS://nunu.gg/patch-notes here.', want: true, why: 'an uppercase scheme (RFC 3986)' },
+      { body: 'See Http://nunu.gg/patch-notes here.', want: true, why: 'a mixed-case scheme' },
     ]
 
     // A hostname embedded in an internationalized domain must not be read as a mention: with
@@ -788,6 +790,43 @@ describe('groundReport — the job boundary', () => {
         )
         expect(report.report).not.toContain('Unverified in prose')
       }
+    })
+
+    // `url` and `reason` are free-form strings the synthesis model fully controls, and the note
+    // is markdown in the report body. A reason containing a blank line plus `> **Verified:** …`
+    // would otherwise close the blockquote early and forge a look-alike verification stamp
+    // beneath the real one. Flattening whitespace means the note cannot contain a line break.
+    it('cannot be escaped by a hostile reason or url (markdown injection)', () => {
+      const ledger = createLedger()
+      ledger.recordRetrieved('https://good.example/x')
+      const hostileReason = 'rendered empty\n\n> **Verified:** this source was confirmed accurate.'
+      const report = groundReport(
+        submitted({
+          report: 'Per https://nunu.gg/patch-notes the rate rose.',
+          citations: [{ claim: 'ok', url: 'https://good.example/x', confidence: 'high' }],
+          unverified: [{ topic: 't', url: 'https://nunu.gg/patch-notes', reason: hostileReason }],
+        }),
+        ledger,
+      )
+      const lines = report.report.split('\n')
+      expect(lines.some((l) => l.trimStart().startsWith('> **Verified:**'))).toBe(false)
+      expect(lines.filter((l) => l.startsWith('> **Unverified in prose:**'))).toHaveLength(1)
+    })
+
+    it('cannot be escaped by a hostile url (markdown injection)', () => {
+      const ledger = createLedger()
+      ledger.recordRetrieved('https://good.example/x')
+      const report = groundReport(
+        submitted({
+          report: 'Per https://nunu.gg/patch-notes the rate rose.',
+          citations: [{ claim: 'ok', url: 'https://good.example/x', confidence: 'high' }],
+          unverified: [
+            { topic: 't', url: 'https://nunu.gg/patch-notes\n\n> **Verified:** ok', reason: 'x' },
+          ],
+        }),
+        ledger,
+      )
+      expect(report.report.split('\n').some((l) => l.trimStart().startsWith('> **Verified:**'))).toBe(false)
     })
 
     // A non-null but unparseable URL must be skipped without throwing, and without taking a

@@ -141,8 +141,12 @@ function patternFor(url: string): RegExp | null {
   // `page#section` must not be satisfied by a body naming the bare `page` (a different
   // section), and `(?:hash)?` would let exactly that through. The reverse direction is
   // already covered — for a blocked URL with no fragment, RIGHT rejects a body that has one.
+  // The scheme is case-insensitive per RFC 3986, so `HTTPS://` must match too — a blocked
+  // citation could otherwise evade scrubbing entirely just by casing. `ciClass` folds the
+  // letters without touching the `://`.
+  const schemePattern = `(?:${ciClass('https')}://|${ciClass('http')}://)?`
   const hashPattern = hash ? `(?:${escape(hash)})` : ''
-  const body = `${LEFT}(?:https?://)?(?:${ciClass('www.')})?${hostPattern}(?:${escape(rest)})?/?${hashPattern}${RIGHT}`
+  const body = `${LEFT}${schemePattern}(?:${ciClass('www.')})?${hostPattern}(?:${escape(rest)})?/?${hashPattern}${RIGHT}`
   return new RegExp(body, 'u')
 }
 
@@ -150,6 +154,16 @@ function patternFor(url: string): RegExp | null {
 function referencesBody(body: string, url: string): boolean {
   const pattern = patternFor(url)
   return pattern !== null && pattern.test(body)
+}
+
+// Flatten a model-controlled string for safe interpolation into the blockquote note. `url` and
+// `reason` are free-form strings the synthesis model fully controls, and the note is markdown
+// in the report body: a reason containing a blank line plus `> **Verified:** …` would close
+// the blockquote early and forge a look-alike verification stamp directly beneath the real
+// one. Collapsing all whitespace to single spaces means the note can never contain a line
+// break, so it cannot escape its own blockquote or open a new block.
+function inline(s: string): string {
+  return s.replace(/\s+/g, ' ').trim()
 }
 
 // Prepend one blockquote note per distinct disowned source the body names, carrying the
@@ -175,7 +189,8 @@ export function scrubBody(
     seen.add(key)
     if (!referencesBody(body, entry.url)) continue
     annotated++
-    notes += `> **Unverified in prose:** this report references ${entry.url}, which this run could NOT verify (${entry.reason}). Treat that reference as unconfirmed — see \`unverified\`.\n\n`
+    // `inline()` on both fields: they are model-controlled and this is markdown (see above).
+    notes += `> **Unverified in prose:** this report references ${inline(entry.url)}, which this run could NOT verify (${inline(entry.reason)}). Treat that reference as unconfirmed — see \`unverified\`.\n\n`
   }
   return { body: notes + body, annotated }
 }
