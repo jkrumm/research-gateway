@@ -109,6 +109,21 @@ export const SubQuestion = z.object({
 })
 export type SubQuestion = z.infer<typeof SubQuestion>
 
+// The internal-consistency reviewer's submission (issue #5) — one lead-model pass over the
+// finished report body, before grounding. Internal contract: only the corrected report TEXT
+// is ever spliced into the SubmittedReport (see extract.ts's adjudication); everything else
+// about the report is re-derived downstream (ground.ts).
+export const ConsistencyReview = z.object({
+  consistent: z.boolean().describe('Whether the report was found free of self-contradictions.'),
+  report: z
+    .string()
+    .optional()
+    .describe(
+      'REQUIRED when consistent is false: the full corrected report markdown — identical to the input except where a contradiction was resolved. Omit when consistent is true.',
+    ),
+})
+export type ConsistencyReview = z.infer<typeof ConsistencyReview>
+
 export const ResearchPlan = z.object({ subQuestions: z.array(SubQuestion).min(1) })
 export type ResearchPlan = z.infer<typeof ResearchPlan>
 

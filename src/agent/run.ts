@@ -2,6 +2,7 @@ import { profiles } from './depth.js'
 import { planResearch } from './plan.js'
 import { runWorker } from './worker.js'
 import { synthesize } from './synthesize.js'
+import { reviewConsistency } from './consistency.js'
 import { assembleReport, nextRoundQuestions } from './assemble.js'
 import { mergeLedgers, type LedgerSnapshot } from './ledger.js'
 import { groundReport } from './ground.js'
@@ -291,6 +292,11 @@ export async function runResearch(
 
       let submitted: SubmittedReport
       let reason: 'submit_report' | 'assembled'
+      // Set by the consistency gate below when the reviewer actually rewrote the body —
+      // feeds the job span/log outcome and the warning merged into the public report next to
+      // groundReport's evidence warnings, so a caller learns the prose it is reading is a
+      // second draft.
+      let consistencyCorrected = false
       if (synthesized) {
         submitted = synthesized
         reason = 'submit_report'
@@ -299,6 +305,33 @@ export async function runResearch(
         submitted = assembleReport(allDigests)
         reason = 'assembled'
       }
+
+      // Internal-consistency pass (issue #5) — the one check the pipeline had no answer for:
+      // parallel workers research independently, so one digest can establish a fact while
+      // another contradicts it, and both the synthesized report and the assembled fallback
+      // above can carry that contradiction verbatim. One lead-model call reads the finished
+      // body back (no tools, no retrieval — the conflicting statements are already in it) and
+      // may return a corrected body. On any failure the ORIGINAL report continues: this pass
+      // degrades to a no-op rather than risking the whole job's output. `reason` is reported
+      // unchanged — it records how the report was PRODUCED, which the review does not alter.
+      submitted = await withSpan(
+        'research.consistency_gate',
+        { 'report.reason': reason },
+        async (gateSpan) => {
+          const review = await reviewConsistency({ report: submitted.report, jobId })
+          leadUsage = addUsage(leadUsage, review.usage)
+          gateSpan.setAttributes({
+            'consistency.corrected': review.corrected,
+            'report.chars_before': submitted.report.length,
+            'report.chars_after': review.report.length,
+          })
+          if (review.corrected) {
+            consistencyCorrected = true
+            log('report.consistency_corrected', { jobId, reason })
+          }
+          return { ...submitted, report: review.report }
+        },
+      )
 
       // The job-level gate. Every citation the synthesis model asserted is checked against the
       // union of what the workers' tools actually retrieved, `sources` is replaced by the pages
@@ -347,6 +380,12 @@ export async function runResearch(
       const search = readSearchSpend(jobId)
       const report: ResearchReport = {
         ...grounded,
+        warnings: consistencyCorrected
+          ? [
+              ...grounded.warnings,
+              'An internal-consistency review found self-contradictions in the report prose and rewrote the affected passages; the citations were not changed by that pass.',
+            ]
+          : grounded.warnings,
         cost: {
           wallMs,
           totalUsd: costUsd === null ? null : costUsd + search.sonarCostUsd,
@@ -369,6 +408,7 @@ export async function runResearch(
         'research.rounds': round,
         'research.workers': workersDispatchedTotal,
         'research.digests': allDigests.length,
+        'consistency.corrected': consistencyCorrected,
         'research.outcome_partial': grounded.status === 'partial',
         'report.status': grounded.status,
         'report.citations': grounded.citations.length,
@@ -399,6 +439,7 @@ export async function runResearch(
         rounds: round,
         workers: workersDispatchedTotal,
         digests: allDigests.length,
+        consistencyCorrected,
         citations: grounded.citations.length,
         sources: grounded.sources.length,
         status: grounded.status,
