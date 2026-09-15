@@ -317,6 +317,136 @@ describe('groundReport — the job boundary', () => {
     )
     expect(report.unverified).toHaveLength(1)
   })
+
+  // ── Issue #7: the body is untrusted text too ────────────────────────────────
+  // A synthesizer can name a blocked source in the PROSE while listing it under
+  // `unverified` — the 2026-08-06 Nunu/Blitz.gg shape. The citation gate never sees that
+  // text, so the body is scanned against the final unverified set and annotated.
+  describe('body scrub', () => {
+    const ledgerWithBad = () => {
+      const ledger = createLedger()
+      ledger.recordFailed('https://nunu.gg/patch-notes', 'rendered page empty')
+      return ledger
+    }
+
+    it('annotates a raw-URL mention of an unverified source', () => {
+      const report = groundReport(
+        submitted({
+          report: 'Per https://nunu.gg/patch-notes the win rate rose.\n\nMore body.',
+          unverified: [{ topic: 'win rates', url: 'https://nunu.gg/patch-notes', reason: 'rendered page empty' }],
+        }),
+        ledgerWithBad(),
+      )
+      expect(report.report).toContain('Unverified in prose')
+      expect(report.report).toContain('https://nunu.gg/patch-notes')
+      expect(report.report).toContain('rendered page empty')
+    })
+
+    it('annotates a markdown-link target and a bare-host mention', () => {
+      const report = groundReport(
+        submitted({
+          report: 'The [patch notes](https://nunu.gg/patch-notes) say so, and per nunu.gg it matches.',
+          unverified: [{ topic: 'win rates', url: 'https://nunu.gg/patch-notes', reason: 'rendered page empty' }],
+        }),
+        ledgerWithBad(),
+      )
+      expect(report.report).toContain('Unverified in prose')
+    })
+
+    it('annotates a www-prefixed mention of the same page', () => {
+      const report = groundReport(
+        submitted({
+          report: 'See https://www.nunu.gg/patch-notes for details.',
+          unverified: [{ topic: 'win rates', url: 'https://nunu.gg/patch-notes', reason: 'rendered page empty' }],
+        }),
+        ledgerWithBad(),
+      )
+      expect(report.report).toContain('Unverified in prose')
+    })
+
+    it('leaves a body that never names the unverified source untouched', () => {
+      const ledger = ledgerWithBad()
+      ledger.recordRetrieved('https://good.example')
+      const report = groundReport(
+        submitted({
+          report: 'Body never mentions it.',
+          citations: [{ claim: 'ok', url: 'https://good.example', confidence: 'high' }],
+          unverified: [{ topic: 'win rates', url: 'https://nunu.gg/patch-notes', reason: 'rendered page empty' }],
+        }),
+        ledger,
+      )
+      expect(report.status).toBe('ok')
+      expect(report.report).toBe('Body never mentions it.')
+    })
+
+    it('does not flag a host that merely contains the blocked one as a substring', () => {
+      const report = groundReport(
+        submitted({
+          report: 'See https://notnunu.gg/patch-notes or per subnunu.gg for details.',
+          unverified: [{ topic: 'win rates', url: 'https://nunu.gg/patch-notes', reason: 'rendered page empty' }],
+        }),
+        ledgerWithBad(),
+      )
+      expect(report.report).not.toContain('Unverified in prose')
+    })
+
+    it('never flags a URL the ledger vindicated — it backs a real citation', () => {
+      const ledger = createLedger()
+      ledger.recordRetrieved('https://www.npmjs.com/package/x')
+      const report = groundReport(
+        submitted({
+          report: 'The current version is 2.0.0 per https://www.npmjs.com/package/x.',
+          citations: [{ claim: 'latest is 2.0.0', url: 'https://www.npmjs.com/package/x', confidence: 'high' }],
+          unverified: [{ topic: 'npm page', url: 'https://www.npmjs.com/package/x', reason: 'first fetch failed' }],
+        }),
+        ledger,
+      )
+      expect(report.citations).toHaveLength(1)
+      expect(report.unverified[0]?.url).toBeNull()
+      expect(report.report).not.toContain('Unverified in prose')
+    })
+
+    it('emits one note per distinct unverified URL, deduplicated', () => {
+      const report = groundReport(
+        submitted({
+          report: 'https://nunu.gg/patch-notes and https://nunu.gg/patch-notes again.',
+          unverified: [
+            { topic: 'a', url: 'https://nunu.gg/patch-notes', reason: 'rendered page empty' },
+            { topic: 'b', url: 'https://nunu.gg/patch-notes', reason: 'rendered page empty' },
+          ],
+        }),
+        ledgerWithBad(),
+      )
+      expect(report.report.split('Unverified in prose')).toHaveLength(2)
+    })
+
+    it('orders the scrub notes below the partial-result banner', () => {
+      const report = groundReport(
+        submitted({
+          report: 'Per https://nunu.gg/patch-notes the win rate rose.',
+          unverified: [{ topic: 'win rates', url: 'https://nunu.gg/patch-notes', reason: 'rendered page empty' }],
+        }),
+        ledgerWithBad(),
+      )
+      expect(report.report.startsWith('> **Partial result')).toBe(true)
+      expect(report.report.indexOf('Partial result')).toBeLessThan(report.report.indexOf('Unverified in prose'))
+    })
+
+    it('does not scrub an entry with no url — there is nothing to match on', () => {
+      const ledger = createLedger()
+      ledger.recordRetrieved('https://good.example')
+      const report = groundReport(
+        submitted({
+          report: 'Something is unconfirmed.',
+          citations: [{ claim: 'ok', url: 'https://good.example', confidence: 'high' }],
+          unverified: [{ topic: 'vibes', url: null, reason: 'no source at all' }],
+        }),
+        ledger,
+      )
+      expect(report.status).toBe('ok')
+      expect(report.report).toBe('Something is unconfirmed.')
+    })
+  })
 })
 
 // ── Regression for the live 2026-07-31 npm run ───────────────────────────────
