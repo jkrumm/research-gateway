@@ -52,6 +52,19 @@ describe('renderUrl', () => {
 
   it('collapses whitespace and handles the empty string', () => {
     expect(renderUrl('https://a.example\n\nx')).toBe('(https://a.example x)')
-    expect(renderUrl('')).toBe('<>')
+    // No scheme to allow-list, so an empty value takes the prose path too.
+    expect(renderUrl('')).toBe('()')
+  })
+
+  it('does not autolink a dangerous scheme', () => {
+    // The value is model-controlled, so `javascript:`/`data:` must not become a clickable link.
+    // It is still shown — nothing is hidden from the reader — just not followable.
+    for (const u of ['javascript:alert(1)', 'data:text/html,<script>alert(1)</script>', 'vbscript:x', 'file:///etc/passwd']) {
+      const out = renderUrl(u)
+      expect(out.startsWith('<')).toBe(false)
+      expect(out.startsWith('(')).toBe(true)
+    }
+    expect(renderUrl('https://good.example/x')).toBe('<https://good.example/x>')
+    expect(renderUrl('mailto:a@b.example')).toBe('<mailto:a@b.example>')
   })
 })

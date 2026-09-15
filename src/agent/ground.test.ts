@@ -979,6 +979,35 @@ describe('groundReport — the job boundary', () => {
       expect(note).not.toContain('\\')
     })
 
+    // A canonically-equivalent DECOMPOSED hostname must not evade the scrubber. `domainToUnicode`
+    // yields NFC, so the pattern from a blocked `münchen.de` holds a composed `ü`; a body
+    // carrying `u` + U+0308 is the same hostname to every reader and resolver but matched
+    // nothing, so a synthesizer could name a blocked source and get `annotated: 0` with no
+    // warning. Both sides are NFC-normalized.
+    it('sees through a decomposed (NFD) hostname in the body', () => {
+      const nfc = 'https://m\u00fcnchen.de/x'
+      const nfd = 'https://mu\u0308nchen.de/x'
+      expect(nfc).not.toBe(nfd)
+      const ledger = createLedger()
+      ledger.recordRetrieved('https://good.example/x')
+      ledger.recordFailed(nfc, 'rendered page empty')
+      for (const [label, body, url] of [
+        ['NFC body vs NFC url', `See ${nfc} here.`, nfc],
+        ['NFD body vs NFC url', `See ${nfd} here.`, nfc],
+        ['NFC body vs NFD url', `See ${nfc} here.`, nfd],
+      ] as const) {
+        const report = groundReport(
+          submitted({
+            report: body,
+            citations: [{ claim: 'ok', url: 'https://good.example/x', confidence: 'high' }],
+            unverified: [{ topic: 't', url, reason: 'rendered page empty' }],
+          }),
+          ledger,
+        )
+        expect(`${label}: ${report.report.includes('Unverified in prose')}`).toBe(`${label}: true`)
+      }
+    })
+
     // A non-null but unparseable URL must be skipped without throwing, and without taking a
     // real mention down with it.
     it('skips an unparseable url without throwing or mis-skipping a real mention', () => {

@@ -44,12 +44,20 @@ export function renderProse(s: string): string {
 }
 
 // A URL-like, model-controlled field going into markdown, as a CommonMark autolink.
+//
+// Only http(s) and mailto are autolinked. Autolinking is what makes a link CLICKABLE, and the
+// value here is model-controlled: a synthesizer that emits `javascript:…` or `data:text/html,…`
+// would otherwise get a live dangerous link rendered into the report — and `renderUrl` is used
+// for `sources[]`, which on a run with no successful fetch is the model's own list. Anything
+// outside the allowlist is rendered as escaped prose, so it still appears (nothing is hidden
+// from the reader) but cannot be followed.
+const SAFE_SCHEME = /^(?:https?|mailto):/i
+
 export function renderUrl(s: string): string {
   const flat = inline(s)
   // A valid autolink's content is a URI with no whitespace. Anything else (the model-authored
   // `sources[]` fallback, which can carry a whole markdown link) is not safe inside `<...>`:
-  // the `<` would render literally and the link syntax after it would still be parsed. Render
-  // those as prose, which escapes the link.
-  if (/\s/.test(flat)) return `(${escapeMarkdown(flat)})`
+  // the `<` would render literally and the link syntax after it would still be parsed.
+  if (/\s/.test(flat) || !SAFE_SCHEME.test(flat)) return `(${escapeMarkdown(flat)})`
   return `<${flat.replace(/[<>]/g, '')}>`
 }

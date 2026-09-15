@@ -1,7 +1,7 @@
 import { Elysia } from 'elysia'
 import { createMcpHandler, McpServer } from '@modelcontextprotocol/server'
 import { z } from 'zod'
-import { Depth, JobHandle, JobState, type ResearchReport } from '../agent/schema.js'
+import { Depth, JobHandle, JobState } from '../agent/schema.js'
 import { reportText } from '../agent/report-text.js'
 import { admission, createJob, getJob, type Job } from '../lib/job-store.js'
 import { POLL_INTERVAL_MS, shouldKeepWaiting, waitDeadline } from '../lib/wait.js'

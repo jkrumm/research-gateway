@@ -1,5 +1,5 @@
 import { domainToUnicode } from 'node:url'
-import { normalizeUrl, urlParts } from './ledger.js'
+import { urlParts } from './ledger.js'
 import { renderProse, renderUrl } from './markdown.js'
 import type { UnverifiedEntry } from './schema.js'
 
@@ -125,7 +125,9 @@ function patternFor(url: string): RegExp | null {
   const portAt = host.lastIndexOf(':')
   const domain = portAt === -1 ? host : host.slice(0, portAt)
   const port = portAt === -1 ? '' : host.slice(portAt)
-  const unicodeDomain = domainToUnicode(domain)
+  // `.normalize('NFC')`: `domainToUnicode` output is composed, and the body is normalized to
+  // NFC before matching (see normalizeForMatch), so the literal built here must be too.
+  const unicodeDomain = domainToUnicode(domain).normalize('NFC')
   const hostPattern =
     unicodeDomain && unicodeDomain !== domain
       ? `(?:${ciClass(domain)}|${ciClass(unicodeDomain)})${escape(port)}`
@@ -161,22 +163,25 @@ function patternFor(url: string): RegExp | null {
 
 // Whether the body names this source.
 //
-// The body is normalized before matching: invisible Unicode format characters (Cf — zero-width
-// space, soft hyphen, word joiner, BOM) inserted inside a URL defeat a purely literal match
-// while rendering identically to a reader, so a synthesizer could name a blocked source in
-// prose and get `annotated: 0` with no warning. Stripping them is the same call the module
-// already makes for whitespace and casing: a difference a reader cannot see must not change
-// whether the source is flagged.
+// The body is normalized before matching, for the same reason in two forms: a difference a
+// reader cannot see must not change whether the source is flagged.
+//   - Invisible Unicode format characters (Cf — zero-width space, soft hyphen, word joiner,
+//     BOM) inserted inside a URL defeat a purely literal match while rendering identically, so
+//     a synthesizer could name a blocked source and get `annotated: 0` with no warning.
+//   - Unicode normalization form. `domainToUnicode` yields NFC, so the pattern built from a
+//     blocked `münchen.de` holds a composed `ü`; a body carrying the canonically-equivalent
+//     DECOMPOSED form (`u` + U+0308) is the same hostname to every reader and every resolver,
+//     but matched nothing. Both sides are NFC-normalized.
 function referencesBody(body: string, url: string): boolean {
   const pattern = patternFor(url)
-  return pattern !== null && pattern.test(stripInvisible(body))
+  return pattern !== null && pattern.test(normalizeForMatch(body))
 }
 
-// Remove Unicode format characters (Cf) — the invisible ones. Deliberately NOT a general
-// "strip all non-ASCII": a legitimate IDN host is not a format character, and removing it
-// would break the Unicode-host matching this module supports.
-function stripInvisible(s: string): string {
-  return s.replace(/\p{Cf}/gu, '')
+// One normalization for the match input, mirroring what `patternFor` does to the URL side.
+// `\p{Cf}` is deliberately not "all non-ASCII": a legitimate IDN host is not a format
+// character, and removing it would break the Unicode-host matching this module supports.
+function normalizeForMatch(s: string): string {
+  return s.normalize('NFC').replace(/\p{Cf}/gu, '')
 }
 
 // Prepend one blockquote note per distinct disowned source the body names, carrying the
@@ -197,7 +202,11 @@ function stripInvisible(s: string): string {
 // `#two`), and the reference the body actually made was silently skipped with no annotation.
 // Including the fragment keeps the duplicate-note guard without dropping a real reference.
 function dedupKey(url: string): string {
-  return `${normalizeUrl(url)}${urlParts(url)?.hash ?? ''}`
+  // `urlParts` once, not `normalizeUrl` + `urlParts` — `normalizeUrl` is just
+  // `${host}${rest}`, so calling both parsed the same string twice and contradicted this
+  // module's own "one parse rule" comment.
+  const p = urlParts(url)
+  return p ? `${p.host}${p.rest}${p.hash}` : url
 }
 export function scrubBody(
   body: string,
