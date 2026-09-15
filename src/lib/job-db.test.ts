@@ -288,4 +288,57 @@ describe('openJobDb — schema migration', () => {
     expect(db?.all().find((j) => j.jobId === 'legacy-1')).toBeDefined()
     db?.close()
   })
+
+  it('opens a database created before context existed, migrates it, and puts with context work', () => {
+    const dbPath = tmpDbPath()
+
+    // Simulate the current-at-heartbeat-era schema: has heartbeat_at, no context column.
+    const legacy = new Database(dbPath, { create: true })
+    legacy.exec(`
+      CREATE TABLE job (
+        job_id      TEXT PRIMARY KEY,
+        status      TEXT NOT NULL,
+        query       TEXT NOT NULL,
+        depth       TEXT NOT NULL,
+        result_json TEXT,
+        error       TEXT,
+        created_at  INTEGER NOT NULL,
+        started_at  INTEGER,
+        finished_at INTEGER,
+        heartbeat_at INTEGER
+      );
+    `)
+    legacy.close()
+
+    let db: ReturnType<typeof openJobDb> | undefined
+    expect(() => {
+      db = openJobDb(dbPath)
+    }).not.toThrow()
+
+    const carried = job({ jobId: 'carried-1', context: 'Bun 1.2 is current; tier-3 boots reworked.' })
+    expect(() => db?.put(carried)).not.toThrow()
+    expect(db?.get('carried-1')?.context).toBe('Bun 1.2 is current; tier-3 boots reworked.')
+    expect(db?.get('legacy-absent')?.context).toBeUndefined()
+    db?.close()
+  })
+})
+
+describe('openJobDb — context column', () => {
+  it('round-trips an optional context through put/all/get, and omits it when absent', () => {
+    const db = openJobDb(':memory:')
+
+    const withContext = job({ context: 'patch 7.2 removed boot enchants' })
+    db.put(withContext)
+    expect(db.all().find((j) => j.jobId === withContext.jobId)?.context).toBe(
+      'patch 7.2 removed boot enchants',
+    )
+    expect(db.get(withContext.jobId)?.context).toBe('patch 7.2 removed boot enchants')
+
+    const withoutContext = job()
+    db.put(withoutContext)
+    const reloaded = db.get(withoutContext.jobId)
+    expect(reloaded).toEqual(withoutContext)
+    expect('context' in (reloaded ?? {})).toBe(false)
+    db.close()
+  })
 })

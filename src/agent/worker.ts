@@ -3,7 +3,7 @@ import type { Tool, StopCondition, ToolSet } from 'ai'
 import { workerModel } from '../lib/llm.js'
 import { buildTools } from './tools.js'
 import { profiles } from './depth.js'
-import { workerPrompt } from './prompt.js'
+import { workerPrompt, backgroundSection } from './prompt.js'
 import { WorkerDigest } from './schema.js'
 import type { Depth } from './schema.js'
 import { createLedger, type LedgerSnapshot } from './ledger.js'
@@ -27,11 +27,12 @@ function extractDigest(toolCalls: ReadonlyArray<{ toolName: string; input: unkno
 
 export async function runWorker(args: {
   subQuestion: string
+  context?: string | undefined
   depth: Depth
   jobId: string
   round: number
 }): Promise<{ digest: WorkerDigest | null; usage: UsageStats; ledger: LedgerSnapshot; error?: string }> {
-  const { subQuestion, depth, jobId, round } = args
+  const { subQuestion, context, depth, jobId, round } = args
   const profile = profiles[depth]
   const start = Date.now()
 
@@ -90,7 +91,7 @@ export async function runWorker(args: {
         const result = await generateText({
           model: workerModel,
           instructions: workerPrompt(depth),
-          prompt: subQuestion,
+          prompt: subQuestion + backgroundSection(context),
           tools: allTools,
           stopWhen: [hasToolCall('submit_digest'), contextGuard],
           // Force the digest in-loop before the context ceiling is hit — a worker that

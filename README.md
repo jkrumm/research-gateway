@@ -56,7 +56,7 @@ talk to — and plain bearer HTTP for everything else (Hermes, scripts, curl).
 | `GET /health/tavily` | public | — | live account state from `api.tavily.com/usage` incl. `overPlan` — crossing into pay-as-you-go was otherwise silent |
 | `GET /health/ytdlp` | public | — | `{ ytdlp, version, error }` — `yt-dlp --version` inside the container |
 | `GET /openapi`, `/openapi/json` | public | — | Scalar UI, raw spec |
-| `POST /research` | bearer | `{ query, depth? }` (`quick \| standard \| deep`) | `{ jobId, status }` (async) |
+| `POST /research` | bearer | `{ query, depth?, context? }` (`quick \| standard \| deep`; `context` = free-text background treated as given — not re-searched, never cited) | `{ jobId, status }` (async) |
 | `GET /research/:jobId` | bearer | — | `{ status, result?, error? }` — a **poll**: returns current state at once, never blocks |
 | `POST /mcp` | bearer | streamable-http (stateless, 2026-07-28) | tools `research`, `job_wait`, `job_status` — same engine. `job_wait` blocks for the whole job, so one call is normally the whole interaction |
 | `POST /probe/fetch` | bearer | `{ url }` | one URL through the real fetch chain, no LLM — which step terminated it, chars and ms per step. Drives `scripts/fetch-bench.ts` |

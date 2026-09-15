@@ -56,7 +56,7 @@ export function startResearchJob(job: Job): void {
 
     try {
       const result = await runResearch(
-        { query: job.query, depth: job.depth, jobId: job.jobId },
+        { query: job.query, context: job.context, depth: job.depth, jobId: job.jobId },
         (stats) => {
           lastStats = stats
           emit(stats, 'ok')
