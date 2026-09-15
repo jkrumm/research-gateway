@@ -446,6 +446,10 @@ describe('groundReport — the job boundary', () => {
       { body: 'See https://nunu.gg/patch-notes/ here.', want: true, why: 'a trailing slash' },
       { body: 'See nunu.gg/patch-notes here.', want: true, why: 'a scheme-less host/path' },
       { body: 'See https://NUNU.GG/patch-notes here.', want: true, why: 'host case is insignificant' },
+      { body: 'See nunu.gg/patch-notes,and other stuff.', want: true, why: 'a comma glued to the path' },
+      { body: 'See nunu.gg/patch-notes;and more.', want: true, why: 'a semicolon glued to the path' },
+      { body: 'See nunu.gg/patch-notes: the rate rose.', want: true, why: 'a colon glued to the path' },
+      { body: '(see nunu.gg/patch-notes)more', want: true, why: 'a closing paren glued to the path' },
       {
         body: 'See https://nunu.gg/patch-notes-archive-2026 for the archive.',
         want: false,
@@ -460,6 +464,8 @@ describe('groundReport — the job boundary', () => {
       { body: 'See nunu.gg:8443/other-page here.', want: false, why: 'the host with a port and another path' },
     ]
 
+    // A hostname embedded in an internationalized domain must not be read as a mention: with
+    // an ASCII-only boundary, `münchen.de` yields the token `nchen.de`.
     for (const { body, want, why } of bodyCases) {
       it(`${want ? 'flags' : 'leaves alone'}: ${why}`, () => {
         const report = groundReport(
@@ -473,6 +479,21 @@ describe('groundReport — the job boundary', () => {
         else expect(report.report).not.toContain('Unverified in prose')
       })
     }
+
+    it('leaves alone: an IDN host that merely ends with the blocked one', () => {
+      const ledger = createLedger()
+      ledger.recordRetrieved('https://good.example')
+      ledger.recordFailed('https://nchen.de/x', 'rendered page empty')
+      const report = groundReport(
+        submitted({
+          report: 'See https://münchen.de/x here.',
+          citations: [{ claim: 'ok', url: 'https://good.example', confidence: 'high' }],
+          unverified: [{ topic: 't', url: 'https://nchen.de/x', reason: 'rendered page empty' }],
+        }),
+        ledger,
+      )
+      expect(report.report).not.toContain('Unverified in prose')
+    })
 
     // A path full of regex metacharacters is matched literally, not compiled: the blocked
     // URL is compared as a string through `normalizeUrl`, so `(` `)` `+` `.` are inert.
@@ -490,9 +511,11 @@ describe('groundReport — the job boundary', () => {
         ledger,
       )
       expect(hit.report).toContain('Unverified in prose')
+      // The parens are part of the path, so the same URL without them is a different page —
+      // and `+` is a literal here, not a quantifier that would let `Foo_(bar)` match `Foobar`.
       const miss = groundReport(
         submitted({
-          report: 'See https://en.example/wiki/FooXbarYx here.',
+          report: 'See https://en.example/wiki/Foo_barx here.',
           citations: [{ claim: 'ok', url: 'https://good.example', confidence: 'high' }],
           unverified: [blocked],
         }),

@@ -61,13 +61,19 @@ export function normalizeUrl(raw: string): string {
 // Accepts a scheme-less token (`nunu.gg`) as well as a full URL: the body scanner's tokens
 // are often bare hosts, and `new URL('nunu.gg')` throws without the scheme.
 export function hostOnly(raw: string): string | null {
-  const trimmed = raw.trim()
-  const candidate = /^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`
   try {
-    return new URL(candidate).host.toLowerCase().replace(/^www\./, '')
+    return new URL(withScheme(raw)).host.toLowerCase().replace(/^www\./, '')
   } catch {
     return null
   }
+}
+
+// Prepend `https://` unless the string already carries a scheme. One copy of this rule:
+// `normalizeUrl`'s callers, `hostOnly` and the body scanner all need it, and a second
+// hand-tuned copy is exactly the drift this module's own comments warn about.
+export function withScheme(raw: string): string {
+  const t = raw.trim()
+  return /^[a-z][a-z0-9+.-]*:\/\//i.test(t) ? t : `https://${t}`
 }
 
 export function createLedger(): RetrievalLedger {

@@ -1,4 +1,5 @@
-import { hostOnly, normalizeUrl } from './ledger.js'
+import { hostOnly, normalizeUrl, withScheme } from './ledger.js'
+import type { SubmittedReport } from './schema.js'
 
 // Issue #7: the citation gate does not reach the report PROSE. A synthesizer can still name
 // a blocked source in the body — a raw URL, a markdown link target, or a bare host — while
@@ -15,27 +16,33 @@ import { hostOnly, normalizeUrl } from './ledger.js'
 // Annotates rather than deletes: removing sentences would silently drop claims the caller
 // paid for, so each disowned reference gets the run's own reason for distrusting it.
 
-export interface UnverifiedMention {
-  topic: string
-  url: string | null
-  reason: string
-}
+// schema.ts owns this shape; deriving it here rather than re-inlining `{ topic, url, reason }`
+// means a schema change cannot leave a stale copy behind.
+type UnverifiedMention = SubmittedReport['unverified'][number]
 
 // A URL-ish token in prose: a scheme-ful URL (raw or a markdown link target) or a
 // scheme-less host[:port][/path][?query][#fragment] form ("nunu.gg/patch-notes", "per
 // nunu.gg").
 //
-// The lookbehind and lookahead are the whole point — without them the tokenizer reads a
-// hostname out of unrelated text and the report is annotated for something it never said:
+// The boundaries are the whole point — without them the tokenizer reads a hostname out of
+// unrelated text and the report is annotated for something it never said:
 //   - `nunu.gg@example.com` is an email; the lookahead rejects a token followed by `@`.
 //   - `sub.nunu.gg` must not yield a bare `nunu.gg`; the lookbehind rejects a token that
 //     starts mid-host.
+//   - `münchen.de` must not yield `nchen.de`; the boundaries are Unicode-aware, so an IDN
+//     letter counts as part of the hostname rather than as a separator.
 //   - the port is consumed as part of the token, so `nunu.gg:8443/x` cannot decay into a
 //     bare-host mention of `nunu.gg`.
-// `)` is allowed inside a token and trimmed by balance in `trimToken`, so a Wikipedia-style
-// path keeps its parens while a markdown wrapper loses its own.
+//
+// The path stops at `,;:!` and brackets rather than swallowing them: prose glues punctuation
+// straight onto a URL (`nunu.gg/patch-notes,and other stuff`), and a path class that accepts
+// everything non-space would make the token `nunu.gg/patch-notes,and` — a false NEGATIVE on
+// a real mention, which is the failure this whole feature exists to prevent. A balanced
+// `(...)` group is allowed inside a path, so a Wikipedia-style `Foo_(bar)` survives while
+// `(see nunu.gg/x)more` still stops at the wrapper; `trimToken` strips any unbalanced
+// trailing paren that remains.
 const URL_TOKEN =
-  /(?<![\w@/.-])(?:https?:\/\/)?(?:www\.)?[\w-]+(?:\.[\w-]+)+(?::\d+)?(?:[/?#][^\s\]<>"'`]*)?(?![@\w-])(?!\.\w)/gi
+  /(?<![\p{L}\p{N}@/.-])(?:https?:\/\/)?(?:www\.)?[\p{L}\p{N}-]+(?:\.[\p{L}\p{N}-]+)+(?::\d+)?(?:[/?#](?:\([^\s()]*\)|[^\s\]<>"'`,;:!()])*)*(?![@\p{L}\p{N}-])(?!\.\p{L})/giu
 
 // Punctuation a sentence or a markdown wrapper leaves glued to a token.
 function trimToken(token: string): string {
@@ -45,19 +52,17 @@ function trimToken(token: string): string {
   return s
 }
 
-// The canonical form of a token. A scheme is added when the token has none, because
-// `normalizeUrl`'s parse-failure fallback lowercases the WHOLE string — which would make a
-// scheme-less token's PATH case-insensitive, contradicting the scheme-ful path's behaviour
-// and HTTP itself. With a scheme, one rule covers host case, `www.`, the scheme and a
-// trailing slash, and path case survives.
+// The canonical form of a token, via the same `normalizeUrl` the citation gate uses. A
+// scheme is added when the token has none: `normalizeUrl`'s parse-failure fallback lowercases
+// the WHOLE string, which would make a scheme-less token's PATH case-insensitive and
+// contradict both the scheme-ful form and HTTP itself.
 function canonical(raw: string): string {
-  const t = raw.trim()
-  return normalizeUrl(/^[a-z][a-z0-9+.-]*:\/\//i.test(t) ? t : `https://${t}`)
+  return normalizeUrl(withScheme(raw))
 }
 
-// Whether the body names this source. Comparison goes through `normalizeUrl` — the same
-// canonical form the citation gate uses — so host case, `www.`, scheme and a trailing slash
-// are one rule rather than a second, hand-tuned one that can drift.
+// Whether the body names this source. Comparison goes through `normalizeUrl`, so host case,
+// `www.`, scheme and a trailing slash are one rule rather than a second, hand-tuned one that
+// can drift.
 //
 // A query string in the body does NOT match a blocked URL without one: `?ref=abc` is a
 // different document, the same call `normalizeUrl` already makes for citations.
