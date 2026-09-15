@@ -481,6 +481,7 @@ describe('groundReport — the job boundary', () => {
       },
       { body: 'See https://nunu.gg?ref=abc here.', want: false, why: 'a query on the bare host' },
       { body: 'See https://nunu.gg/patch-notes.2026 here.', want: false, why: 'a longer filename (dot + digit)' },
+      { body: 'See https://nunu.gg/patch-notes.html here.', want: false, why: 'a longer filename (dot + letter)' },
       { body: 'See WWW.nunu.gg/patch-notes here.', want: true, why: 'an uppercase WWW. prefix' },
     ]
 
@@ -630,6 +631,94 @@ describe('groundReport — the job boundary', () => {
         ledger,
       )
       expect(report.report).toContain('Unverified in prose')
+    })
+
+    // `domainToUnicode` returns an EMPTY STRING for anything that is not a bare domain —
+    // notably `host:port`. An alternation with an empty branch always succeeds, and with the
+    // path optional that made a ported blocked URL match almost any prose. Every body here
+    // names no such source and must stay untouched.
+    it('does not flag ordinary prose for a ported blocked URL', () => {
+      const ledger = createLedger()
+      ledger.recordRetrieved('https://good.example')
+      ledger.recordFailed('https://internal.example:8443/dashboard', 'rendered page empty')
+      const blocked = {
+        topic: 't',
+        url: 'https://internal.example:8443/dashboard',
+        reason: 'rendered page empty',
+      }
+      for (const body of [
+        'The rate rose to 55%.',
+        'Revenue grew 12% year over year.',
+        'Nothing relevant here.',
+        'See https://other.example/thing here.',
+      ]) {
+        const report = groundReport(
+          submitted({
+            report: body,
+            citations: [{ claim: 'ok', url: 'https://good.example', confidence: 'high' }],
+            unverified: [blocked],
+          }),
+          ledger,
+        )
+        expect(report.report).not.toContain('Unverified in prose')
+      }
+    })
+
+    // A blocked URL WITH a fragment must not be satisfied by a body naming the bare page:
+    // `#section` and `#section2` are different sections, and an optional fragment group would
+    // let the fragmentless mention through.
+    it('does not confuse two different fragments on the same page', () => {
+      const ledger = createLedger()
+      ledger.recordRetrieved('https://good.example')
+      ledger.recordFailed('https://nunu.gg/patch-notes#section2', 'rendered page empty')
+      const blocked = { topic: 't', url: 'https://nunu.gg/patch-notes#section2', reason: 'rendered page empty' }
+      const other = groundReport(
+        submitted({
+          report: 'See https://nunu.gg/patch-notes#section here.',
+          citations: [{ claim: 'ok', url: 'https://good.example', confidence: 'high' }],
+          unverified: [blocked],
+        }),
+        ledger,
+      )
+      expect(other.report).not.toContain('Unverified in prose')
+      const same = groundReport(
+        submitted({
+          report: 'See https://nunu.gg/patch-notes#section2 here.',
+          citations: [{ claim: 'ok', url: 'https://good.example', confidence: 'high' }],
+          unverified: [blocked],
+        }),
+        ledger,
+      )
+      expect(same.report).toContain('Unverified in prose')
+    })
+
+    // A character whose case mapping is not one-to-one is left literal rather than mis-folded.
+    // `ß` uppercases to `SS`, so a blocked `straße.example` matches the lowercase spelling but
+    // NOT `STRASSE.example` — a documented tradeoff, pinned here so a future "fix" has to
+    // confront it deliberately.
+    it('leaves a multi-char case mapping literal (ß)', () => {
+      const ledger = createLedger()
+      ledger.recordRetrieved('https://good.example')
+      ledger.recordFailed('https://straße.example/x', 'rendered page empty')
+      const blocked = { topic: 't', url: 'https://straße.example/x', reason: 'rendered page empty' }
+      const lower = groundReport(
+        submitted({
+          report: 'See https://straße.example/x here.',
+          citations: [{ claim: 'ok', url: 'https://good.example', confidence: 'high' }],
+          unverified: [blocked],
+        }),
+        ledger,
+      )
+      expect(lower.report).toContain('Unverified in prose')
+      const upper = groundReport(
+        submitted({
+          report: 'See https://STRASSE.example/x here.',
+          citations: [{ claim: 'ok', url: 'https://good.example', confidence: 'high' }],
+          unverified: [blocked],
+        }),
+        ledger,
+      )
+      expect(upper.report).not.toContain('Unverified in prose')
     })
 
     // A non-null but unparseable URL must be skipped without throwing, and without taking a

@@ -109,8 +109,16 @@ function patternFor(url: string): RegExp | null {
   // `xn--mnchen-3ya.de`), but the report body and the caller's own `unverified` entry both
   // carry the Unicode form. Accepting either spelling is the difference between flagging a
   // real mention and silently missing it, so the host alternation carries both.
+  //
+  // `domainToUnicode` returns an EMPTY STRING for input that is not a bare domain — notably
+  // `host:port`, which is exactly what a ported URL has. An alternation with an empty branch
+  // always succeeds, and with `rest`/`hash` optional that made the whole pattern match almost
+  // any prose ("Revenue grew 12% year over year." annotated a blocked
+  // `https://internal.example:8443/dashboard`). Only build the alternation for a non-empty,
+  // genuinely different spelling.
   const unicodeHost = domainToUnicode(host)
-  const hostPattern = unicodeHost === host ? ciClass(host) : `(?:${ciClass(host)}|${ciClass(unicodeHost)})`
+  const hostPattern =
+    unicodeHost && unicodeHost !== host ? `(?:${ciClass(host)}|${ciClass(unicodeHost)})` : ciClass(host)
   // The `u` flag is load-bearing: without it `\p{L}` is an identity escape for a literal `p`,
   // so the boundary classes silently degrade to `[p{L}N...]` and stop excluding letters —
   // which is how `notnunu.gg` and `münchen.de` got flagged as `nunu.gg` and `nchen.de`.
@@ -118,7 +126,13 @@ function patternFor(url: string): RegExp | null {
   // versa): the canonical form strips a trailing slash, so it is not part of `rest`, but prose
   // writes it. It cannot over-reach to `nunu.gg/other-page` — with the slash consumed, RIGHT
   // sees the `o` of `other-page` and rejects the match.
-  const body = `${LEFT}(?:https?://)?(?:${ciClass('www.')})?${hostPattern}(?:${escape(rest)})?/?${escape(hash)}?${RIGHT}`
+  //
+  // The fragment group is REQUIRED when the blocked URL has one, not optional: a blocked
+  // `page#section` must not be satisfied by a body naming the bare `page` (a different
+  // section), and `(?:hash)?` would let exactly that through. The reverse direction is
+  // already covered — for a blocked URL with no fragment, RIGHT rejects a body that has one.
+  const hashPattern = hash ? `(?:${escape(hash)})` : ''
+  const body = `${LEFT}(?:https?://)?(?:${ciClass('www.')})?${hostPattern}(?:${escape(rest)})?/?${hashPattern}${RIGHT}`
   return new RegExp(body, 'u')
 }
 
