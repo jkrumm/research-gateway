@@ -450,6 +450,11 @@ describe('groundReport — the job boundary', () => {
       { body: 'See nunu.gg/patch-notes;and more.', want: true, why: 'a semicolon glued to the path' },
       { body: 'See nunu.gg/patch-notes: the rate rose.', want: true, why: 'a colon glued to the path' },
       { body: '(see nunu.gg/patch-notes)more', want: true, why: 'a closing paren glued to the path' },
+      { body: 'See nunu.gg/patch-notes(archived) here.', want: true, why: 'a glued parenthetical annotation' },
+      { body: 'See **https://nunu.gg/patch-notes** here.', want: true, why: 'markdown bold around the URL' },
+      { body: 'See _https://nunu.gg/patch-notes_ here.', want: true, why: 'markdown italics around the URL' },
+      { body: 'See https://nunu.gg/patch-notes[1] here.', want: true, why: 'a footnote ref glued to the URL' },
+      { body: 'See https://nunu.gg/ here.', want: true, why: 'a bare host with a trailing slash' },
       {
         body: 'See https://nunu.gg/patch-notes-archive-2026 for the archive.',
         want: false,
@@ -487,6 +492,24 @@ describe('groundReport — the job boundary', () => {
       const report = groundReport(
         submitted({
           report: 'See https://münchen.de/x here.',
+          citations: [{ claim: 'ok', url: 'https://good.example', confidence: 'high' }],
+          unverified: [{ topic: 't', url: 'https://nchen.de/x', reason: 'rendered page empty' }],
+        }),
+        ledger,
+      )
+      expect(report.report).not.toContain('Unverified in prose')
+    })
+
+    // The same host in DECOMPOSED Unicode (`u` + U+0308 instead of `ü`): the combining mark
+    // must count as part of the hostname, or the matcher starts after it and reads the tail
+    // `nchen.de` as a mention of a source the report never named.
+    it('leaves alone: a decomposed IDN host that ends with the blocked one', () => {
+      const ledger = createLedger()
+      ledger.recordRetrieved('https://good.example')
+      ledger.recordFailed('https://nchen.de/x', 'rendered page empty')
+      const report = groundReport(
+        submitted({
+          report: 'See https://mu\u0308nchen.de/x here.',
           citations: [{ claim: 'ok', url: 'https://good.example', confidence: 'high' }],
           unverified: [{ topic: 't', url: 'https://nchen.de/x', reason: 'rendered page empty' }],
         }),

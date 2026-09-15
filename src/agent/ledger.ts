@@ -71,7 +71,7 @@ export function hostOnly(raw: string): string | null {
 // Prepend `https://` unless the string already carries a scheme. One copy of this rule:
 // `normalizeUrl`'s callers, `hostOnly` and the body scanner all need it, and a second
 // hand-tuned copy is exactly the drift this module's own comments warn about.
-export function withScheme(raw: string): string {
+function withScheme(raw: string): string {
   const t = raw.trim()
   return /^[a-z][a-z0-9+.-]*:\/\//i.test(t) ? t : `https://${t}`
 }
