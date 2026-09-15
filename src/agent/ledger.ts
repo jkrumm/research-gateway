@@ -36,22 +36,78 @@ export interface RetrievalLedger {
   snapshot(): LedgerSnapshot
 }
 
+// Split a URL into its normalized host plus the case-preserved remainder. ONE parse rule for
+// every consumer in this module and the body scanner — `normalizeUrl` builds on it, and so
+// does the body matcher, so they cannot diverge on scheme-less input, `www.`, or a port.
+//
+// `rest` (path + query) and `hash` are returned separately because the two consumers need
+// different fragment semantics: for CITATION matching a fragment identifies a section of the
+// same page and is dropped, while the body matcher keeps it (see body-mentions.ts).
+//
+// Returns null for anything that is not a comparable http(s) web page, which is the honest
+// answer for an opaque URI or a bare email address: neither has a host, and inventing one
+// collides with real pages (see the two guards below).
+export function urlParts(raw: string): { host: string; rest: string; hash: string } | null {
+  const t = raw.trim()
+  // A bare email address is not a web page. Prepending `https://` would make
+  // `https://user@example.com` parse the part after the `@` as a HOST, canonicalizing
+  // `user@example.com` to `example.com` — colliding with the real page `https://example.com`,
+  // so one bogus `unverified` entry could suppress citations to an unrelated site.
+  //
+  // Only a BARE address (no path) is rejected. An earlier form of this guard was
+  // `/^[^/\s]*@/`, which also swallowed a scheme-less URL carrying userinfo AND a path:
+  // `user@example.com/path` returned null (raw-string key) while `https://user@example.com/path`
+  // canonicalized to `example.com/path`, so the two forms never matched and an honest citation
+  // was dropped depending on which one carried the scheme. Requiring the whole string to be
+  // `local@domain` keeps the collision guard without breaking that pair.
+  if (!hasScheme(t) && /^[^/\s]*@[^/\s]*$/.test(t)) return null
+  let parsed: URL
+  try {
+    parsed = new URL(withScheme(t))
+  } catch {
+    return null
+  }
+  // Only http(s) is a comparable web page. An opaque scheme (`mailto:`, `xmpp:`) parses with
+  // an empty host, and returning null lets `normalizeUrl` fall back to the raw string rather
+  // than collapsing every `mailto:` to the same key.
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return null
+  const host = parsed.host.toLowerCase().replace(/^www\./, '')
+  const path = parsed.pathname.replace(/\/+$/, '')
+  return { host, rest: `${path}${parsed.search}`, hash: parsed.hash }
+}
+
+// Whether the string already carries a URI scheme. Any scheme counts, not just `scheme://`:
+// an opaque URI (`mailto:user@example.com`) treated as scheme-less got `https://` prepended
+// on top, and the part before the `@` then parsed as a host — the collision described above.
+//
+// The `(?!\d)` is what keeps a `host:port` from being read as a scheme: `nunu.gg:8443` looks
+// like `scheme:` to a naive pattern, and misreading it would stop the scheme being prepended
+// and break every ported URL.
+function hasScheme(s: string): boolean {
+  return /^[a-z][a-z0-9+.-]*:(?!\d)/i.test(s)
+}
+
 // Canonical key for comparing a cited URL against a retrieved one. The model routinely
 // cites the same page with a fragment, a trailing slash, or a `www.` prefix that the fetch
 // did not use — those are the SAME page and must match, or honest citations get dropped.
 // Scheme is deliberately excluded (http/https of one host is one page); query IS kept
 // (`?v=2` is usually a different document).
+//
+// The scheme-prepend fallback lives in `urlParts`. Without it a scheme-less
+// input like `www.nunu.gg/patch-notes` fails `new URL()` and lands in the catch, which
+// lowercases the whole raw string — keeping `www.` and lowercasing the PATH, contradicting
+// this module's own rule that host case is insignificant and path case is not.
 export function normalizeUrl(raw: string): string {
-  const trimmed = raw.trim()
-  let parsed: URL
-  try {
-    parsed = new URL(trimmed)
-  } catch {
-    return trimmed.toLowerCase()
-  }
-  const host = parsed.host.toLowerCase().replace(/^www\./, '')
-  const path = parsed.pathname.replace(/\/+$/, '')
-  return `${host}${path}${parsed.search}`
+  const parts = urlParts(raw)
+  if (!parts) return raw.trim().toLowerCase()
+  return `${parts.host}${parts.rest}`
+}
+
+// Prepend `https://` unless the string already carries a scheme. One copy of this rule:
+// `normalizeUrl`'s callers and the body scanner all need it, and a second hand-tuned copy is
+// exactly the drift this module's own comments warn about.
+function withScheme(raw: string): string {
+  return hasScheme(raw) ? raw : `https://${raw}`
 }
 
 export function createLedger(): RetrievalLedger {

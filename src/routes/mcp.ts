@@ -1,7 +1,8 @@
 import { Elysia } from 'elysia'
 import { createMcpHandler, McpServer } from '@modelcontextprotocol/server'
 import { z } from 'zod'
-import { Depth, JobHandle, JobState, type ResearchReport } from '../agent/schema.js'
+import { Depth, JobHandle, JobState } from '../agent/schema.js'
+import { reportText } from '../agent/report-text.js'
 import { admission, createJob, getJob, type Job } from '../lib/job-store.js'
 import { POLL_INTERVAL_MS, shouldKeepWaiting, waitDeadline } from '../lib/wait.js'
 import { startResearchJob } from '../lib/run-job.js'
@@ -27,29 +28,6 @@ const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout
 // One progress notification per 5 polls — ~10s, comfortably inside any client idle window and
 // inside the SDK's 15s keep-alive, without one frame every two seconds for twenty minutes.
 const PROGRESS_EVERY_N_TICKS = 5
-
-// Inline the report + citations + sources so text-only MCP clients get the full
-// picture even if they ignore structuredContent.
-function reportText(report: ResearchReport): string {
-  // Confidence is rendered per citation, and `unverified` is rendered at all, because a
-  // text-only client sees ONLY this string — omitting them here reproduced issue #1's
-  // shape from the client's side: every claim looked equally established.
-  const citationLines =
-    report.citations.length > 0
-      ? '\n\n## Citations\n' +
-        report.citations.map((c, i) => `${i + 1}. [${c.confidence}] ${c.claim} — <${c.url}>`).join('\n')
-      : ''
-  const unverifiedLines =
-    report.unverified.length > 0
-      ? '\n\n## Unverified — could NOT be checked against a source\n' +
-        report.unverified.map((u) => `- ${u.topic}${u.url ? ` (<${u.url}>)` : ''} — ${u.reason}`).join('\n')
-      : ''
-  const sourcesLines =
-    report.sources.length > 0
-      ? '\n\n## Sources read\n' + report.sources.map((s) => `- ${s}`).join('\n')
-      : ''
-  return report.report + citationLines + unverifiedLines + sourcesLines
-}
 
 function toState(job: Job): z.infer<typeof JobState> {
   const terminal = job.status === 'done' || job.status === 'error'

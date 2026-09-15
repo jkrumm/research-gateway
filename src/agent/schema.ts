@@ -35,6 +35,11 @@ export const SubmittedReport = z.object({
 })
 export type SubmittedReport = z.infer<typeof SubmittedReport>
 
+// One shared shape for an `unverified` entry. Exported so ground.ts and body-mentions.ts
+// import it instead of each writing its own alias — two independently-written copies of the
+// same `SubmittedReport['unverified'][number]` are a schema change away from drifting.
+export type UnverifiedEntry = SubmittedReport['unverified'][number]
+
 // What one run cost, counted in code alongside `grounding`. This exists because the only
 // way to price a single job used to be differencing argo's cumulative counter between
 // jobs — which is only correct while no two jobs overlap (i.e. not at
