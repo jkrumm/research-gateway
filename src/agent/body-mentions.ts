@@ -1,5 +1,5 @@
 import { domainToUnicode } from 'node:url'
-import { hostOnly, normalizeUrl } from './ledger.js'
+import { normalizeUrl, urlParts } from './ledger.js'
 import type { UnverifiedEntry } from './schema.js'
 
 // Issue #7: the citation gate does not reach the report PROSE. A synthesizer can still name
@@ -30,20 +30,34 @@ import type { UnverifiedEntry } from './schema.js'
 // if continuing past it could still be this same URL. Everything else is a separator. The
 // body is never tokenized, so no token can be mis-assembled in the first place.
 
-// schema.ts owns this shape; importing it rather than re-inlining `{ topic, url, reason }`
-// (or writing a second alias for it) means a schema change cannot leave a stale copy behind.
-type UnverifiedMention = UnverifiedEntry
+// schema.ts owns this shape; importing it directly (no local alias) means a schema change
+// cannot leave a stale copy behind, and there is no second name for the same type.
+
+const escape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 
 // A case-insensitive character class for one literal string, so a single pattern can match a
 // host case-insensitively while leaving the path case-sensitive — the two need different
-// rules (DNS ignores case, HTTP paths do not) and one `i` flag cannot express both.
+// rules (DNS ignores case, HTTP paths do not) and one `i` flag cannot express both (it would
+// apply to the path too).
+//
+// The fold is Unicode-aware, not ASCII-only: a host like `münchen.de` must match a body's
+// `MÜNCHEN.DE`, and folding only `[a-zA-Z]` would silently miss it — a false negative on a
+// real mention, the failure this module exists to prevent. A character whose case mapping is
+// not one-to-one (e.g. `ß`) is left literal rather than mis-folded.
+//
+// Escaping goes through `escape()` rather than a second copy of the metacharacter set: two
+// copies of that set are exactly the drift this module warns about elsewhere.
 function ciClass(literal: string): string {
-  return literal
-    .replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-    .replace(/[a-zA-Z]/g, (c) => `[${c.toLowerCase()}${c.toUpperCase()}]`)
+  return [...literal]
+    .map((c) => {
+      const lower = c.toLowerCase()
+      const upper = c.toUpperCase()
+      if (lower === upper) return escape(c)
+      if (lower.length !== 1 || upper.length !== 1) return escape(c)
+      return `[${escape(lower)}${escape(upper)}]`
+    })
+    .join('')
 }
-
-const escape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 
 // What may not IMMEDIATELY PRECEDE a match: a character that would make it the tail of a
 // longer host or path. `notnunu.gg` and `sub.nunu.gg` must not match `nunu.gg`; a combining
@@ -57,13 +71,14 @@ const LEFT = `(?<![\\p{L}\\p{N}\\p{M}\\-./@])`
 //   - `%` `&` `=` `+` `$` continue a path or query
 //   - `@` makes it an email address (`nunu.gg@example.com`)
 //   - `:` only when a port follows (`nunu.gg:8443`) — a colon is otherwise prose punctuation
-//   - `.` only when a word follows (`patch-notes.html`), so a sentence-final period matches
+//   - `.` only when a word OR digit follows (`patch-notes.html`, `patch-notes.2026`), so a
+//     sentence-final period matches but a longer filename does not
 // `?` and `#` are here because a query or fragment makes it a DIFFERENT document — the same
 // call `normalizeUrl` makes for citations, where `?v=2` is deliberately not the same page.
 // Deliberately NOT excluded: `,` `;` `!` `*` `_` `~` `(` `[` and quotes. Prose and markdown
 // glue those straight onto a URL (`nunu.gg/x,and`, `**nunu.gg/x**`, `nunu.gg/x[1]`,
 // `nunu.gg/x(archived)`), and treating them as continuations loses real mentions.
-const RIGHT = `(?![\\p{L}\\p{N}\\p{M}\\-/%&=+$@?#])(?!:\\d)(?!\\.\\p{L})`
+const RIGHT = `(?![\\p{L}\\p{N}\\p{M}\\-/%&=+$@?#])(?!:\\d)(?!\\.(?:\\p{L}|\\d))`
 
 // The bounded forms of one blocked URL as it may appear in prose: the exact URL, scheme-less,
 // `www.`-less, and as a bare host. `normalizeUrl` supplies the canonical host+path+query, so
@@ -71,21 +86,25 @@ const RIGHT = `(?![\\p{L}\\p{N}\\p{M}\\-/%&=+$@?#])(?!:\\d)(?!\\.\\p{L})`
 // hand-tuned one that can drift from the citation gate's.
 //
 // The path is OPTIONAL so a bare host still counts: a body that says `per nunu.gg` names the
-// source, and with only one nunu.gg URL in play there is nothing else it could mean. The
-// RIGHT boundary is what keeps that from over-reaching — `nunu.gg/other-page` fails on the
-// `o` after the slash, so a bare host matches the host alone and never a different page.
+// source. The RIGHT boundary is what keeps that from over-reaching — `nunu.gg/other-page`
+// fails on the `o` after the slash, so a bare host matches the host alone and never a
+// different page.
 //
 // A query string is part of the canonical form, so a body mention carrying `?ref=abc` does
 // NOT match a blocked URL without one — a different document, the same call `normalizeUrl`
 // already makes for citations.
+//
+// FRAGMENTS ARE THE ONE PLACE THIS DELIBERATELY DIVERGES from `normalizeUrl`, which drops
+// them (a fragment identifies a section of the same page, so citations should match across
+// it). Here the two directions are not symmetrical: a body naming `page#section` IS naming
+// the blocked `page#section`, so dropping the fragment from the pattern would silently miss
+// it; and a body naming the fragmentless `page` must NOT be annotated for a blocked
+// `page#section`. Keeping the fragment in the pattern satisfies both — the verbatim mention
+// matches, and the fragmentless one fails the RIGHT boundary at `#`.
 function patternFor(url: string): RegExp | null {
-  const host = hostOnly(url)
-  if (!host) return null
-  // `normalizeUrl` returns `${host}${path}${search}`; strip the host to get the rest, which
-  // keeps its own case (HTTP paths are case-sensitive).
-  const canonical = normalizeUrl(url)
-  if (!canonical.startsWith(host)) return null
-  const rest = canonical.slice(host.length)
+  const parts = urlParts(url)
+  if (!parts) return null
+  const { host, rest, hash } = parts
   // A Unicode host is IDNA-encoded to punycode by `new URL()` (`münchen.de` ->
   // `xn--mnchen-3ya.de`), but the report body and the caller's own `unverified` entry both
   // carry the Unicode form. Accepting either spelling is the difference between flagging a
@@ -95,7 +114,11 @@ function patternFor(url: string): RegExp | null {
   // The `u` flag is load-bearing: without it `\p{L}` is an identity escape for a literal `p`,
   // so the boundary classes silently degrade to `[p{L}N...]` and stop excluding letters —
   // which is how `notnunu.gg` and `münchen.de` got flagged as `nunu.gg` and `nchen.de`.
-  const body = `${LEFT}(?:https?://)?(?:www\\.)?${hostPattern}(?:${escape(rest)})?/?${RIGHT}`
+  // The trailing `/?` is what lets a body's `nunu.gg/` match a blocked `nunu.gg` (and vice
+  // versa): the canonical form strips a trailing slash, so it is not part of `rest`, but prose
+  // writes it. It cannot over-reach to `nunu.gg/other-page` — with the slash consumed, RIGHT
+  // sees the `o` of `other-page` and rejects the match.
+  const body = `${LEFT}(?:https?://)?(?:${ciClass('www.')})?${hostPattern}(?:${escape(rest)})?/?${escape(hash)}?${RIGHT}`
   return new RegExp(body, 'u')
 }
 
@@ -116,7 +139,7 @@ function referencesBody(body: string, url: string): boolean {
 // otherwise emit a duplicate note.
 export function scrubBody(
   body: string,
-  unverified: ReadonlyArray<UnverifiedMention>,
+  unverified: ReadonlyArray<UnverifiedEntry>,
 ): { body: string; annotated: number } {
   let notes = ''
   let annotated = 0

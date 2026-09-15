@@ -480,6 +480,8 @@ describe('groundReport — the job boundary', () => {
         why: 'a fragment — a different document',
       },
       { body: 'See https://nunu.gg?ref=abc here.', want: false, why: 'a query on the bare host' },
+      { body: 'See https://nunu.gg/patch-notes.2026 here.', want: false, why: 'a longer filename (dot + digit)' },
+      { body: 'See WWW.nunu.gg/patch-notes here.', want: true, why: 'an uppercase WWW. prefix' },
     ]
 
     // A hostname embedded in an internationalized domain must not be read as a mention: with
@@ -560,6 +562,70 @@ describe('groundReport — the job boundary', () => {
           report: 'See https://nunu.gg/patch-notes?v=2 here.',
           citations: [{ claim: 'ok', url: 'https://good.example', confidence: 'high' }],
           unverified: [{ topic: 't', url: 'https://nunu.gg/patch-notes?v=2', reason: 'rendered page empty' }],
+        }),
+        ledger,
+      )
+      expect(report.report).toContain('Unverified in prose')
+    })
+
+    // A fragment is the one place the body matcher deliberately diverges from `normalizeUrl`,
+    // which drops it so citations match across a section anchor. The directions are not
+    // symmetrical here: naming `page#section` IS naming the blocked `page#section` (dropping
+    // the fragment would silently miss it), while naming the fragmentless `page` must not be
+    // annotated for a blocked `page#section`.
+    it('flags a verbatim fragment mention but not the fragmentless one', () => {
+      const ledger = createLedger()
+      ledger.recordRetrieved('https://good.example')
+      ledger.recordFailed('https://nunu.gg/patch-notes#section', 'rendered page empty')
+      const blocked = { topic: 't', url: 'https://nunu.gg/patch-notes#section', reason: 'rendered page empty' }
+      const verbatim = groundReport(
+        submitted({
+          report: 'See https://nunu.gg/patch-notes#section here.',
+          citations: [{ claim: 'ok', url: 'https://good.example', confidence: 'high' }],
+          unverified: [blocked],
+        }),
+        ledger,
+      )
+      expect(verbatim.report).toContain('Unverified in prose')
+      const fragmentless = groundReport(
+        submitted({
+          report: 'See https://nunu.gg/patch-notes here.',
+          citations: [{ claim: 'ok', url: 'https://good.example', confidence: 'high' }],
+          unverified: [blocked],
+        }),
+        ledger,
+      )
+      expect(fragmentless.report).not.toContain('Unverified in prose')
+    })
+
+    // A non-ASCII host must fold case too: folding only `[a-zA-Z]` would silently miss a
+    // body's `MÜNCHEN.DE` against a blocked `münchen.de`.
+    it('flags a non-ASCII host in a different case', () => {
+      const ledger = createLedger()
+      ledger.recordRetrieved('https://good.example')
+      ledger.recordFailed('https://münchen.de/x', 'rendered page empty')
+      const report = groundReport(
+        submitted({
+          report: 'See https://MÜNCHEN.DE/x here.',
+          citations: [{ claim: 'ok', url: 'https://good.example', confidence: 'high' }],
+          unverified: [{ topic: 't', url: 'https://münchen.de/x', reason: 'rendered page empty' }],
+        }),
+        ledger,
+      )
+      expect(report.report).toContain('Unverified in prose')
+    })
+
+    // A port is part of the authority: `nunu.gg:8443` is not `nunu.gg`, and an exact
+    // reference to a ported URL must still be flagged.
+    it('flags an exact mention of a URL carrying a port', () => {
+      const ledger = createLedger()
+      ledger.recordRetrieved('https://good.example')
+      ledger.recordFailed('https://nunu.gg:8443/patch-notes', 'rendered page empty')
+      const report = groundReport(
+        submitted({
+          report: 'See https://nunu.gg:8443/patch-notes here.',
+          citations: [{ claim: 'ok', url: 'https://good.example', confidence: 'high' }],
+          unverified: [{ topic: 't', url: 'https://nunu.gg:8443/patch-notes', reason: 'rendered page empty' }],
         }),
         ledger,
       )

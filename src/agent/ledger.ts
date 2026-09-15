@@ -36,45 +36,43 @@ export interface RetrievalLedger {
   snapshot(): LedgerSnapshot
 }
 
+// Split a URL into its normalized host plus the case-preserved remainder. ONE parse rule for
+// every consumer in this module and the body scanner — `normalizeUrl` builds on it, and so
+// does the body matcher, so they cannot diverge on scheme-less input, `www.`, or a port.
+//
+// `rest` (path + query) and `hash` are returned separately because the two consumers need
+// different fragment semantics: for CITATION matching a fragment identifies a section of the
+// same page and is dropped, while the body matcher keeps it (see body-mentions.ts).
+export function urlParts(raw: string): { host: string; rest: string; hash: string } | null {
+  let parsed: URL
+  try {
+    parsed = new URL(withScheme(raw.trim()))
+  } catch {
+    return null
+  }
+  const host = parsed.host.toLowerCase().replace(/^www\./, '')
+  const path = parsed.pathname.replace(/\/+$/, '')
+  return { host, rest: `${path}${parsed.search}`, hash: parsed.hash }
+}
+
 // Canonical key for comparing a cited URL against a retrieved one. The model routinely
 // cites the same page with a fragment, a trailing slash, or a `www.` prefix that the fetch
 // did not use — those are the SAME page and must match, or honest citations get dropped.
 // Scheme is deliberately excluded (http/https of one host is one page); query IS kept
 // (`?v=2` is usually a different document).
 //
-// The scheme-prepend fallback is the SAME one `hostOnly` uses. Without it a scheme-less
+// The scheme-prepend fallback lives in `urlParts`. Without it a scheme-less
 // input like `www.nunu.gg/patch-notes` fails `new URL()` and lands in the catch, which
 // lowercases the whole raw string — keeping `www.` and lowercasing the PATH, contradicting
 // this module's own rule that host case is insignificant and path case is not.
 export function normalizeUrl(raw: string): string {
-  const trimmed = raw.trim()
-  let parsed: URL
-  try {
-    parsed = new URL(withScheme(trimmed))
-  } catch {
-    return trimmed.toLowerCase()
-  }
-  const host = parsed.host.toLowerCase().replace(/^www\./, '')
-  const path = parsed.pathname.replace(/\/+$/, '')
-  return `${host}${path}${parsed.search}`
-}
-
-// The host alone, normalized the same way `normalizeUrl` normalizes it (lowercased,
-// `www.` stripped). Exported so the body scanner in ground.ts can match a bare-host
-// mention without re-encoding this rule — two copies of it would drift.
-//
-// Accepts a scheme-less token (`nunu.gg`) as well as a full URL: the body scanner's tokens
-// are often bare hosts, and `new URL('nunu.gg')` throws without the scheme.
-export function hostOnly(raw: string): string | null {
-  try {
-    return new URL(withScheme(raw)).host.toLowerCase().replace(/^www\./, '')
-  } catch {
-    return null
-  }
+  const parts = urlParts(raw)
+  if (!parts) return raw.trim().toLowerCase()
+  return `${parts.host}${parts.rest}`
 }
 
 // Prepend `https://` unless the string already carries a scheme. One copy of this rule:
-// `normalizeUrl`'s callers, `hostOnly` and the body scanner all need it, and a second
+// `normalizeUrl`'s callers and the body scanner all need it, and a second
 // hand-tuned copy is exactly the drift this module's own comments warn about.
 function withScheme(raw: string): string {
   const t = raw.trim()
