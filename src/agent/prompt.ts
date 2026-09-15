@@ -1,6 +1,16 @@
 import type { Depth } from './schema.js'
 import { profiles } from './depth.js'
 
+// The static prompts below carry the CONTEXT RULES (what "Given background" means and what
+// may not be done with it) as byte-identical text — prompt-cache hits depend on that. The
+// caller's actual context text is the dynamic half, rendered here into the per-request
+// prompt field under the same heading the rules name. Empty string when no context was
+// passed, so every call site can interpolate unconditionally.
+export function backgroundSection(context: string | undefined): string {
+  if (!context) return ''
+  return `\n\n## Given background\n\n${context.trim()}\n`
+}
+
 // Anti-hallucination + attribution rules shared by every prompt in the pipeline.
 // Kept as an exact, byte-identical block so callers can place it as a stable
 // prefix — required for prompt-cache hits across workers in the same job.
@@ -19,6 +29,7 @@ export function planPrompt(depth: Depth): string {
 - Each sub-question must be independently researchable: no sub-question may depend on the answer to another, because they will be researched in parallel by separate workers with no visibility into each other's progress.
 - Together, the sub-questions must fully cover the original query — no important angle left out, no redundant overlap between them.
 - Write each sub-question as a precise, self-contained research prompt a worker can act on without seeing the original query.
+- The caller may supply "Given background" with the query: facts already established by earlier work. Treat it as true. Do NOT write sub-questions that re-establish or re-verify anything it states — every sub-question must target what is still UNKNOWN.
 
 ${ANTI_HALLUCINATION_RULES}
 
@@ -34,6 +45,10 @@ ${profile.directive}`
 export function workerPrompt(depth: Depth): string {
   const profile = profiles[depth]
   return `You are a research worker. You are given ONE sub-question to research thoroughly. Gather and cross-verify evidence from real sources, then return a distilled digest via the \`submit_digest\` tool.
+
+## Given background
+
+The prompt may carry a "Given background" section: facts the caller already established and treats as settled. It is NOT a research target — do not re-search it, do not re-verify it, and do not spend steps confirming it. Spend the budget on what is still unknown. You may restate a given-background fact in your digest when the answer builds on it, but it can NEVER back a finding: findings require a URL you retrieved, and the background has none.
 
 ## Research pattern
 
@@ -142,7 +157,7 @@ export function synthesisPrompt(depth: Depth): string {
 
 - Write the complete markdown answer directly, with NO preamble and no commentary about your process, the digests, or what was or wasn't gathered.
 - Tie each key claim to a source URL drawn from the digests.
-- Do not invent facts that are not present in the digests — synthesize only from what they contain.
+- Do not invent facts that are not present in the digests — synthesize only from what they contain. The one exception is the "Given background" section: facts stated there may be woven into the report as established, but they carry NO citation (they have no URL) and must not be dressed up as if a source backed them.
 - If digests disagree or leave gaps, state that explicitly in the report.
 - Carry each finding's \`confidence\` through to the matching citation — do not drop it, upgrade it, or default it. A claim that rests on a \`low\`-confidence finding MUST be worded in the report prose as provisional (e.g. "appears to be", "one source suggests") and MUST NOT be asserted as an established fact.
 - Aggregate every digest's \`blockedSources\` into the report's \`unverified\` field, carrying \`topic\`, \`url\`, and \`reason\` through unchanged. This is how the caller learns what could not be verified — do not paraphrase it away into prose only.

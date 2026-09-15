@@ -43,6 +43,7 @@ export interface JobRecord {
   status: JobStatus
   query: string
   depth: Depth
+  context?: string
   result?: ResearchReport
   error?: string
   createdAt: number
@@ -80,6 +81,7 @@ interface JobRow {
   status: string
   query: string
   depth: string
+  context: string | null
   result_json: string | null
   error: string | null
   created_at: number
@@ -94,6 +96,7 @@ function toRecord(row: JobRow): JobRecord {
     status: row.status as JobStatus,
     query: row.query,
     depth: row.depth as Depth,
+    ...(row.context !== null ? { context: row.context } : {}),
     ...(row.result_json !== null ? { result: JSON.parse(row.result_json) as ResearchReport } : {}),
     ...(row.error !== null ? { error: row.error } : {}),
     createdAt: row.created_at,
@@ -114,6 +117,7 @@ export function openJobDb(dbPath: string): JobDb {
       status      TEXT NOT NULL,
       query       TEXT NOT NULL,
       depth       TEXT NOT NULL,
+      context     TEXT,
       result_json TEXT,
       error       TEXT,
       created_at  INTEGER NOT NULL,
@@ -123,22 +127,26 @@ export function openJobDb(dbPath: string): JobDb {
     );
   `)
 
-  // Idempotent column migration: a database created by the pre-heartbeat version of this
-  // module has no `heartbeat_at` column, and referencing $heartbeatAt in a prepared statement
-  // against that schema throws at prepare time. Add it if missing, same pattern as
-  // audio-gateway's `error_text` migration.
+  // Idempotent column migrations: a database created by an older version of this module may
+  // be missing columns added since, and referencing the matching named parameter in a
+  // prepared statement against that schema throws at prepare time. Same pattern as the
+  // heartbeat_at migration below it (itself copied from audio-gateway's error_text).
   const cols = db.query('PRAGMA table_info(job)').all() as Array<{ name: string }>
+  if (!cols.some((c) => c.name === 'context')) {
+    db.exec('ALTER TABLE job ADD COLUMN context TEXT')
+  }
   if (!cols.some((c) => c.name === 'heartbeat_at')) {
     db.exec('ALTER TABLE job ADD COLUMN heartbeat_at INTEGER')
   }
 
   const putStmt = db.prepare(`
-    INSERT INTO job (job_id, status, query, depth, result_json, error, created_at, started_at, finished_at, heartbeat_at)
-    VALUES ($jobId, $status, $query, $depth, $resultJson, $error, $createdAt, $startedAt, $finishedAt, $heartbeatAt)
+    INSERT INTO job (job_id, status, query, depth, context, result_json, error, created_at, started_at, finished_at, heartbeat_at)
+    VALUES ($jobId, $status, $query, $depth, $context, $resultJson, $error, $createdAt, $startedAt, $finishedAt, $heartbeatAt)
     ON CONFLICT(job_id) DO UPDATE SET
       status = excluded.status,
       query = excluded.query,
       depth = excluded.depth,
+      context = excluded.context,
       result_json = excluded.result_json,
       error = excluded.error,
       created_at = excluded.created_at,
@@ -171,6 +179,7 @@ export function openJobDb(dbPath: string): JobDb {
         $status: job.status,
         $query: job.query,
         $depth: job.depth,
+        $context: job.context ?? null,
         $resultJson: job.result ? JSON.stringify(job.result) : null,
         $error: job.error ?? null,
         $createdAt: job.createdAt,

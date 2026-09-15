@@ -6,6 +6,20 @@ export type Depth = z.infer<typeof Depth>
 export const ResearchInput = z.object({
   query: z.string().min(3),
   depth: Depth.optional(),
+  // Free-text background the caller already knows (issue #6: seven jobs re-derived the same
+  // seven facts seven times). Treated as established — the plan and every worker are told not
+  // to re-search or re-verify it, and it can never be cited (it has no URL, so the grounding
+  // gate would drop any citation backing it). Capped because it is re-sent in the planner
+  // prompt, EVERY worker prompt, and the synthesis prompt; the cap is ~5k tokens, well inside
+  // even `quick`'s worker budget.
+  context: z
+    .string()
+    .min(1)
+    .max(20_000)
+    .optional()
+    .describe(
+      'Optional free-text background the caller already knows. Treated as established: it is NOT re-searched or re-verified, and it is never cited (it has no URL). Use it to skip re-deriving facts shared across jobs.',
+    ),
 })
 export type ResearchInput = z.infer<typeof ResearchInput>
 

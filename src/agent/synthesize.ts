@@ -1,7 +1,7 @@
 import { generateText, tool } from 'ai'
 import type { Tool } from 'ai'
 import { leadModel } from '../lib/llm.js'
-import { synthesisPrompt } from './prompt.js'
+import { synthesisPrompt, backgroundSection } from './prompt.js'
 import { resolveSynthesisReport } from './extract.js'
 import { SubmittedReport, WorkerDigest } from './schema.js'
 import type { Depth } from './schema.js'
@@ -22,7 +22,7 @@ function extractReport(toolCalls: ReadonlyArray<{ toolName: string; input: unkno
   return parsed.success ? parsed.data : null
 }
 
-function renderDigests(query: string, digests: WorkerDigest[]): string {
+function renderDigests(query: string, context: string | undefined, digests: WorkerDigest[]): string {
   const sections = digests.map((d) => {
     const findings = d.findings.map((f) => `- ${f.claim} — ${f.url} (${f.confidence})`).join('\n')
     const sourcesRead = d.sourcesRead.join(', ')
@@ -31,16 +31,17 @@ function renderDigests(query: string, digests: WorkerDigest[]): string {
       .join('\n')
     return `### ${d.subQuestion}\n\n${d.summary}\n\n**Findings:**\n${findings || '(none)'}\n\n**Sources read:** ${sourcesRead || '(none)'}\n\n**Blocked sources:**\n${blockedSources || '(none)'}`
   })
-  return `## Original query\n\n${query}\n\n## Researched sub-questions\n\n${sections.join('\n\n')}`
+  return `## Original query\n\n${query}${backgroundSection(context)}\n\n## Researched sub-questions\n\n${sections.join('\n\n')}`
 }
 
 export async function synthesize(args: {
   query: string
+  context?: string | undefined
   digests: WorkerDigest[]
   depth: Depth
   jobId: string
 }): Promise<{ report: SubmittedReport | null; usage: UsageStats }> {
-  const { query, digests, depth, jobId } = args
+  const { query, context, digests, depth, jobId } = args
   const start = Date.now()
 
   const submitReportTool: AnyTool = tool({
@@ -63,7 +64,7 @@ export async function synthesize(args: {
         const result = await generateText({
           model: leadModel,
           instructions: synthesisPrompt(depth),
-          prompt: renderDigests(query, digests),
+          prompt: renderDigests(query, context, digests),
           tools: { submit_report: submitReportTool },
           toolChoice: { type: 'tool', toolName: 'submit_report' },
           maxRetries: 2,

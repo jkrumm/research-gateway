@@ -2,7 +2,7 @@ import { generateText, tool } from 'ai'
 import type { Tool } from 'ai'
 import { leadModel } from '../lib/llm.js'
 import { profiles } from './depth.js'
-import { planPrompt } from './prompt.js'
+import { planPrompt, backgroundSection } from './prompt.js'
 import { ResearchPlan } from './schema.js'
 import type { Depth } from './schema.js'
 import { log } from '../lib/log.js'
@@ -28,10 +28,11 @@ function extractPlan(toolCalls: ReadonlyArray<{ toolName: string; input: unknown
 
 export async function planResearch(args: {
   query: string
+  context?: string | undefined
   depth: Depth
   jobId: string
 }): Promise<{ plan: ResearchPlan; usage: UsageStats }> {
-  const { query, depth, jobId } = args
+  const { query, context, depth, jobId } = args
   const profile = profiles[depth]
 
   // quick is a single-worker profile — decomposing a one-worker plan wastes an LLM call
@@ -62,7 +63,7 @@ export async function planResearch(args: {
         const result = await generateText({
           model: leadModel,
           instructions: planPrompt(depth),
-          prompt: query,
+          prompt: query + backgroundSection(context),
           tools: { submit_plan: submitPlanTool },
           toolChoice: { type: 'tool', toolName: 'submit_plan' },
           maxRetries: 2,
