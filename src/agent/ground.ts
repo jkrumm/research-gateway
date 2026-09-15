@@ -167,33 +167,41 @@ function hostOf(raw: string): string | null {
 }
 
 function referencesBody(body: string, url: string): boolean {
-  const literal = url.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-  // The URL itself, bare or as a markdown link target; both scheme-ful and scheme-less
-  // forms, but never the tail of a longer token (`notblocked.example` must not match).
-  const pathPart = literal.replace(/^https?:\/\//, '')
-  const urlPattern = new RegExp(`(^|[^\\w/])(?:https?://)?${pathPart}`, 'i')
-  // A bare-host mention ("per nunu.gg the ..."), only when the URL is host-parseable and
-  // the host is a whole token — `sub.blocked.example` must not match `blocked.example`.
+  const escape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  // Left boundary: start of text, or a character that cannot be part of a host or path
+  // token. `.` and `-` are excluded deliberately — with a bare `[^\w/]` both
+  // `sub.nunu.gg/a` and `notnunu.gg/a` match a blocked `nunu.gg/a`, annotating a source
+  // the report never named.
+  const LEFT = `(^|[^\\w/.-])`
+  // Right boundary: the match must not continue as a longer token. `-`, `%`, `/` and word
+  // characters would extend the URL (`patch-notes-archive-2026` is not `patch-notes`); a
+  // `.` is allowed only where it terminates, so a sentence-final `…/patch-notes.` matches.
+  const RIGHT = `(?![\\w/%-])(?!\\.\\w)`
+  // Scheme-less, www-less form of the URL's own text, plus the bare host. Both allow an
+  // optional scheme and an optional `www.`, so the three shapes a body actually uses —
+  // raw URL, markdown link target, bare host — are one pattern each.
+  const pathPart = url.replace(/^https?:\/\//i, '').replace(/^www\./i, '')
   const host = hostOf(url)
-  const hostPattern = host
-    ? new RegExp(`(^|[^\\w.-])${host.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}($|[^\\w.-])`, 'i')
-    : null
-  return urlPattern.test(body) || (hostPattern?.test(body) ?? false)
+  const patterns = [`${LEFT}(?:https?://)?(?:www\\.)?${escape(pathPart)}${RIGHT}`]
+  if (host) patterns.push(`${LEFT}(?:www\\.)?${escape(host)}${RIGHT}`)
+  return patterns.some((p) => new RegExp(p, 'i').test(body))
 }
 
 function scrubBody(
   body: string,
   unverified: ReadonlyArray<{ topic: string; url: string | null; reason: string }>,
-): string {
+): { body: string; annotated: number } {
   let notes = ''
+  let annotated = 0
   const seen = new Set<string>()
   for (const entry of unverified) {
     if (!entry.url || seen.has(entry.url)) continue
     seen.add(entry.url)
     if (!referencesBody(body, entry.url)) continue
+    annotated++
     notes += `> **Unverified in prose:** this report references ${entry.url}, which this run could NOT verify (${entry.reason}). Treat that reference as unconfirmed — see \`unverified\`.\n\n`
   }
-  return notes + body
+  return { body: notes + body, annotated }
 }
 
 // Job boundary. Takes the model's submission and returns the public report, with every
@@ -245,17 +253,27 @@ export function groundReport(
     }
   })
 
-  const degraded =
-    grounding.citationsDropped > 0 ||
-    grounding.pagesRetrieved === 0 ||
-    grounding.pagesFailed > grounding.pagesRetrieved
-
   // The prose is scrubbed against the FINAL unverified set: an entry whose URL was
   // vindicated by the ledger is detached above precisely so it can support citations —
   // flagging mentions of it in the body would contradict the citation next to it.
-  const reportBody = scrubBody(submitted.report, unverified)
+  //
+  // A scrub note is evidence lost, exactly like a dropped citation: the body named a
+  // source this run could not verify. It therefore feeds `degraded` — without that, issue
+  // #7 is only half closed and the contradiction still ships under `status: ok`.
+  const scrubbed = scrubBody(submitted.report, unverified)
+
+  const degraded =
+    grounding.citationsDropped > 0 ||
+    scrubbed.annotated > 0 ||
+    grounding.pagesRetrieved === 0 ||
+    grounding.pagesFailed > grounding.pagesRetrieved
 
   const warnings: string[] = []
+  if (scrubbed.annotated > 0) {
+    warnings.push(
+      `${scrubbed.annotated} source(s) named in the report body could not be verified; each is flagged inline in the prose.`,
+    )
+  }
   if (grounding.citationsDropped > 0) {
     warnings.push(
       `${grounding.citationsDropped} citation(s) were removed: their URLs were never retrieved in this run or their fetch failed.`,
@@ -279,7 +297,7 @@ export function groundReport(
 
   return {
     ...submitted,
-    report: degraded ? banner(grounding) + reportBody : reportBody,
+    report: degraded ? banner(grounding) + scrubbed.body : scrubbed.body,
     citations: kept,
     sources,
     unverified,

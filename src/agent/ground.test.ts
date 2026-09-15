@@ -432,6 +432,69 @@ describe('groundReport — the job boundary', () => {
       expect(report.report.indexOf('Partial result')).toBeLessThan(report.report.indexOf('Unverified in prose'))
     })
 
+    // ── Boundaries. A mechanical matcher that over-matches annotates sources the report
+    // never named, which is worse than no annotation: it discredits a correct sentence.
+    // Every positive case below has a negative twin that must stay untouched.
+    it('does not flag a longer path that merely starts with the blocked URL', () => {
+      const report = groundReport(
+        submitted({
+          report: 'See https://nunu.gg/patch-notes-archive-2026 for the archive.',
+          unverified: [{ topic: 'win rates', url: 'https://nunu.gg/patch-notes', reason: 'rendered page empty' }],
+        }),
+        ledgerWithBad(),
+      )
+      expect(report.report).not.toContain('Unverified in prose')
+    })
+
+    it('does not flag a subdomain of the blocked host', () => {
+      const report = groundReport(
+        submitted({
+          report: 'See https://sub.nunu.gg/patch-notes here.',
+          unverified: [{ topic: 'win rates', url: 'https://nunu.gg/patch-notes', reason: 'rendered page empty' }],
+        }),
+        ledgerWithBad(),
+      )
+      expect(report.report).not.toContain('Unverified in prose')
+    })
+
+    it('still flags the exact URL when a sentence ends in a period', () => {
+      const report = groundReport(
+        submitted({
+          report: 'Per https://nunu.gg/patch-notes.',
+          unverified: [{ topic: 'win rates', url: 'https://nunu.gg/patch-notes', reason: 'rendered page empty' }],
+        }),
+        ledgerWithBad(),
+      )
+      expect(report.report).toContain('Unverified in prose')
+    })
+
+    it('still flags a markdown link target followed by a period', () => {
+      const report = groundReport(
+        submitted({
+          report: 'See [the notes](https://nunu.gg/patch-notes).',
+          unverified: [{ topic: 'win rates', url: 'https://nunu.gg/patch-notes', reason: 'rendered page empty' }],
+        }),
+        ledgerWithBad(),
+      )
+      expect(report.report).toContain('Unverified in prose')
+    })
+
+    // ── A scrub note is evidence lost, so it must reach `degraded`/`status`/`warnings`.
+    // Without this the body/`unverified` contradiction still ships under `status: "ok"`,
+    // which is issue #7 only half closed.
+    it('degrades the run when the body names an unverified source', () => {
+      const report = groundReport(
+        submitted({
+          report: 'Per https://nunu.gg/patch-notes the win rate rose.',
+          unverified: [{ topic: 'win rates', url: 'https://nunu.gg/patch-notes', reason: 'rendered page empty' }],
+        }),
+        ledgerWithBad(),
+      )
+      expect(report.status).toBe('partial')
+      expect(report.report.startsWith('> **Partial result')).toBe(true)
+      expect(report.warnings.some((w) => w.includes('named in the report body'))).toBe(true)
+    })
+
     it('does not scrub an entry with no url — there is nothing to match on', () => {
       const ledger = createLedger()
       ledger.recordRetrieved('https://good.example')
