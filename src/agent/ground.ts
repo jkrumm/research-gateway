@@ -1,6 +1,12 @@
 import type { Finding, Grounding, ResearchReport, SubmittedReport, WorkerDigest } from './schema.js'
-import { normalizeUrl } from './ledger.js'
+import { hostOnly, normalizeUrl } from './ledger.js'
 import type { RetrievalLedger, RetrievalTier } from './ledger.js'
+
+// One shared shape for an `unverified` entry — schema.ts owns the definition, and the
+// three places that used to re-inline `{ topic, url, reason }` (here, dedupeUnverified,
+// GroundedClaims['dropped']) now derive from it, so a schema change cannot leave a stale
+// copy behind.
+type UnverifiedEntry = SubmittedReport['unverified'][number]
 
 // Grounding — the code-side gate between what a model CLAIMS it verified and what the run
 // actually retrieved. Applied twice: at the worker boundary (findings, before they can
@@ -30,7 +36,7 @@ function capConfidence(asserted: Confidence, ceiling: Confidence): Confidence {
 
 export interface GroundedClaims {
   kept: Finding[]
-  dropped: Array<{ topic: string; url: string | null; reason: string }>
+  dropped: UnverifiedEntry[]
   cappedCount: number
 }
 
@@ -117,10 +123,10 @@ export function groundDigest(digest: WorkerDigest, ledger: RetrievalLedger): Wor
 }
 
 function dedupeUnverified(
-  entries: ReadonlyArray<{ topic: string; url: string | null; reason: string }>,
-): Array<{ topic: string; url: string | null; reason: string }> {
+  entries: ReadonlyArray<UnverifiedEntry>,
+): UnverifiedEntry[] {
   const seen = new Set<string>()
-  const out: Array<{ topic: string; url: string | null; reason: string }> = []
+  const out: UnverifiedEntry[] = []
   for (const entry of entries) {
     const key = `${entry.url ?? ''} ${entry.topic.trim().toLowerCase()}`
     if (seen.has(key)) continue
@@ -158,38 +164,47 @@ function banner(grounding: Grounding): string {
 // paid for, so each disowned reference gets the run's own reason for distrusting it,
 // inserted as a blockquote on top of the body (the partial-result banner, if any, is
 // prepended after this and lands above the notes).
-function hostOf(raw: string): string | null {
-  try {
-    return new URL(raw).host.toLowerCase().replace(/^www\./, '')
-  } catch {
-    return null
-  }
+// Tokens a body can name a source with: a scheme-ful URL (raw, or a markdown link target)
+// or a scheme-less host/path form ("nunu.gg/patch-notes", "per nunu.gg"). `)` is allowed
+// inside a token and trimmed by balance below, so a Wikipedia-style path keeps its parens
+// while a markdown wrapper loses its own.
+const URL_TOKEN = /https?:\/\/[^\s\]<>"'`]+|(?:www\.)?[\w-]+(?:\.[\w-]+)+(?:\/[^\s\]<>"'`]*)?/gi
+
+// Punctuation a sentence or a markdown wrapper leaves glued to a token.
+function trimToken(token: string): string {
+  let s = token.replace(/[\]}>"'`,;:.]+$/, '')
+  const count = (c: string) => s.split(c).length - 1
+  while (s.endsWith(')') && count(')') > count('(')) s = s.slice(0, -1)
+  return s
 }
 
+// Whether the body names this source. Comparison goes through `normalizeUrl` — the same
+// canonical form the citation gate uses — so host case, `www.`, scheme and a trailing
+// slash are all handled by one rule instead of a second, hand-tuned one here. Path case is
+// preserved (HTTP paths are case-sensitive) because `normalizeUrl` preserves it.
+//
+// A query string in the body does NOT match a blocked URL without one: `?ref=abc` is a
+// different document, the same call `normalizeUrl` already makes for citations.
 function referencesBody(body: string, url: string): boolean {
-  const escape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-  // Left boundary: start of text, or a character that cannot be part of a host or path
-  // token. `.` and `-` are excluded deliberately — with a bare `[^\w/]` both
-  // `sub.nunu.gg/a` and `notnunu.gg/a` match a blocked `nunu.gg/a`, annotating a source
-  // the report never named.
-  const LEFT = `(^|[^\\w/.-])`
-  // Right boundary: the match must not continue as a longer token. `-`, `%`, `/` and word
-  // characters would extend the URL (`patch-notes-archive-2026` is not `patch-notes`); a
-  // `.` is allowed only where it terminates, so a sentence-final `…/patch-notes.` matches.
-  const RIGHT = `(?![\\w/%-])(?!\\.\\w)`
-  // Scheme-less, www-less form of the URL's own text, plus the bare host. Both allow an
-  // optional scheme and an optional `www.`, so the three shapes a body actually uses —
-  // raw URL, markdown link target, bare host — are one pattern each.
-  const pathPart = url.replace(/^https?:\/\//i, '').replace(/^www\./i, '')
-  const host = hostOf(url)
-  const patterns = [`${LEFT}(?:https?://)?(?:www\\.)?${escape(pathPart)}${RIGHT}`]
-  if (host) patterns.push(`${LEFT}(?:www\\.)?${escape(host)}${RIGHT}`)
-  return patterns.some((p) => new RegExp(p, 'i').test(body))
+  const target = normalizeUrl(url)
+  const targetHost = hostOnly(url)
+  for (const raw of body.match(URL_TOKEN) ?? []) {
+    const token = trimToken(raw)
+    if (!token) continue
+    if (normalizeUrl(token) === target) return true
+    // A bare-host mention ("per nunu.gg the …") names the source without a path — but only
+    // when the token carries no path of its own. `nunu.gg/other-page` is a different
+    // document and must not be read as a mention of `nunu.gg/patch-notes`.
+    if (!targetHost) continue
+    if (/[/?#]/.test(token.replace(/^https?:\/\//i, ''))) continue
+    if (hostOnly(token) === targetHost) return true
+  }
+  return false
 }
 
 function scrubBody(
   body: string,
-  unverified: ReadonlyArray<{ topic: string; url: string | null; reason: string }>,
+  unverified: ReadonlyArray<UnverifiedEntry>,
 ): { body: string; annotated: number } {
   let notes = ''
   let annotated = 0

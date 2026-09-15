@@ -434,49 +434,87 @@ describe('groundReport — the job boundary', () => {
 
     // ── Boundaries. A mechanical matcher that over-matches annotates sources the report
     // never named, which is worse than no annotation: it discredits a correct sentence.
-    // Every positive case below has a negative twin that must stay untouched.
-    it('does not flag a longer path that merely starts with the blocked URL', () => {
-      const report = groundReport(
+    // Every negative case below is paired with the positive it must not be confused with.
+    // Comparison runs through `normalizeUrl`, so host case, `www.`, scheme and a trailing
+    // slash are one rule — and path case stays significant, as HTTP requires.
+    const bodyCases: Array<{ body: string; want: boolean; why: string }> = [
+      { body: 'See https://nunu.gg/patch-notes here.', want: true, why: 'exact URL' },
+      { body: 'See [the notes](https://nunu.gg/patch-notes).', want: true, why: 'markdown link target' },
+      { body: 'Per nunu.gg the win rate rose.', want: true, why: 'bare host' },
+      { body: 'See https://www.nunu.gg/patch-notes.', want: true, why: 'www-prefixed' },
+      { body: 'Per https://nunu.gg/patch-notes.', want: true, why: 'sentence-final period' },
+      { body: 'See https://nunu.gg/patch-notes/ here.', want: true, why: 'trailing slash' },
+      { body: 'See https://NUNU.GG/patch-notes here.', want: true, why: 'host case is insignificant' },
+      {
+        body: 'See https://nunu.gg/patch-notes-archive-2026 for the archive.',
+        want: false,
+        why: 'a longer path sharing the blocked URL as a prefix',
+      },
+      { body: 'See https://sub.nunu.gg/patch-notes here.', want: false, why: 'a subdomain' },
+      { body: 'See https://notnunu.gg/patch-notes here.', want: false, why: 'a host ending in the blocked one' },
+      { body: 'See https://nunu.gg/Patch-Notes here.', want: false, why: 'path case IS significant (HTTP)' },
+      { body: 'See https://nunu.gg/other-page here.', want: false, why: 'a different page on the same host' },
+    ]
+
+    for (const { body, want, why } of bodyCases) {
+      it(`${want ? 'flags' : 'leaves alone'}: ${why}`, () => {
+        const report = groundReport(
+          submitted({
+            report: body,
+            unverified: [{ topic: 'win rates', url: 'https://nunu.gg/patch-notes', reason: 'rendered page empty' }],
+          }),
+          ledgerWithBad(),
+        )
+        if (want) expect(report.report).toContain('Unverified in prose')
+        else expect(report.report).not.toContain('Unverified in prose')
+      })
+    }
+
+    // A path full of regex metacharacters is matched literally, not compiled: the blocked
+    // URL is compared as a string through `normalizeUrl`, so `(` `)` `+` `.` are inert.
+    it('matches a path containing regex metacharacters literally', () => {
+      const ledger = createLedger()
+      ledger.recordRetrieved('https://good.example')
+      ledger.recordFailed('https://en.example/wiki/Foo_(bar)+x', 'rendered page empty')
+      const blocked = { topic: 't', url: 'https://en.example/wiki/Foo_(bar)+x', reason: 'rendered page empty' }
+      const hit = groundReport(
         submitted({
-          report: 'See https://nunu.gg/patch-notes-archive-2026 for the archive.',
-          unverified: [{ topic: 'win rates', url: 'https://nunu.gg/patch-notes', reason: 'rendered page empty' }],
+          report: 'See https://en.example/wiki/Foo_(bar)+x here.',
+          citations: [{ claim: 'ok', url: 'https://good.example', confidence: 'high' }],
+          unverified: [blocked],
         }),
-        ledgerWithBad(),
+        ledger,
       )
-      expect(report.report).not.toContain('Unverified in prose')
+      expect(hit.report).toContain('Unverified in prose')
+      const miss = groundReport(
+        submitted({
+          report: 'See https://en.example/wiki/FooXbarYx here.',
+          citations: [{ claim: 'ok', url: 'https://good.example', confidence: 'high' }],
+          unverified: [blocked],
+        }),
+        ledger,
+      )
+      expect(miss.report).not.toContain('Unverified in prose')
     })
 
-    it('does not flag a subdomain of the blocked host', () => {
+    it('annotates both of two distinct unverified URLs', () => {
+      const ledger = createLedger()
+      ledger.recordRetrieved('https://good.example')
+      ledger.recordFailed('https://a.example/p', 'x')
+      ledger.recordFailed('https://b.example/q', 'y')
       const report = groundReport(
         submitted({
-          report: 'See https://sub.nunu.gg/patch-notes here.',
-          unverified: [{ topic: 'win rates', url: 'https://nunu.gg/patch-notes', reason: 'rendered page empty' }],
+          report: 'Per https://a.example/p and https://b.example/q.',
+          citations: [{ claim: 'ok', url: 'https://good.example', confidence: 'high' }],
+          unverified: [
+            { topic: 'a', url: 'https://a.example/p', reason: 'x' },
+            { topic: 'b', url: 'https://b.example/q', reason: 'y' },
+          ],
         }),
-        ledgerWithBad(),
+        ledger,
       )
-      expect(report.report).not.toContain('Unverified in prose')
-    })
-
-    it('still flags the exact URL when a sentence ends in a period', () => {
-      const report = groundReport(
-        submitted({
-          report: 'Per https://nunu.gg/patch-notes.',
-          unverified: [{ topic: 'win rates', url: 'https://nunu.gg/patch-notes', reason: 'rendered page empty' }],
-        }),
-        ledgerWithBad(),
-      )
-      expect(report.report).toContain('Unverified in prose')
-    })
-
-    it('still flags a markdown link target followed by a period', () => {
-      const report = groundReport(
-        submitted({
-          report: 'See [the notes](https://nunu.gg/patch-notes).',
-          unverified: [{ topic: 'win rates', url: 'https://nunu.gg/patch-notes', reason: 'rendered page empty' }],
-        }),
-        ledgerWithBad(),
-      )
-      expect(report.report).toContain('Unverified in prose')
+      expect(report.report.split('Unverified in prose')).toHaveLength(3)
+      expect(report.status).toBe('partial')
     })
 
     // ── A scrub note is evidence lost, so it must reach `degraded`/`status`/`warnings`.

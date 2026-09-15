@@ -54,6 +54,22 @@ export function normalizeUrl(raw: string): string {
   return `${host}${path}${parsed.search}`
 }
 
+// The host alone, normalized the same way `normalizeUrl` normalizes it (lowercased,
+// `www.` stripped). Exported so the body scanner in ground.ts can match a bare-host
+// mention without re-encoding this rule — two copies of it would drift.
+//
+// Accepts a scheme-less token (`nunu.gg`) as well as a full URL: the body scanner's tokens
+// are often bare hosts, and `new URL('nunu.gg')` throws without the scheme.
+export function hostOnly(raw: string): string | null {
+  const trimmed = raw.trim()
+  const candidate = /^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`
+  try {
+    return new URL(candidate).host.toLowerCase().replace(/^www\./, '')
+  } catch {
+    return null
+  }
+}
+
 export function createLedger(): RetrievalLedger {
   // normalized key -> original URL as first seen, so the report shows the caller a URL
   // they can click rather than the internal comparison key.
