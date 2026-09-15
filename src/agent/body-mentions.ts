@@ -1,6 +1,6 @@
 import { domainToUnicode } from 'node:url'
 import { normalizeUrl, urlParts } from './ledger.js'
-import { inlineSafe } from './markdown.js'
+import { renderProse, renderUrl } from './markdown.js'
 import type { UnverifiedEntry } from './schema.js'
 
 // Issue #7: the citation gate does not reach the report PROSE. A synthesizer can still name
@@ -145,9 +145,17 @@ function patternFor(url: string): RegExp | null {
   // The scheme is case-insensitive per RFC 3986, so `HTTPS://` must match too — a blocked
   // citation could otherwise evade scrubbing entirely just by casing. `ciClass` folds the
   // letters without touching the `://`.
+  // The path group is REQUIRED when the blocked URL has one, with an optional trailing slash
+  // (which `normalizeUrl` strips, so `nunu.gg/patch-notes/` is the same page). An optional path
+  // here was a false-positive generator: a blocked `nunu.gg/patch-notes` matched a body that
+  // merely named the host — "Per nunu.gg, item counts matter." — so the report was marked
+  // `partial` and carried a note claiming it referenced a page it never mentioned. A bare host
+  // is a different reference from a specific page on it. The reverse direction (body names the
+  // bare host, blocked URL is that host) still matches, via the `/?` on the no-path branch.
+  const pathPattern = rest ? `(?:${escape(rest)})/?` : '/?'
   const schemePattern = `(?:${ciClass('https')}://|${ciClass('http')}://)?`
   const hashPattern = hash ? `(?:${escape(hash)})` : ''
-  const body = `${LEFT}${schemePattern}(?:${ciClass('www.')})?${hostPattern}(?:${escape(rest)})?/?${hashPattern}${RIGHT}`
+  const body = `${LEFT}${schemePattern}(?:${ciClass('www.')})?${hostPattern}${pathPattern}${hashPattern}${RIGHT}`
   return new RegExp(body, 'u')
 }
 
@@ -177,9 +185,20 @@ function stripInvisible(s: string): string {
 // source is evidence lost exactly like a dropped citation, and leaving it out of the status
 // would close issue #7 only halfway.
 //
-// Dedup keys on the CANONICAL url, not the raw string: two entries for the same page in
-// different string forms (trailing slash, scheme, `www.`) are one page, and each would
-// otherwise emit a duplicate note.
+// Dedup keys on the canonical url PLUS its fragment, not the raw string and not the
+// fragment-less canonical form. Two entries for the same page in different string forms
+// (trailing slash, scheme, `www.`) are one page and must not emit two notes — that is what the
+// canonical form is for. But `normalizeUrl` DROPS the fragment (it identifies a section of the
+// same page for citation matching), while `patternFor` treats a fragment as significant: a
+// blocked `page#one` must not be satisfied by a body naming `page#two`.
+//
+// Keying on the fragment-less form alone made those two rules contradict: with `#one` listed
+// before `#two`, the `#one` entry claimed the shared key, failed to match the body (which named
+// `#two`), and the reference the body actually made was silently skipped with no annotation.
+// Including the fragment keeps the duplicate-note guard without dropping a real reference.
+function dedupKey(url: string): string {
+  return `${normalizeUrl(url)}${urlParts(url)?.hash ?? ''}`
+}
 export function scrubBody(
   body: string,
   unverified: ReadonlyArray<UnverifiedEntry>,
@@ -189,13 +208,13 @@ export function scrubBody(
   const seen = new Set<string>()
   for (const entry of unverified) {
     if (!entry.url) continue
-    const key = normalizeUrl(entry.url)
+    const key = dedupKey(entry.url)
     if (seen.has(key)) continue
     seen.add(key)
     if (!referencesBody(body, entry.url)) continue
     annotated++
-    // `inlineSafe()` on both fields: model-controlled, and this is markdown (see markdown.ts).
-    notes += `> **Unverified in prose:** this report references ${inlineSafe(entry.url)}, which this run could NOT verify (${inlineSafe(entry.reason)}). Treat that reference as unconfirmed — see \`unverified\`.\n\n`
+    // `renderUrl`/`renderProse`: model-controlled, and this is markdown (see markdown.ts).
+    notes += `> **Unverified in prose:** this report references ${renderUrl(entry.url)}, which this run could NOT verify (${renderProse(entry.reason)}). Treat that reference as unconfirmed — see \`unverified\`.\n\n`
   }
   return { body: notes + body, annotated }
 }

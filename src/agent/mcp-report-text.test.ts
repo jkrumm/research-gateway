@@ -90,15 +90,18 @@ describe('reportText markdown safety', () => {
   })
 
   it('still cannot break out of an autolink', () => {
+    // A value carrying whitespace cannot be a valid autolink, so `renderUrl` takes the prose
+    // path — the `<`/`>` are escaped and no autolink is opened at all. Either way the `>` must
+    // not survive to close an autolink early and let a second one be forged.
     const text = reportText({
       ...base,
       citations: [
         { claim: 'x', url: 'https://evil.example/x> <https://other.example', confidence: 'high' },
       ],
     })
-    // The `>` must not survive to close the autolink early and let a second one be forged.
     expect(text).not.toContain('x> <')
-    expect(text).toContain('<https://evil.example/x')
+    expect(text).not.toContain('<https://evil.example/x>')
+    expect(text).toContain('(https://evil.example/x')
   })
 
   it('renders an ordinary report unchanged in structure', () => {

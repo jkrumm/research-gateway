@@ -440,7 +440,8 @@ describe('groundReport — the job boundary', () => {
     const bodyCases: Array<{ body: string; want: boolean; why: string }> = [
       { body: 'See https://nunu.gg/patch-notes here.', want: true, why: 'the exact URL' },
       { body: 'See [the notes](https://nunu.gg/patch-notes).', want: true, why: 'a markdown link target' },
-      { body: 'Per nunu.gg the win rate rose.', want: true, why: 'a bare host' },
+      // A bare host is NOT a reference to a specific page on it — see the negative case below.
+      { body: 'Per nunu.gg the win rate rose.', want: false, why: 'a bare host (a different reference from a page on it)' },
       { body: 'See https://www.nunu.gg/patch-notes.', want: true, why: 'a www-prefixed URL' },
       { body: 'Per https://nunu.gg/patch-notes.', want: true, why: 'a sentence-final period' },
       { body: 'See https://nunu.gg/patch-notes/ here.', want: true, why: 'a trailing slash' },
@@ -454,7 +455,7 @@ describe('groundReport — the job boundary', () => {
       { body: 'See **https://nunu.gg/patch-notes** here.', want: true, why: 'markdown bold around the URL' },
       { body: 'See _https://nunu.gg/patch-notes_ here.', want: true, why: 'markdown italics around the URL' },
       { body: 'See https://nunu.gg/patch-notes[1] here.', want: true, why: 'a footnote ref glued to the URL' },
-      { body: 'See https://nunu.gg/ here.', want: true, why: 'a bare host with a trailing slash' },
+      { body: 'See https://nunu.gg/ here.', want: false, why: 'a bare host with a trailing slash' },
       { body: 'See www.nunu.gg/patch-notes here.', want: true, why: 'scheme-less with a www. prefix' },
       { body: 'See NUNU.gg/patch-notes here.', want: true, why: 'scheme-less, mixed-case host' },
       {
@@ -891,6 +892,91 @@ describe('groundReport — the job boundary', () => {
     it('canonicalizes userinfo+path the same with and without a scheme', () => {
       expect(normalizeUrl('user@example.com/path')).toBe(normalizeUrl('https://user@example.com/path'))
       expect(normalizeUrl('user@example.com/path')).toBe('example.com/path')
+    })
+
+    // A bare host is NOT a reference to a specific page on that host. With the path group
+    // optional, a blocked `nunu.gg/patch-notes` matched "Per nunu.gg, item counts matter." —
+    // marking the report `partial` and carrying a note claiming it referenced a page it never
+    // named. A false annotation is worse than none: it discredits a correct sentence.
+    it('does not flag a bare host as a reference to a page on it', () => {
+      const ledger = createLedger()
+      ledger.recordRetrieved('https://good.example/x')
+      ledger.recordFailed('https://nunu.gg/patch-notes', 'rendered page empty')
+      const report = groundReport(
+        submitted({
+          report: 'Per nunu.gg, item counts matter.',
+          citations: [{ claim: 'ok', url: 'https://good.example/x', confidence: 'high' }],
+          unverified: [{ topic: 't', url: 'https://nunu.gg/patch-notes', reason: 'rendered page empty' }],
+        }),
+        ledger,
+      )
+      expect(report.report).not.toContain('Unverified in prose')
+      expect(report.status).toBe('ok')
+    })
+
+    // The reverse direction still works: a blocked bare host IS named by a body that writes
+    // the host, with or without a trailing slash.
+    it('flags a bare host when the blocked url is that host', () => {
+      const ledger = createLedger()
+      ledger.recordRetrieved('https://good.example/x')
+      ledger.recordFailed('https://nunu.gg', 'rendered page empty')
+      for (const body of ['Per nunu.gg, item counts matter.', 'See https://nunu.gg/ here.']) {
+        const report = groundReport(
+          submitted({
+            report: body,
+            citations: [{ claim: 'ok', url: 'https://good.example/x', confidence: 'high' }],
+            unverified: [{ topic: 't', url: 'https://nunu.gg', reason: 'rendered page empty' }],
+          }),
+          ledger,
+        )
+        expect(`${body} -> ${report.report.includes('Unverified in prose')}`).toBe(`${body} -> true`)
+      }
+    })
+
+    // Dedup keys on the canonical url PLUS the fragment. `normalizeUrl` drops the fragment
+    // (section identity for citation matching) while `patternFor` treats it as significant, so
+    // keying on the fragment-less form made those two rules contradict: with `#one` listed
+    // before `#two`, the `#one` entry claimed the shared key, failed to match the body (which
+    // named `#two`), and the reference the body actually made was silently skipped.
+    it('does not let an earlier fragment entry swallow a later one', () => {
+      const ledger = createLedger()
+      ledger.recordRetrieved('https://good.example/x')
+      ledger.recordFailed('https://nunu.gg/page#one', 'rendered page empty')
+      ledger.recordFailed('https://nunu.gg/page#two', 'rendered page empty')
+      const report = groundReport(
+        submitted({
+          report: 'See https://nunu.gg/page#two for details.',
+          citations: [{ claim: 'ok', url: 'https://good.example/x', confidence: 'high' }],
+          unverified: [
+            { topic: 't1', url: 'https://nunu.gg/page#one', reason: 'rendered page empty' },
+            { topic: 't2', url: 'https://nunu.gg/page#two', reason: 'rendered page empty' },
+          ],
+        }),
+        ledger,
+      )
+      expect(report.report).toContain('Unverified in prose')
+      expect(report.report).toContain('#two')
+    })
+
+    // The note renders its url as an autolink, not as bare prose: `inlineSafe` there would
+    // backslash-escape `_()[]`, and GFM's extended-autolink scanner treats a bare URL's literal
+    // backslashes as part of the URL, percent-encoding them into the href.
+    it('renders the note url without corrupting it', () => {
+      const ledger = createLedger()
+      ledger.recordRetrieved('https://good.example/x')
+      const url = 'https://en.wikipedia.org/wiki/Foo_(bar)'
+      ledger.recordFailed(url, 'rendered page empty')
+      const report = groundReport(
+        submitted({
+          report: `See ${url} here.`,
+          citations: [{ claim: 'ok', url: 'https://good.example/x', confidence: 'high' }],
+          unverified: [{ topic: 't', url, reason: 'rendered page empty' }],
+        }),
+        ledger,
+      )
+      const note = report.report.split('\n').find((l) => l.includes('Unverified in prose')) ?? ''
+      expect(note).toContain(`<${url}>`)
+      expect(note).not.toContain('\\')
     })
 
     // A non-null but unparseable URL must be skipped without throwing, and without taking a

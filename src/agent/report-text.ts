@@ -7,7 +7,7 @@
 // set four placeholder env vars before a dynamic import just to load the function. Same
 // boundary the ledger/extract/archive modules already keep.
 import type { ResearchReport } from './schema.js'
-import { autolinkSafe, inlineSafe } from './markdown.js'
+import { renderProse, renderUrl } from './markdown.js'
 
 // Inline the report + citations + sources so text-only MCP clients get the full picture even if
 // they ignore structuredContent.
@@ -17,21 +17,16 @@ export function reportText(report: ResearchReport): string {
   // from the client's side: every claim looked equally established.
   //
   // Every interpolated field below is model-controlled (`claim`, `url`, `topic`, `reason`,
-  // `sources[]`), and this string is markdown. Two different escapes, deliberately:
-  //   - URLs sit inside CommonMark autolinks `<...>`, where backslash escapes are NOT
-  //     processed — `inlineSafe` there would leak literal backslashes into the href a client
-  //     copies or follows (`wiki/Foo\(bar\)`). `autolinkSafe` strips only `<`/`>`.
-  //   - Prose fields (`claim`, `topic`, `reason`) are plain markdown, so they get the full
-  //     `inlineSafe` — without it a `reason` could inject a link or a forged heading.
-  //   - `sources[]` are bare URLs, which GFM autolinks; a backslash there would corrupt the
-  //     visible URL the same way, so they get `autolinkSafe` too.
+  // `sources[]`), and this string is markdown. The two kinds go through the two helpers that
+  // match them — `renderProse` for sentence-like fields, `renderUrl` for URL fields — so no
+  // caller here picks an escape by hand (that choice shipped the same defect twice).
   const citationLines =
     report.citations.length > 0
       ? '\n\n## Citations\n' +
         report.citations
           .map(
             (c, i) =>
-              `${i + 1}. [${c.confidence}] ${inlineSafe(c.claim)} — <${autolinkSafe(c.url)}>`,
+              `${i + 1}. [${c.confidence}] ${renderProse(c.claim)} — ${renderUrl(c.url)}`,
           )
           .join('\n')
       : ''
@@ -41,13 +36,13 @@ export function reportText(report: ResearchReport): string {
         report.unverified
           .map(
             (u) =>
-              `- ${inlineSafe(u.topic)}${u.url ? ` (<${autolinkSafe(u.url)}>)` : ''} — ${inlineSafe(u.reason)}`,
+              `- ${renderProse(u.topic)}${u.url ? ` ${renderUrl(u.url)}` : ''} — ${renderProse(u.reason)}`,
           )
           .join('\n')
       : ''
   const sourcesLines =
     report.sources.length > 0
-      ? '\n\n## Sources read\n' + report.sources.map((s) => `- ${autolinkSafe(s)}`).join('\n')
+      ? '\n\n## Sources read\n' + report.sources.map((s) => `- ${renderUrl(s)}`).join('\n')
       : ''
   return report.report + citationLines + unverifiedLines + sourcesLines
 }
