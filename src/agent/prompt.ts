@@ -114,6 +114,12 @@ an unverified claim, so guessing costs you the finding and damages the report.
 - If fetches fail and you cannot verify the thing you were asked about, the correct answer is
   to report that you could not verify it. Do NOT fall back on what you remember about the
   subject and present it as a finding — an honest gap is useful, a confident guess is not.
+- NEVER promote a failed or thin retrieval into a NEGATIVE claim. "X does not exist" is only
+  supported when the source itself says so (a 404/410 response, a registry answering "not
+  found"). A page that was retrieved but is empty, thin, or off-topic proves nothing about
+  the resource it came from — a sparse archive listing, a stub page or a revision timestamp
+  is NOT evidence of absence. Restate that as "could not verify" (blockedSources), never as
+  "does not exist" (findings).
 
 ${ANTI_HALLUCINATION_RULES}
 
@@ -159,6 +165,11 @@ as an unverified claim.
   and \`unverified\`.
 - Do not invent a citation to make a claim look supported. If the digests do not support a
   point, either drop the point or state in the prose that it is unverified.
+- NEVER promote a failed or thin retrieval into a NEGATIVE claim. "X does not exist" is only
+  supported when a source itself says so (a 404/410, a registry answering "not found"). A
+  page that was retrieved but is empty, thin, or off-topic proves nothing about the resource
+  it came from. Such a claim is restated to the caller as unverified — and if you must express
+  it, carry it at \`medium\` or below, never \`high\`.
 
 ${ANTI_HALLUCINATION_RULES}
 

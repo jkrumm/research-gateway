@@ -107,7 +107,8 @@ The retrieval ledger (`src/agent/ledger.ts`) records what each tool actually ret
 
 | Tier | Meaning | Can back a citation? |
 |-|-|-|
-| `retrieved` | full page/file/registry response was obtained | yes, up to `high` confidence |
+| `retrieved` | full page/file/registry response was obtained | yes, up to `high` confidence — except an absence claim ("X does not exist"), capped at `medium` |
+| `missing` | the origin itself answered 404/410 | yes, up to `high` — the one code-verifiable basis for a negative claim |
 | `snippet` | URL appeared in a search result with content, never read | yes, capped at `medium` |
 | `failed` | a fetch was attempted and lost (rate limit, error, refusal) | **no** |
 | `unseen` | no tool in this run ever returned this URL | **no** |
@@ -131,7 +132,11 @@ An archived (Wayback) page is `retrieved` but the worker is told to cap it at `m
 name the snapshot date.
 
 Regression-tested in `src/agent/ground.test.ts` against the run that motivated it
-([#1](https://github.com/jkrumm/research-gateway/issues/1)). **A new lookup is not done until a
+([#1](https://github.com/jkrumm/research-gateway/issues/1)), and against the false-negative
+run that motivated the absence-claim gate
+([#3](https://github.com/jkrumm/research-gateway/issues/3): two `high`-confidence "does not
+exist" claims, each citing a page the run really did retrieve — a sparse archive listing and
+a revision timestamp). **A new lookup is not done until a
 live worker's citations survive the ledger** — `academicSearch` shipped working and useless
 twice before that rule existed ([measurements](./docs/measurements.md#why-a-new-tool-needs-two-live-runs-not-one)).
 

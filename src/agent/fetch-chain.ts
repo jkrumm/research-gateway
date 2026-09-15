@@ -304,10 +304,13 @@ export async function runFetchChain(url: string, opts: FetchChainOptions): Promi
 
       // A definitively-absent resource stops here. Every remaining step would ask the same
       // origin the same question and be told the same thing, and the last of them bills for it.
+      // Recorded as `missing`, not `failed`: the origin ANSWERED — 404/410 is definitive
+      // evidence that the resource does not exist at this URL, and the only kind of
+      // negative claim the ledger ever backs. See ground.ts.
       if (isDefinitivelyMissing(res.status)) {
         const reason = `HTTP ${res.status} — the resource does not exist at this URL`
         attempt(attempts, 'readability', t1, { ok: false, error: reason })
-        ledger.recordFailed(url, reason)
+        ledger.recordMissing(url, reason)
         log('tool.fetchPage', { jobId, url, via: 'missing', status: res.status })
         return fail(reason)
       }

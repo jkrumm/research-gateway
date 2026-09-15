@@ -47,9 +47,11 @@ switching models without re-reading that file — it's already the measured winn
 ## Grounding — the one invariant that must never regress
 
 A retrieval ledger (`src/agent/ledger.ts`) is the only thing allowed to back a citation:
-`retrieved` / `snippet` can cite, `failed` / `unseen` cannot. Gating runs in code at the
-worker boundary and the job boundary — never in a prompt alone (prompt-only citation rules
-did not hold, twice, before this existed). If you touch `src/agent/ground.ts`,
+`retrieved` / `missing` / `snippet` can cite, `failed` / `unseen` cannot. `missing` (a 404/410
+answer from the origin) is the only tier that carries an absence claim at `high` — an absence
+claim citing a merely `retrieved` page caps at `medium` (issue #3's false negatives). Gating
+runs in code at the worker boundary and the job boundary — never in a prompt alone (prompt-only
+citation rules did not hold, twice, before this existed). If you touch `src/agent/ground.ts`,
 `src/agent/tools.ts`, or add a new tool: run `src/agent/ground.test.ts` and don't merge a
 regression against issue #1's case. Full model: README § Grounding.
 

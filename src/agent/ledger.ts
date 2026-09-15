@@ -9,15 +9,18 @@
 // Dependency-free by design (no project imports) so it is unit-testable without booting
 // the env/LLM import chain — same convention as `assemble.ts` / `extract.ts`.
 
-// Precedence when a URL lands in more than one bucket: retrieved > failed > snippet.
+// Precedence when a URL lands in more than one bucket: retrieved > missing > failed > snippet.
 // A page that was successfully read outranks an earlier failed attempt (fetchPage falls
 // back to Tavily Extract, so first-attempt failure then success is normal). A page whose
 // fetch was ATTEMPTED and failed outranks a search snippet: the run tried to verify it and
-// could not, which is exactly the case that must never be citable.
-export type RetrievalTier = 'retrieved' | 'failed' | 'snippet' | 'unseen'
+// could not, which is exactly the case that must never be citable. `missing` outranks
+// `failed` because the origin itself answered — 404/410 is a definitive statement that the
+// resource does not exist, not a lost attempt to ask.
+export type RetrievalTier = 'retrieved' | 'missing' | 'failed' | 'snippet' | 'unseen'
 
 export interface LedgerSnapshot {
   retrieved: string[]
+  missing: Array<{ url: string; reason: string }>
   snippet: string[]
   failed: Array<{ url: string; reason: string }>
 }
@@ -25,6 +28,8 @@ export interface LedgerSnapshot {
 export interface RetrievalLedger {
   /** Full text of the page was obtained (fetchPage/Tavily Extract/libraryDocs succeeded). */
   recordRetrieved(url: string): void
+  /** The origin itself answered 404/410 — the resource definitively does not exist at this URL. */
+  recordMissing(url: string, reason: string): void
   /** URL appeared in a search result carrying a content snippet — seen, not read. */
   recordSnippet(url: string): void
   /** A fetch of this URL was attempted and failed (error, refusal, rate limit, empty). */
@@ -58,6 +63,7 @@ export function createLedger(): RetrievalLedger {
   // normalized key -> original URL as first seen, so the report shows the caller a URL
   // they can click rather than the internal comparison key.
   const retrieved = new Map<string, string>()
+  const missing = new Map<string, { url: string; reason: string }>()
   const snippet = new Map<string, string>()
   const failed = new Map<string, { url: string; reason: string }>()
 
@@ -65,6 +71,10 @@ export function createLedger(): RetrievalLedger {
     recordRetrieved(url) {
       const key = normalizeUrl(url)
       if (!retrieved.has(key)) retrieved.set(key, url)
+    },
+    recordMissing(url, reason) {
+      const key = normalizeUrl(url)
+      if (!missing.has(key)) missing.set(key, { url, reason })
     },
     recordSnippet(url) {
       const key = normalizeUrl(url)
@@ -77,12 +87,13 @@ export function createLedger(): RetrievalLedger {
     tierOf(url) {
       const key = normalizeUrl(url)
       if (retrieved.has(key)) return 'retrieved'
+      if (missing.has(key)) return 'missing'
       if (failed.has(key)) return 'failed'
       if (snippet.has(key)) return 'snippet'
       return 'unseen'
     },
     failureReason(url) {
-      return failed.get(normalizeUrl(url))?.reason ?? null
+      return failed.get(normalizeUrl(url))?.reason ?? missing.get(normalizeUrl(url))?.reason ?? null
     },
     retrievedUrls() {
       return [...retrieved.values()]
@@ -90,6 +101,7 @@ export function createLedger(): RetrievalLedger {
     snapshot() {
       return {
         retrieved: [...retrieved.values()],
+        missing: [...missing.values()],
         snippet: [...snippet.values()],
         failed: [...failed.values()],
       }
@@ -98,12 +110,14 @@ export function createLedger(): RetrievalLedger {
 }
 
 // Union of per-worker ledgers into the job-level ledger used to ground the final report.
-// Precedence is preserved by construction: tierOf resolves retrieved > failed > snippet,
-// so a page one worker read is citable even if another worker's attempt at it failed.
+// Precedence is preserved by construction: tierOf resolves retrieved > missing > failed >
+// snippet, so a page one worker read is citable even if another worker's attempt at it
+// failed.
 export function mergeLedgers(snapshots: LedgerSnapshot[]): RetrievalLedger {
   const merged = createLedger()
   for (const snap of snapshots) {
     for (const url of snap.retrieved) merged.recordRetrieved(url)
+    for (const m of snap.missing) merged.recordMissing(m.url, m.reason)
     for (const url of snap.snippet) merged.recordSnippet(url)
     for (const f of snap.failed) merged.recordFailed(f.url, f.reason)
   }

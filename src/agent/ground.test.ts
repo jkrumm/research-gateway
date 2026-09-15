@@ -2,7 +2,7 @@ import { describe, it, expect } from 'bun:test'
 // Imported directly from the pure modules (no `env.js` chain) — same convention as
 // run.test.ts. See the note at the top of assemble.ts.
 import { createLedger, mergeLedgers, normalizeUrl } from './ledger.js'
-import { groundClaims, groundDigest, groundReport } from './ground.js'
+import { groundClaims, groundDigest, groundReport, isAbsenceClaim } from './ground.js'
 import type { SubmittedReport, WorkerDigest } from './schema.js'
 
 function digest(overrides: Partial<WorkerDigest> = {}): WorkerDigest {
@@ -58,6 +58,23 @@ describe('ledger tier precedence', () => {
     ledger.recordSnippet('https://a.example')
     ledger.recordFailed('https://a.example', 'rate limited')
     expect(ledger.tierOf('https://a.example')).toBe('failed')
+  })
+
+  it('missing outranks failed but not retrieved (a 404 origin later read through a mirror)', () => {
+    const ledger = createLedger()
+    ledger.recordMissing('https://a.example', 'HTTP 404 — the resource does not exist at this URL')
+    ledger.recordFailed('https://a.example', 'timeout')
+    expect(ledger.tierOf('https://a.example')).toBe('missing')
+    ledger.recordRetrieved('https://a.example')
+    expect(ledger.tierOf('https://a.example')).toBe('retrieved')
+  })
+
+  it('carries a missing URL and its reason through snapshot and merge', () => {
+    const a = createLedger()
+    a.recordMissing('https://a.example/nope', 'HTTP 410 — gone')
+    const merged = mergeLedgers([a.snapshot()])
+    expect(merged.tierOf('https://a.example/nope')).toBe('missing')
+    expect(merged.failureReason('https://a.example/nope')).toBe('HTTP 410 — gone')
   })
 
   it('an unrecorded URL is unseen', () => {
@@ -137,6 +154,113 @@ describe('groundClaims', () => {
       new Set(['https://a.example']),
     )
     expect(kept).toEqual([])
+  })
+})
+
+// ── Issue #3: the sparse-CDX / geo-restriction failure class ─────────────────
+// Both false `high` negatives from the 2026-08-06 deep run cited pages that WERE retrieved
+// (a thin Wayback CDX listing, a wiki revision timestamp) — the original failed/unseen gate
+// never saw them, because the tier said `retrieved`.
+describe('groundClaims — absence claims (issue #3)', () => {
+  // The exact lrlib CDN case from docs/field-notes.md: a sparse archive listing was
+  // retrieved, and the run concluded from its emptiness that the CDN hosts no Wild Rift data.
+  it('caps an absence claim citing a RETRIEVED page at medium, however high the model asserted', () => {
+    const ledger = createLedger()
+    ledger.recordRetrieved('https://web.archive.org/cdx?url=cdn.lrlib.net&limit=5')
+    const { kept, cappedCount } = groundClaims(
+      [
+        {
+          claim: "The lrlib CDN hosts only static image assets and does not serve Wild Rift champion data",
+          url: 'https://web.archive.org/cdx?url=cdn.lrlib.net&limit=5',
+          confidence: 'high',
+        },
+      ],
+      ledger,
+    )
+    expect(kept[0]?.confidence).toBe('medium')
+    expect(cappedCount).toBe(1)
+  })
+
+  // The exact mlol.qt.qq.com case: one connection-refused fetch became a geographic claim.
+  it('drops an absence claim whose supporting fetch failed, with the absence-specific reason', () => {
+    const ledger = createLedger()
+    ledger.recordFailed('https://mlol.qt.qq.com', 'connection refused')
+    const { kept, dropped } = groundClaims(
+      [
+        {
+          claim: 'mlol.qt.qq.com is geo-restricted to mainland China and is not accessible from outside',
+          url: 'https://mlol.qt.qq.com',
+          confidence: 'high',
+        },
+      ],
+      ledger,
+    )
+    expect(kept).toEqual([])
+    expect(dropped[0]?.reason).toContain('never proves absence')
+  })
+
+  it('keeps an absence claim at high when the origin itself answered 404/410 (missing tier)', () => {
+    const ledger = createLedger()
+    ledger.recordMissing('https://a.example/nope', 'HTTP 404 — the resource does not exist at this URL')
+    const { kept, cappedCount } = groundClaims(
+      [{ claim: 'The endpoint does not exist', url: 'https://a.example/nope', confidence: 'high' }],
+      ledger,
+    )
+    expect(kept[0]?.confidence).toBe('high')
+    expect(cappedCount).toBe(0)
+  })
+
+  it('drops a POSITIVE claim citing a 404 — a resource that does not exist has no content to quote', () => {
+    const ledger = createLedger()
+    ledger.recordMissing('https://a.example/nope', 'HTTP 404 — the resource does not exist at this URL')
+    const { kept, dropped } = groundClaims(
+      [{ claim: 'The endpoint returns version 2.0.0', url: 'https://a.example/nope', confidence: 'high' }],
+      ledger,
+    )
+    expect(kept).toEqual([])
+    expect(dropped[0]?.reason).toContain('does not exist')
+  })
+
+  it('leaves positive claims about a retrieved page untouched by the absence gate', () => {
+    const ledger = createLedger()
+    ledger.recordRetrieved('https://a.example')
+    const { kept, cappedCount } = groundClaims(
+      [{ claim: 'The page lists version 2.0.0', url: 'https://a.example', confidence: 'high' }],
+      ledger,
+    )
+    expect(kept[0]?.confidence).toBe('high')
+    expect(cappedCount).toBe(0)
+  })
+
+  it('does not upgrade a low absence claim just because the tier is missing', () => {
+    const ledger = createLedger()
+    ledger.recordMissing('https://a.example/nope', 'HTTP 410 — gone')
+    const { kept } = groundClaims(
+      [{ claim: 'The page does not exist', url: 'https://a.example/nope', confidence: 'low' }],
+      ledger,
+    )
+    expect(kept[0]?.confidence).toBe('low')
+  })
+
+  it('classifies absence claim texts, and does not fire on ordinary positives', () => {
+    for (const claim of [
+      'mlol.qt.qq.com is geo-restricted to mainland China',
+      'The CDN serves no such resource',
+      'No releases were ever published for this repo',
+      'The package is not available on npm',
+      'The registry says the module does not exist',
+      'The host is offline',
+    ]) {
+      expect(isAbsenceClaim(claim)).toBe(true)
+    }
+    for (const claim of [
+      'The CDN serves the live 141-champion roster as JSON',
+      'The registry answered with version 2.0.0',
+      'The page lists 3 releases, the latest on 2026-08-01',
+      'The module exports two functions',
+    ]) {
+      expect(isAbsenceClaim(claim)).toBe(false)
+    }
   })
 })
 
