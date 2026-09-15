@@ -181,7 +181,7 @@ function referencesBody(body: string, url: string): boolean {
   return urlPattern.test(body) || (hostPattern?.test(body) ?? false)
 }
 
-export function scrubBody(
+function scrubBody(
   body: string,
   unverified: ReadonlyArray<{ topic: string; url: string | null; reason: string }>,
 ): string {
