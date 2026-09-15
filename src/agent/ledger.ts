@@ -41,11 +41,16 @@ export interface RetrievalLedger {
 // did not use — those are the SAME page and must match, or honest citations get dropped.
 // Scheme is deliberately excluded (http/https of one host is one page); query IS kept
 // (`?v=2` is usually a different document).
+//
+// The scheme-prepend fallback is the SAME one `hostOnly` uses. Without it a scheme-less
+// input like `www.nunu.gg/patch-notes` fails `new URL()` and lands in the catch, which
+// lowercases the whole raw string — keeping `www.` and lowercasing the PATH, contradicting
+// this module's own rule that host case is insignificant and path case is not.
 export function normalizeUrl(raw: string): string {
   const trimmed = raw.trim()
   let parsed: URL
   try {
-    parsed = new URL(trimmed)
+    parsed = new URL(withScheme(trimmed))
   } catch {
     return trimmed.toLowerCase()
   }

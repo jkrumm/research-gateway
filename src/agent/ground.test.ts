@@ -455,6 +455,8 @@ describe('groundReport — the job boundary', () => {
       { body: 'See _https://nunu.gg/patch-notes_ here.', want: true, why: 'markdown italics around the URL' },
       { body: 'See https://nunu.gg/patch-notes[1] here.', want: true, why: 'a footnote ref glued to the URL' },
       { body: 'See https://nunu.gg/ here.', want: true, why: 'a bare host with a trailing slash' },
+      { body: 'See www.nunu.gg/patch-notes here.', want: true, why: 'scheme-less with a www. prefix' },
+      { body: 'See NUNU.gg/patch-notes here.', want: true, why: 'scheme-less, mixed-case host' },
       {
         body: 'See https://nunu.gg/patch-notes-archive-2026 for the archive.',
         want: false,
@@ -467,6 +469,17 @@ describe('groundReport — the job boundary', () => {
       { body: 'See https://nunu.gg/other-page here.', want: false, why: 'a different page on the same host' },
       { body: 'Contact nunu.gg@example.com for help.', want: false, why: 'an email address' },
       { body: 'See nunu.gg:8443/other-page here.', want: false, why: 'the host with a port and another path' },
+      {
+        body: 'See https://nunu.gg/patch-notes?ref=abc here.',
+        want: false,
+        why: 'a query string — a different document',
+      },
+      {
+        body: 'See https://nunu.gg/patch-notes#section2 here.',
+        want: false,
+        why: 'a fragment — a different document',
+      },
+      { body: 'See https://nunu.gg?ref=abc here.', want: false, why: 'a query on the bare host' },
     ]
 
     // A hostname embedded in an internationalized domain must not be read as a mention: with
@@ -516,6 +529,83 @@ describe('groundReport — the job boundary', () => {
         ledger,
       )
       expect(report.report).not.toContain('Unverified in prose')
+    })
+
+    // The positive counterpart: `new URL()` IDNA-encodes a Unicode host to punycode, while the
+    // body and the caller's own entry both carry the Unicode spelling. Without matching both,
+    // a genuinely Unicode blocked URL is never flagged even when the body names it verbatim.
+    it('flags a genuinely Unicode (IDN) host mentioned verbatim', () => {
+      const ledger = createLedger()
+      ledger.recordRetrieved('https://good.example')
+      ledger.recordFailed('https://münchen.de/x', 'rendered page empty')
+      const report = groundReport(
+        submitted({
+          report: 'See https://münchen.de/x here.',
+          citations: [{ claim: 'ok', url: 'https://good.example', confidence: 'high' }],
+          unverified: [{ topic: 't', url: 'https://münchen.de/x', reason: 'rendered page empty' }],
+        }),
+        ledger,
+      )
+      expect(report.report).toContain('Unverified in prose')
+    })
+
+    // A query or fragment makes it a DIFFERENT document, the same call `normalizeUrl` makes
+    // for citations. Matching is symmetric: present on both sides, it is the same page.
+    it('matches when the query string is present on both sides', () => {
+      const ledger = createLedger()
+      ledger.recordRetrieved('https://good.example')
+      ledger.recordFailed('https://nunu.gg/patch-notes?v=2', 'rendered page empty')
+      const report = groundReport(
+        submitted({
+          report: 'See https://nunu.gg/patch-notes?v=2 here.',
+          citations: [{ claim: 'ok', url: 'https://good.example', confidence: 'high' }],
+          unverified: [{ topic: 't', url: 'https://nunu.gg/patch-notes?v=2', reason: 'rendered page empty' }],
+        }),
+        ledger,
+      )
+      expect(report.report).toContain('Unverified in prose')
+    })
+
+    // A non-null but unparseable URL must be skipped without throwing, and without taking a
+    // real mention down with it.
+    it('skips an unparseable url without throwing or mis-skipping a real mention', () => {
+      const ledger = createLedger()
+      ledger.recordRetrieved('https://good.example')
+      ledger.recordFailed('https://nunu.gg/patch-notes', 'rendered page empty')
+      const report = groundReport(
+        submitted({
+          report: 'See https://nunu.gg/patch-notes here.',
+          citations: [{ claim: 'ok', url: 'https://good.example', confidence: 'high' }],
+          unverified: [
+            { topic: 'junk', url: 'not a url at all', reason: 'nonsense' },
+            { topic: 't', url: 'https://nunu.gg/patch-notes', reason: 'rendered page empty' },
+          ],
+        }),
+        ledger,
+      )
+      expect(report.report).toContain('Unverified in prose')
+      expect(report.report.split('Unverified in prose')).toHaveLength(2)
+    })
+
+    // A body-scrub-only degradation (one clean citation, plus prose naming a source that was
+    // never fetched, so it is in neither the ledger's `failed` list nor `citationsDropped`)
+    // must still say WHY it degraded — an empty `parts` used to emit a banner with a bare
+    // ". " where the cause belongs.
+    it('names the body scrub as the cause when it is the sole reason for degrading', () => {
+      const ledger = createLedger()
+      ledger.recordRetrieved('https://good.example/x')
+      const report = groundReport(
+        submitted({
+          report: 'Per https://nunu.gg/patch-notes the rate rose.',
+          citations: [{ claim: 'ok', url: 'https://good.example/x', confidence: 'high' }],
+          unverified: [{ topic: 't', url: 'https://nunu.gg/patch-notes', reason: 'never fetched' }],
+        }),
+        ledger,
+      )
+      expect(report.status).toBe('partial')
+      expect(report.report).toContain('Partial result')
+      expect(report.report).toContain('could not be verified and are flagged inline')
+      expect(report.report).not.toContain('this run. . Anything')
     })
 
     // A path full of regex metacharacters is matched literally, not compiled: the blocked

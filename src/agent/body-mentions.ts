@@ -1,5 +1,6 @@
+import { domainToUnicode } from 'node:url'
 import { hostOnly, normalizeUrl } from './ledger.js'
-import type { SubmittedReport } from './schema.js'
+import type { UnverifiedEntry } from './schema.js'
 
 // Issue #7: the citation gate does not reach the report PROSE. A synthesizer can still name
 // a blocked source in the body — a raw URL, a markdown link target, or a bare host — while
@@ -29,9 +30,9 @@ import type { SubmittedReport } from './schema.js'
 // if continuing past it could still be this same URL. Everything else is a separator. The
 // body is never tokenized, so no token can be mis-assembled in the first place.
 
-// schema.ts owns this shape; deriving it here rather than re-inlining `{ topic, url, reason }`
-// means a schema change cannot leave a stale copy behind.
-type UnverifiedMention = SubmittedReport['unverified'][number]
+// schema.ts owns this shape; importing it rather than re-inlining `{ topic, url, reason }`
+// (or writing a second alias for it) means a schema change cannot leave a stale copy behind.
+type UnverifiedMention = UnverifiedEntry
 
 // A case-insensitive character class for one literal string, so a single pattern can match a
 // host case-insensitively while leaving the path case-sensitive — the two need different
@@ -51,16 +52,18 @@ const LEFT = `(?<![\\p{L}\\p{N}\\p{M}\\-./@])`
 
 // What may not IMMEDIATELY FOLLOW a match — the character that would mean the URL continues:
 //   - a letter/number/mark extends the host or a path segment (`nunu.ggx`, `patch-notes2`)
-//   - `-` `_`… no: `-` extends a path segment (`patch-notes-archive` is not `patch-notes`)
-//   - `/` `?` `#` start a further path/query/fragment (`nunu.gg/other-page`)
+//   - `-` extends a path segment (`patch-notes-archive` is not `patch-notes`)
+//   - `/` `?` `#` start a further path/query/fragment (`nunu.gg/other-page`, `nunu.gg?ref=x`)
 //   - `%` `&` `=` `+` `$` continue a path or query
 //   - `@` makes it an email address (`nunu.gg@example.com`)
 //   - `:` only when a port follows (`nunu.gg:8443`) — a colon is otherwise prose punctuation
 //   - `.` only when a word follows (`patch-notes.html`), so a sentence-final period matches
+// `?` and `#` are here because a query or fragment makes it a DIFFERENT document — the same
+// call `normalizeUrl` makes for citations, where `?v=2` is deliberately not the same page.
 // Deliberately NOT excluded: `,` `;` `!` `*` `_` `~` `(` `[` and quotes. Prose and markdown
 // glue those straight onto a URL (`nunu.gg/x,and`, `**nunu.gg/x**`, `nunu.gg/x[1]`,
 // `nunu.gg/x(archived)`), and treating them as continuations loses real mentions.
-const RIGHT = `(?![\\p{L}\\p{N}\\p{M}\\-/%&=+$@])(?!:\\d)(?!\\.\\p{L})`
+const RIGHT = `(?![\\p{L}\\p{N}\\p{M}\\-/%&=+$@?#])(?!:\\d)(?!\\.\\p{L})`
 
 // The bounded forms of one blocked URL as it may appear in prose: the exact URL, scheme-less,
 // `www.`-less, and as a bare host. `normalizeUrl` supplies the canonical host+path+query, so
@@ -83,10 +86,16 @@ function patternFor(url: string): RegExp | null {
   const canonical = normalizeUrl(url)
   if (!canonical.startsWith(host)) return null
   const rest = canonical.slice(host.length)
+  // A Unicode host is IDNA-encoded to punycode by `new URL()` (`münchen.de` ->
+  // `xn--mnchen-3ya.de`), but the report body and the caller's own `unverified` entry both
+  // carry the Unicode form. Accepting either spelling is the difference between flagging a
+  // real mention and silently missing it, so the host alternation carries both.
+  const unicodeHost = domainToUnicode(host)
+  const hostPattern = unicodeHost === host ? ciClass(host) : `(?:${ciClass(host)}|${ciClass(unicodeHost)})`
   // The `u` flag is load-bearing: without it `\p{L}` is an identity escape for a literal `p`,
   // so the boundary classes silently degrade to `[p{L}N...]` and stop excluding letters —
   // which is how `notnunu.gg` and `münchen.de` got flagged as `nunu.gg` and `nchen.de`.
-  const body = `${LEFT}(?:https?://)?(?:www\\.)?${ciClass(host)}(?:${escape(rest)})?/?${RIGHT}`
+  const body = `${LEFT}(?:https?://)?(?:www\\.)?${hostPattern}(?:${escape(rest)})?/?${RIGHT}`
   return new RegExp(body, 'u')
 }
 

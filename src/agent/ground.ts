@@ -1,13 +1,12 @@
-import type { Finding, Grounding, ResearchReport, SubmittedReport, WorkerDigest } from './schema.js'
+import type { Finding, Grounding, ResearchReport, SubmittedReport, UnverifiedEntry, WorkerDigest } from './schema.js'
 import { normalizeUrl } from './ledger.js'
 import { scrubBody } from './body-mentions.js'
 import type { RetrievalLedger, RetrievalTier } from './ledger.js'
 
-// One shared shape for an `unverified` entry — schema.ts owns the definition, and the
-// three places that used to re-inline `{ topic, url, reason }` (here, dedupeUnverified,
-// GroundedClaims['dropped']) now derive from it, so a schema change cannot leave a stale
-// copy behind.
-type UnverifiedEntry = SubmittedReport['unverified'][number]
+// One shared shape for an `unverified` entry — schema.ts owns the definition, and every
+// place that used to re-inline `{ topic, url, reason }` (here, dedupeUnverified,
+// GroundedClaims['dropped'], body-mentions.ts) now imports it, so a schema change cannot
+// leave a stale copy behind.
 
 // Grounding — the code-side gate between what a model CLAIMS it verified and what the run
 // actually retrieved. Applied twice: at the worker boundary (findings, before they can
@@ -140,11 +139,24 @@ function dedupeUnverified(
 // A `partial` report is one where evidence was demonstrably lost. Prepending the banner to
 // the markdown matters as much as the `status` field: a consuming agent that reads only the
 // prose (every text-only MCP client does) must still see that the run degraded.
-function banner(grounding: Grounding): string {
+//
+// `annotated` is a parameter rather than read off `Grounding` because the scrub count is
+// computed from the FINAL unverified set, after the ledger-vindication detachment — it is
+// not a ledger tally. It must be passed in: a body-scrub-only degradation (one clean
+// citation, plus prose naming a source that was never fetched, so it is not in the ledger's
+// `failed` list either) otherwise leaves `parts` empty and emits a banner reading
+// "Partial result — evidence was lost during this run. . Anything below…" — a malformed
+// sentence that names no cause at all.
+function banner(grounding: Grounding, annotated: number): string {
   const parts: string[] = []
   if (grounding.citationsDropped > 0) {
     parts.push(
       `${grounding.citationsDropped} claim(s) were dropped because the pages backing them could not be retrieved`,
+    )
+  }
+  if (annotated > 0) {
+    parts.push(
+      `${annotated} source(s) named in the report body could not be verified and are flagged inline below`,
     )
   }
   if (grounding.pagesRetrieved === 0) parts.push('no source page could be retrieved at all')
@@ -247,7 +259,7 @@ export function groundReport(
 
   return {
     ...submitted,
-    report: degraded ? banner(grounding) + scrubbed.body : scrubbed.body,
+    report: degraded ? banner(grounding, scrubbed.annotated) + scrubbed.body : scrubbed.body,
     citations: kept,
     sources,
     unverified,
