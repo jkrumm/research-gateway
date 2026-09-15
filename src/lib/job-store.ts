@@ -11,6 +11,9 @@ export interface Job {
   status: JobStatus
   query: string
   depth: Depth
+  // Optional caller-supplied background (issue #6). Persisted only so it survives a restart
+  // between create and run — the agent itself reads it once, at the start of the run.
+  context?: string
   result?: ResearchReport
   error?: string
   createdAt: number
@@ -109,13 +112,14 @@ function sweep(): void {
 const _sweepTimer = setInterval(sweep, 60_000)
 if (typeof _sweepTimer.unref === 'function') _sweepTimer.unref()
 
-export function createJob(input: { query: string; depth: Depth }): Job {
+export function createJob(input: { query: string; depth: Depth; context?: string | undefined }): Job {
   sweep()
   const job: Job = {
     jobId: crypto.randomUUID(),
     status: 'queued',
     query: input.query,
     depth: input.depth,
+    ...(input.context !== undefined ? { context: input.context } : {}),
     createdAt: Date.now(),
   }
   jobs.set(job.jobId, job)
