@@ -65,6 +65,27 @@ function ciClass(literal: string): string {
 // mark must count as part of the hostname, or a decomposed `münchen.de` yields `nchen.de`.
 const LEFT = `(?<![\\p{L}\\p{N}\\p{M}\\-./@])`
 
+// A literal for one RAW segment, plus its percent-decoded form when they differ. Takes the raw
+// string and escapes internally — passing an already-escaped value here was a bug: the escape
+// step would be skipped on the branch that returns early, leaving `?` and `+` in the pattern as
+// live regex metacharacters.
+//
+// `urlParts` canonicalizes through `new URL()`, which percent-encodes non-ASCII (`/café` ->
+// `/caf%C3%A9`), while the report body may carry either spelling — and both are the same page.
+// Decoding is guarded: a malformed sequence (`%zz`) would throw, and a decoded form that is not
+// a plain literal (it still contains `%`) is skipped rather than risk a double-decode.
+function alternatives(raw: string): string {
+  const escaped = escape(raw)
+  let decoded: string
+  try {
+    decoded = decodeURIComponent(raw)
+  } catch {
+    return escaped
+  }
+  if (decoded === raw || decoded.includes('%')) return escaped
+  return `(?:${escaped}|${escape(decoded)})`
+}
+
 // What may not IMMEDIATELY FOLLOW a match — the character that would mean the URL continues:
 //   - a letter/number/mark extends the host or a path segment (`nunu.ggx`, `patch-notes2`)
 //   - `-` extends a path segment (`patch-notes-archive` is not `patch-notes`)
@@ -154,9 +175,13 @@ function patternFor(url: string): RegExp | null {
   // `partial` and carried a note claiming it referenced a page it never mentioned. A bare host
   // is a different reference from a specific page on it. The reverse direction (body names the
   // bare host, blocked URL is that host) still matches, via the `/?` on the no-path branch.
-  const pathPattern = rest ? `(?:${escape(rest)})/?` : '/?'
+  // `urlParts` percent-encodes what it parses (`/café` -> `/caf%C3%A9`), but a report can
+  // carry the raw spelling, and the two are the same page — so each segment is matched as
+  // "canonical OR percent-decoded form". Without this a raw-Unicode path or fragment slipped
+  // through unflagged, the same bypass class as the NFD and invisible-Unicode cases.
+  const pathPattern = rest ? `(?:${alternatives(rest)})/?` : '/?'
   const schemePattern = `(?:${ciClass('https')}://|${ciClass('http')}://)?`
-  const hashPattern = hash ? `(?:${escape(hash)})` : ''
+  const hashPattern = hash ? `(?:${alternatives(hash)})` : ''
   const body = `${LEFT}${schemePattern}(?:${ciClass('www.')})?${hostPattern}${pathPattern}${hashPattern}${RIGHT}`
   return new RegExp(body, 'u')
 }

@@ -1008,6 +1008,33 @@ describe('groundReport — the job boundary', () => {
       }
     })
 
+    // `urlParts` percent-encodes what it parses (`/café` -> `/caf%C3%A9`), but a report can
+    // carry the raw spelling and the two are the same page. Without matching both, a
+    // raw-Unicode path slipped through unflagged — the same bypass class as the NFD host and
+    // invisible-Unicode cases.
+    it('matches a raw (non-percent-encoded) Unicode path in either direction', () => {
+      const raw = 'https://example.com/caf\u00e9'
+      const enc = 'https://example.com/caf%C3%A9'
+      const ledger = createLedger()
+      ledger.recordRetrieved('https://good.example/x')
+      ledger.recordFailed(raw, 'rendered page empty')
+      for (const [label, body, url] of [
+        ['raw body vs raw url', `See ${raw} here.`, raw],
+        ['raw body vs encoded url', `See ${raw} here.`, enc],
+        ['encoded body vs raw url', `See ${enc} here.`, raw],
+      ] as const) {
+        const report = groundReport(
+          submitted({
+            report: body,
+            citations: [{ claim: 'ok', url: 'https://good.example/x', confidence: 'high' }],
+            unverified: [{ topic: 't', url, reason: 'rendered page empty' }],
+          }),
+          ledger,
+        )
+        expect(`${label}: ${report.report.includes('Unverified in prose')}`).toBe(`${label}: true`)
+      }
+    })
+
     // A non-null but unparseable URL must be skipped without throwing, and without taking a
     // real mention down with it.
     it('skips an unparseable url without throwing or mis-skipping a real mention', () => {
