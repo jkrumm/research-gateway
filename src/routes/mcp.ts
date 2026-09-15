@@ -101,6 +101,14 @@ function buildMcpServer(): McpServer {
       inputSchema: z.object({
         query: z.string().min(3).describe('The research question or topic to investigate'),
         depth: Depth.optional().describe('Research depth: quick | standard (default) | deep'),
+        context: z
+          .string()
+          .min(1)
+          .max(20_000)
+          .optional()
+          .describe(
+            'Optional free-text background you already know (earlier findings, versions, decisions). Treated as established: the plan and workers will NOT re-search or re-verify it, and it is never cited. Use it to skip re-deriving facts a previous job already established.',
+          ),
       }),
       outputSchema: JobHandle,
     },
@@ -114,7 +122,7 @@ function buildMcpServer(): McpServer {
       }
 
       const depth = args.depth ?? 'standard'
-      const job = createJob({ query: args.query, depth })
+      const job = createJob({ query: args.query, depth, context: args.context })
       startResearchJob(job)
 
       const handle: z.infer<typeof JobHandle> = {

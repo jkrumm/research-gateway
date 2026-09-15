@@ -17,8 +17,8 @@ export const researchRoutes = new Elysia({ prefix: '/research' })
         return status(refusal.httpStatus, { error: refusal.message })
       }
       const depth = body.depth ?? 'standard'
-      const job = createJob({ query: body.query, depth })
-      log('job.created', { jobId: job.jobId, depth })
+      const job = createJob({ query: body.query, depth, context: body.context })
+      log('job.created', { jobId: job.jobId, depth, withContext: body.context !== undefined })
 
       // Fire-and-forget: run the agent in the background without blocking the response.
       startResearchJob(job)

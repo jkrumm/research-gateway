@@ -77,10 +77,13 @@ async function dispatchRound(
   depth: Depth,
   jobId: string,
   round: number,
+  context?: string,
 ): Promise<RoundResult> {
   const sem = new Semaphore(env.WORKER_MAX_CONCURRENCY)
   const settled = await Promise.allSettled<WorkerOutcome>(
-    subQuestions.map((sq) => withLimit(sem, () => runWorker({ subQuestion: sq.question, depth, jobId, round }))),
+    subQuestions.map((sq) =>
+      withLimit(sem, () => runWorker({ subQuestion: sq.question, context, depth, jobId, round })),
+    ),
   )
 
   return collectRoundOutcome(settled)
@@ -95,6 +98,7 @@ function tracedRound(args: {
   jobId: string
   round: number
   retry: boolean
+  context?: string | undefined
 }): Promise<RoundResult> {
   return withSpan(
     'research.round',
@@ -105,7 +109,7 @@ function tracedRound(args: {
       ...(args.retry ? { 'research.round_retry': true } : {}),
     },
     async (s) => {
-      const result = await dispatchRound(args.subQuestions, args.depth, args.jobId, args.round)
+      const result = await dispatchRound(args.subQuestions, args.depth, args.jobId, args.round, args.context)
       s.setAttributes({ 'research.digests_returned': result.digests.length })
       return result
     },
@@ -113,7 +117,7 @@ function tracedRound(args: {
 }
 
 export async function runResearch(
-  input: { query: string; depth?: Depth; jobId?: string },
+  input: { query: string; context?: string | undefined; depth?: Depth; jobId?: string },
   onUsage?: (stats: JobUsage) => void,
 ): Promise<ResearchReport> {
   const depth = input.depth ?? 'standard'
@@ -150,7 +154,7 @@ export async function runResearch(
       // No span wrapper here — planResearch opens `research.plan` itself, so the quick-depth
       // path (which makes no LLM call at all) produces no zero-duration span. Same for
       // synthesize/`research.synthesis` below.
-      const { plan, usage: planUsage } = await planResearch({ query: input.query, depth, jobId })
+      const { plan, usage: planUsage } = await planResearch({ query: input.query, context: input.context, depth, jobId })
       leadUsage = addUsage(leadUsage, planUsage)
       log('research.plan', { jobId, subQuestions: plan.subQuestions.length })
 
@@ -179,6 +183,7 @@ export async function runResearch(
           jobId,
           round,
           retry: false,
+          context: input.context,
         })
         absorb(first)
 
@@ -208,6 +213,7 @@ export async function runResearch(
               jobId,
               round,
               retry: true,
+              context: input.context,
             }),
           )
         }
@@ -285,6 +291,7 @@ export async function runResearch(
 
       const { report: synthesized, usage: synthesisUsage } = await synthesize({
         query: input.query,
+        context: input.context,
         digests: allDigests,
         depth,
         jobId,
