@@ -159,6 +159,12 @@ as an unverified claim.
   and \`unverified\`.
 - Do not invent a citation to make a claim look supported. If the digests do not support a
   point, either drop the point or state in the prose that it is unverified.
+- A claim may not assert facts about the CONTENT of a source listed under a digest's
+  **Blocked sources** (its freshness, its staleness, what it does or does not contain) — you
+  could not read it, so you have no evidence about it. If the answer depends on what that
+  document says, report that it could not be verified instead; if your only evidence for a
+  negative ("X does not exist", "X is outdated") is that retrieval failed, the claim is not
+  evidence, it is the absence of evidence.
 
 ${ANTI_HALLUCINATION_RULES}
 
