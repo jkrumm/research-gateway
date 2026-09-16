@@ -518,7 +518,7 @@ describe('groundReport — the job boundary', () => {
   // in either — otherwise two distinct entries collide into one and a disavowal is silently
   // dropped. A space does not qualify: url `https://a.example/x y` + topic `t` and url
   // `https://a.example/x` + topic `y t` both join to `https://a.example/x y t`. The key's
-  // separator is ` ` written as an escape (the raw byte made git treat the file as binary).
+  // separator is `\u0000` written as an escape (the raw byte made git treat the file as binary).
   it('keeps two distinct entries that would collide on a space-joined key', () => {
     const ledger = createLedger()
     ledger.recordRetrieved('https://good.example')
