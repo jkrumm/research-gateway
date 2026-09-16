@@ -33,7 +33,14 @@ function report(overrides: Partial<ResearchReport> = {}): ResearchReport {
       tavilyCredits: 0,
       tavilyExtractCalls: 0,
     },
-    grounding: { pagesRetrieved: 1, pagesFailed: 0, citationsKept: 1, citationsDropped: 0, confidenceCapped: 0 },
+    grounding: {
+      pagesRetrieved: 1,
+      pagesMissing: 0,
+      pagesFailed: 0,
+      citationsKept: 1,
+      citationsDropped: 0,
+      confidenceCapped: 0,
+    },
     ...overrides,
   }
 }

@@ -145,7 +145,11 @@ const MIN_USABLE_CHARS = 200
 // Follows redirects BY HAND so every hop can be re-validated against the SSRF guard. A
 // single `fetch` with `redirect: 'follow'` would validate the first address and then follow
 // a 302 to anywhere — including the metadata service.
-async function safeFetch(startUrl: string, jobId = '-', maxHops = 3): Promise<Response> {
+//
+// Returns the final URL alongside the response: with `redirect: 'manual'` the response is
+// the REDIRECT TARGET's, and callers that attribute anything to the requested URL (the
+// ledger's missing tier) must attribute it to where the answer actually came from.
+async function safeFetch(startUrl: string, jobId = '-', maxHops = 3): Promise<{ res: Response; finalUrl: string }> {
   let current = startUrl
   for (let hop = 0; ; hop++) {
     await assertPublicHttpUrl(current) // re-validate EVERY hop (initial + each redirect target)
@@ -156,14 +160,14 @@ async function safeFetch(startUrl: string, jobId = '-', maxHops = 3): Promise<Re
     })
     if (res.status >= 300 && res.status < 400) {
       const loc = res.headers.get('location')
-      if (!loc) return res
+      if (!loc) return { res, finalUrl: current }
       if (hop >= maxHops) throw new Error('too many redirects')
       const next = new URL(loc, current).toString() // resolve relative redirects
       log('tool.redirect', { jobId, from: current, to: next, status: res.status, hop: hop + 1 })
       current = next
       continue
     }
-    return res
+    return { res, finalUrl: current }
   }
 }
 
@@ -300,14 +304,21 @@ export async function runFetchChain(url: string, opts: FetchChainOptions): Promi
     const t1 = performance.now()
     let step1: FetchStep = 'readability'
     try {
-      const res = await safeFetch(fetchUrl, jobId)
-
       // A definitively-absent resource stops here. Every remaining step would ask the same
       // origin the same question and be told the same thing, and the last of them bills for it.
+      // Recorded as `missing`, not `failed`: the origin ANSWERED — 404/410 is definitive
+      // evidence that the resource does not exist at this URL, and the only kind of
+      // negative claim the ledger ever backs. See ground.ts.
+      //
+      // Recorded against safeFetch's FINAL url, never the requested one: with redirects
+      // followed by hand, `res` is the redirect target's response, and a redirect to a 404
+      // says the TARGET does not exist — the requested URL's fate is unknown, and a
+      // fabricated missing record there would wrongly demote or drop claims about it.
+      const { res, finalUrl } = await safeFetch(fetchUrl, jobId)
       if (isDefinitivelyMissing(res.status)) {
         const reason = `HTTP ${res.status} — the resource does not exist at this URL`
         attempt(attempts, 'readability', t1, { ok: false, error: reason })
-        ledger.recordFailed(url, reason)
+        ledger.recordMissing(finalUrl, reason)
         log('tool.fetchPage', { jobId, url, via: 'missing', status: res.status })
         return fail(reason)
       }
@@ -412,7 +423,7 @@ export async function runFetchChain(url: string, opts: FetchChainOptions): Promi
       // — five hops, where the chain's default of 3 failed the whole rescue with "too many
       // redirects". Every hop is still re-validated against the SSRF guard inside safeFetch, so
       // this widens the budget, not the trust.
-      const res = await safeFetch(waybackLookupUrl(fetchUrl), jobId, 8)
+      const { res } = await safeFetch(waybackLookupUrl(fetchUrl), jobId, 8)
       if (!res.ok) {
         const ms = attempt(attempts, 'wayback', tW, { ok: false, error: `HTTP ${res.status}` })
         onArchive?.({ ok: false, ms, snapshotAgeDays: null })
