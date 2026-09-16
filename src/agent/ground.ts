@@ -57,7 +57,10 @@ function capConfidence(asserted: Confidence, ceiling: Confidence): Confidence {
 export interface GroundedClaims {
   kept: Finding[]
   dropped: Array<{ topic: string; url: string | null; reason: string }>
-  cappedCount: number
+  // Indices into `kept` of the claims whose confidence this gate lowered — held as
+  // positions, not a count, so the job boundary can union them with the subject-degrade
+  // pass's indices and never double-count a claim that was capped here and degraded there.
+  capped: ReadonlySet<number>
 }
 
 // The single rule both boundaries share.
@@ -81,7 +84,7 @@ export function groundClaims(
 ): GroundedClaims {
   const kept: Finding[] = []
   const dropped: GroundedClaims['dropped'] = []
-  let cappedCount = 0
+  const capped = new Set<number>()
 
   for (const claim of claims) {
     const tier = ledger.tierOf(claim.url)
@@ -143,12 +146,12 @@ export function groundClaims(
     let ceiling: Confidence = CEILING[tier]
     if (isAbsenceClaim(claim.claim)) ceiling = 'medium'
 
-    const capped = capConfidence(claim.confidence, ceiling)
-    if (capped !== claim.confidence) cappedCount++
-    kept.push({ ...claim, confidence: capped })
+    const cappedClaim = capConfidence(claim.confidence, ceiling)
+    if (cappedClaim !== claim.confidence) capped.add(kept.length)
+    kept.push({ ...claim, confidence: cappedClaim })
   }
 
-  return { kept, dropped, cappedCount }
+  return { kept, dropped, capped }
 }
 
 // Worker boundary. Fabricated findings are stripped here rather than at the end, so the
@@ -173,6 +176,68 @@ export function groundDigest(digest: WorkerDigest, ledger: RetrievalLedger): Wor
     sourcesRead: ledger.retrievedUrls(),
     blockedSources: [...digest.blockedSources, ...dropped],
   }
+}
+
+// ── Issue #4: a claim sourced from an `unverified` document must degrade with it ─────
+//
+// The URL rules above only catch a claim that cites the blocked URL ITSELF. The 2026-08-06
+// deep run shipped "this wiki module is stale" at `high` confidence while the same report's
+// `unverified` block said the module was "too large to fetch — 121 KB" — the claim cited a
+// sibling host's revision timestamp, so every gate passed. Detection therefore has to be
+// textual: a citation whose claim names the subject of an `unverified` entry cannot rest on
+// evidence this run never had, whatever URL it points at.
+//
+// The heuristic is deliberately conservative: ≥2 distinctive tokens (≥3 chars, not in
+// NON_DISTINCTIVE) of the entry's topic or URL path must appear in the claim. One shared
+// token is how every claim in an Immich report mentions Immich; two is a subject match.
+// The action is a cap to `low`, not a drop — a wrong cap makes a report cautious, a wrong
+// drop loses a possibly-correct claim (the 2026-07-31 npm regression in miniature). Misses
+// stay possible — a prose claim citing nothing is invisible to any citation-side rule —
+// which is why the synthesis prompt carries the auxiliary rule against them.
+
+const NON_DISTINCTIVE = new Set([
+  'the', 'and', 'for', 'with', 'from', 'this', 'that', 'official', 'page', 'site',
+  'docs', 'documentation', 'http', 'https', 'www', 'com', 'org', 'net',
+])
+
+function distinctiveTokens(text: string): Set<string> {
+  return new Set(
+    text
+      .toLowerCase()
+      .split(/[^a-z0-9]+/)
+      .filter((t) => t.length >= 3 && !NON_DISTINCTIVE.has(t)),
+  )
+}
+
+// Subject of an unverified entry: its topic plus the URL PATH. The host is stripped — it
+// locates the document, the path usually names it: `/Module:Items` is the subject,
+// `immich.app` is not.
+function subjectTokens(entry: { topic: string; url: string | null }): Set<string> {
+  const path = entry.url?.replace(/^[a-z][a-z0-9+.-]*:\/\/[^/]*\/?/, '') ?? ''
+  return distinctiveTokens(`${entry.topic} ${path}`)
+}
+
+export function degradeClaimsOnUnverifiedSources(
+  claims: readonly Finding[],
+  unverified: ReadonlyArray<{ topic: string; url: string | null }>,
+): { kept: Finding[]; degraded: ReadonlySet<number> } {
+  const subjects = unverified.map(subjectTokens).filter((s) => s.size >= 2)
+  if (subjects.length === 0) return { kept: [...claims], degraded: new Set() }
+
+  const degraded = new Set<number>()
+  const kept = claims.map((claim, index) => {
+    if (claim.confidence === 'low') return claim
+    const words = distinctiveTokens(claim.claim)
+    const rests = subjects.some((subject) => {
+      let shared = 0
+      for (const token of subject) if (words.has(token)) shared++
+      return shared >= 2
+    })
+    if (!rests) return claim
+    degraded.add(index)
+    return { ...claim, confidence: 'low' as const }
+  })
+  return { kept, degraded }
 }
 
 function dedupeUnverified(
@@ -210,6 +275,11 @@ function banner(grounding: Grounding): string {
   } else if (grounding.pagesFailed > grounding.pagesRetrieved) {
     parts.push(`${grounding.pagesFailed} page fetches failed against only ${grounding.pagesRetrieved} that succeeded`)
   }
+  if (grounding.confidenceCapped > 0) {
+    parts.push(
+      `${grounding.confidenceCapped} citation(s) had their confidence lowered to match the evidence actually retrieved`,
+    )
+  }
   return `> **Partial result — evidence was lost during this run.** ${parts.join('; ')}. Anything below that is not backed by an entry in \`citations\` is unconfirmed; see \`unverified\` for what could not be checked.\n\n`
 }
 
@@ -237,8 +307,24 @@ export function groundReport(
       .filter((url) => ledger.tierOf(url) !== 'retrieved'),
   )
 
-  const { kept, dropped, cappedCount } = groundClaims(submitted.citations, ledger, ineligible)
+  const { kept: citedClaims, dropped, capped } = groundClaims(submitted.citations, ledger, ineligible)
+  // Issue #4, second gate: a kept citation can still ASSERT facts about a document the run
+  // could not read, via a different URL. Confidence degrades; the claim and its citation
+  // stay, so a wrong subject match costs caution, not evidence. The same ledger-vindication
+  // rule as `ineligible` applies: an entry whose URL the run actually read records an
+  // unverified TOPIC, not an unread source, so it must not degrade citations.
+  const degradeSubjects = submitted.unverified.filter(
+    (e) => !e.url || ledger.tierOf(e.url) !== 'retrieved',
+  )
+  const { kept, degraded } = degradeClaimsOnUnverifiedSources(citedClaims, degradeSubjects)
   const snap = ledger.snapshot()
+
+  // Both passes index into the same `kept` array: `capped` holds positions into
+  // `groundClaims`'s kept list, which IS the input `degradeClaimsOnUnverifiedSources`
+  // maps 1:1 over. A claim capped by the URL gate AND degraded here therefore appears in
+  // both index sets and the union counts it ONCE — the count describes citations touched,
+  // not passes over them.
+  const confidenceCapped = new Set([...capped, ...degraded]).size
 
   const grounding: Grounding = {
     pagesRetrieved: snap.retrieved.length,
@@ -246,7 +332,7 @@ export function groundReport(
     pagesFailed: snap.failed.length,
     citationsKept: kept.length,
     citationsDropped: dropped.length,
-    confidenceCapped: cappedCount,
+    confidenceCapped,
   }
 
   // Keep the invariant total: a URL that survived into `citations` must not also sit in
@@ -263,8 +349,12 @@ export function groundReport(
     }
   })
 
-  const degraded =
+  // A subject-degraded citation asserts facts about a document the run never read — the
+  // report may still say it as fact in prose a text-only client takes at face value, so it
+  // counts as demonstrably degraded evidence and flips the status, like a dropped citation.
+  const degradedRun =
     grounding.citationsDropped > 0 ||
+    degraded.size > 0 ||
     (grounding.pagesRetrieved === 0 && grounding.pagesMissing === 0) ||
     grounding.pagesFailed > grounding.pagesRetrieved
 
@@ -277,6 +367,11 @@ export function groundReport(
   if (grounding.confidenceCapped > 0) {
     warnings.push(
       `${grounding.confidenceCapped} citation(s) had their confidence lowered to match the evidence actually retrieved.`,
+    )
+  }
+  if (degraded.size > 0) {
+    warnings.push(
+      `${degraded.size} citation(s) were capped at low confidence because they appear to assert facts about a source this run listed as unverifiable — the claim text matched the subject of an \`unverified\` entry.`,
     )
   }
   if (grounding.pagesRetrieved === 0 && grounding.pagesMissing > 0) {
@@ -297,11 +392,11 @@ export function groundReport(
 
   return {
     ...submitted,
-    report: degraded ? banner(grounding) + submitted.report : submitted.report,
+    report: degradedRun ? banner(grounding) + submitted.report : submitted.report,
     citations: kept,
     sources,
     unverified,
-    status: degraded ? 'partial' : 'ok',
+    status: degradedRun ? 'partial' : 'ok',
     warnings,
     grounding,
   }
