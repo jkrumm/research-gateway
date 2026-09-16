@@ -2,7 +2,7 @@ import { describe, it, expect } from 'bun:test'
 // Imported directly from the pure modules (no `env.js` chain) — same convention as
 // run.test.ts. See the note at the top of assemble.ts.
 import { createLedger, mergeLedgers, normalizeUrl } from './ledger.js'
-import { groundClaims, groundDigest, groundReport } from './ground.js'
+import { groundClaims, groundDigest, groundReport, isAbsenceClaim } from './ground.js'
 import type { SubmittedReport, WorkerDigest } from './schema.js'
 
 function digest(overrides: Partial<WorkerDigest> = {}): WorkerDigest {
@@ -58,6 +58,38 @@ describe('ledger tier precedence', () => {
     ledger.recordSnippet('https://a.example')
     ledger.recordFailed('https://a.example', 'rate limited')
     expect(ledger.tierOf('https://a.example')).toBe('failed')
+  })
+
+  it('missing outranks failed but not retrieved (a 404 origin later read through a mirror)', () => {
+    const ledger = createLedger()
+    ledger.recordMissing('https://a.example', 'HTTP 404 — the resource does not exist at this URL')
+    ledger.recordFailed('https://a.example', 'timeout')
+    expect(ledger.tierOf('https://a.example')).toBe('missing')
+    ledger.recordRetrieved('https://a.example')
+    expect(ledger.tierOf('https://a.example')).toBe('retrieved')
+  })
+
+  it('carries a missing URL and its reason through snapshot and merge', () => {
+    const a = createLedger()
+    a.recordMissing('https://a.example/nope', 'HTTP 410 — gone')
+    const merged = mergeLedgers([a.snapshot()])
+    expect(merged.tierOf('https://a.example/nope')).toBe('missing')
+    expect(merged.failureReason('https://a.example/nope')).toBe('HTTP 410 — gone')
+  })
+
+  // failureReason must resolve with tierOf's precedence, not against it: mergeLedgers can
+  // legitimately record a URL in both maps (one worker times out, another gets a clean 404),
+  // and the reason shown must be the one the resolved tier rests on.
+  it('failureReason resolves missing before failed, matching tierOf', () => {
+    const a = createLedger()
+    a.recordFailed('https://a.example', 'timeout')
+    a.recordMissing('https://a.example', 'HTTP 404 — the resource does not exist at this URL')
+    expect(a.tierOf('https://a.example')).toBe('missing')
+    expect(a.failureReason('https://a.example')).toBe('HTTP 404 — the resource does not exist at this URL')
+    const b = createLedger()
+    b.recordMissing('https://b.example', 'HTTP 410 — gone')
+    b.recordFailed('https://b.example', 'timeout')
+    expect(b.failureReason('https://b.example')).toBe('HTTP 410 — gone')
   })
 
   it('an unrecorded URL is unseen', () => {
@@ -137,6 +169,148 @@ describe('groundClaims', () => {
       new Set(['https://a.example']),
     )
     expect(kept).toEqual([])
+  })
+})
+
+// ── Issue #3: the sparse-CDX / geo-restriction failure class ─────────────────
+// Both false `high` negatives from the 2026-08-06 deep run cited pages that WERE retrieved
+// (a thin Wayback CDX listing, a wiki revision timestamp) — the original failed/unseen gate
+// never saw them, because the tier said `retrieved`.
+describe('groundClaims — absence claims (issue #3)', () => {
+  // The exact lrlib CDN case from docs/field-notes.md: a sparse archive listing was
+  // retrieved, and the run concluded from its emptiness that the CDN hosts no Wild Rift data.
+  it('caps an absence claim citing a RETRIEVED page at medium, however high the model asserted', () => {
+    const ledger = createLedger()
+    ledger.recordRetrieved('https://web.archive.org/cdx?url=cdn.lrlib.net&limit=5')
+    const { kept, cappedCount } = groundClaims(
+      [
+        {
+          claim: "The lrlib CDN hosts only static image assets and does not serve Wild Rift champion data",
+          url: 'https://web.archive.org/cdx?url=cdn.lrlib.net&limit=5',
+          confidence: 'high',
+        },
+      ],
+      ledger,
+    )
+    expect(kept[0]?.confidence).toBe('medium')
+    expect(cappedCount).toBe(1)
+  })
+
+  // The exact mlol.qt.qq.com case: one connection-refused fetch became a geographic claim.
+  it('drops an absence claim whose supporting fetch failed, with the absence-specific reason', () => {
+    const ledger = createLedger()
+    ledger.recordFailed('https://mlol.qt.qq.com', 'connection refused')
+    const { kept, dropped } = groundClaims(
+      [
+        {
+          claim: 'mlol.qt.qq.com is geo-restricted to mainland China and is not accessible from outside',
+          url: 'https://mlol.qt.qq.com',
+          confidence: 'high',
+        },
+      ],
+      ledger,
+    )
+    expect(kept).toEqual([])
+    expect(dropped[0]?.reason).toContain('never proves absence')
+  })
+
+  it('keeps an absence claim at high when the origin itself answered 404/410 (missing tier)', () => {
+    const ledger = createLedger()
+    ledger.recordMissing('https://a.example/nope', 'HTTP 404 — the resource does not exist at this URL')
+    const { kept, cappedCount } = groundClaims(
+      [{ claim: 'The endpoint does not exist', url: 'https://a.example/nope', confidence: 'high' }],
+      ledger,
+    )
+    expect(kept[0]?.confidence).toBe('high')
+    expect(cappedCount).toBe(0)
+  })
+
+  it('drops a POSITIVE claim citing a 404 — a resource that does not exist has no content to quote', () => {
+    const ledger = createLedger()
+    ledger.recordMissing('https://a.example/nope', 'HTTP 404 — the resource does not exist at this URL')
+    const { kept, dropped } = groundClaims(
+      [{ claim: 'The endpoint returns version 2.0.0', url: 'https://a.example/nope', confidence: 'high' }],
+      ledger,
+    )
+    expect(kept).toEqual([])
+    expect(dropped[0]?.reason).toContain('does not exist')
+  })
+
+  it('leaves positive claims about a retrieved page untouched by the absence gate', () => {
+    const ledger = createLedger()
+    ledger.recordRetrieved('https://a.example')
+    const { kept, cappedCount } = groundClaims(
+      [{ claim: 'The page lists version 2.0.0', url: 'https://a.example', confidence: 'high' }],
+      ledger,
+    )
+    expect(kept[0]?.confidence).toBe('high')
+    expect(cappedCount).toBe(0)
+  })
+
+  it('does not upgrade a low absence claim just because the tier is missing', () => {
+    const ledger = createLedger()
+    ledger.recordMissing('https://a.example/nope', 'HTTP 410 — gone')
+    const { kept } = groundClaims(
+      [{ claim: 'The page does not exist', url: 'https://a.example/nope', confidence: 'low' }],
+      ledger,
+    )
+    expect(kept[0]?.confidence).toBe('low')
+  })
+
+  it('classifies absence claim texts, and does not fire on ordinary positives', () => {
+    for (const claim of [
+      'mlol.qt.qq.com is geo-restricted to mainland China',
+      'The CDN serves no such resource',
+      'No releases were ever published for this repo',
+      'The package is not available on npm',
+      'The registry says the module does not exist',
+      'The host is offline',
+    ]) {
+      expect(isAbsenceClaim(claim)).toBe(true)
+    }
+    for (const claim of [
+      'The CDN serves the live 141-champion roster as JSON',
+      'The registry answered with version 2.0.0',
+      'The page lists 3 releases, the latest on 2026-08-01',
+      'The module exports two functions',
+    ]) {
+      expect(isAbsenceClaim(claim)).toBe(false)
+    }
+  })
+
+  // Feature negation is NOT absence: a fact like "does not support X" says what a thing
+  // DOESN'T do while presupposing it exists. The original gate's negation+verb branch read
+  // all of these as absence claims and demoted correct `high` facts to `medium`.
+  it('does not fire on feature-negation sentences that presuppose an existing thing', () => {
+    for (const claim of [
+      'The library does not support async iteration',
+      'The plan does not include SSO',
+      'The database does not support multi-key transactions',
+      'The proxy does not work with HTTP/2',
+      'The repo does not contain examples',
+      'The API does not have a Python client',
+      'The service does not offer a free tier',
+      'The tool does not publish Windows builds',
+      'The framework does not load plugins from node_modules',
+    ]) {
+      expect(isAbsenceClaim(claim)).toBe(false)
+    }
+  })
+
+  // Past-tense removal phrasings are genuine absence claims but carry no negation word the
+  // original gate's branches matched — each was a false negative that let the claim ride.
+  it('fires on past-tense removal and state phrasings', () => {
+    for (const claim of [
+      'The package was removed from npm',
+      'The service was shut down in 2023',
+      'The library was retired last year',
+      'The API was deprecated in v2',
+      'The endpoint no longer exists',
+      'The records no longer exist',
+      'The package is unavailable on npm',
+    ]) {
+      expect(isAbsenceClaim(claim)).toBe(true)
+    }
   })
 })
 
@@ -285,6 +459,7 @@ describe('groundReport — the job boundary', () => {
     expect(report.citations).toHaveLength(2)
     expect(report.grounding).toEqual({
       pagesRetrieved: 2,
+      pagesMissing: 0,
       pagesFailed: 0,
       citationsKept: 2,
       citationsDropped: 0,
@@ -305,6 +480,27 @@ describe('groundReport — the job boundary', () => {
     expect(report.warnings.some((w) => w.includes('No source page'))).toBe(true)
   })
 
+  // A 404-only run is not "evidence was lost": the origin's answer IS the evidence, and an
+  // absence claim citing it is grounded at `high`. Bannering it "Partial result" contradicts
+  // the citation sitting right below the banner.
+  it('does not banner-contradict a legitimate absence citation in a 404-only run', () => {
+    const ledger = createLedger()
+    ledger.recordMissing('https://a.example/nope', 'HTTP 404 — the resource does not exist at this URL')
+    const report = groundReport(
+      submitted({
+        report: 'The endpoint does not exist.',
+        citations: [
+          { claim: 'The endpoint does not exist', url: 'https://a.example/nope', confidence: 'high' },
+        ],
+      }),
+      ledger,
+    )
+    expect(report.status).toBe('ok')
+    expect(report.report).toBe('The endpoint does not exist.')
+    expect(report.citations).toHaveLength(1)
+    expect(report.grounding.pagesMissing).toBe(1)
+  })
+
   it('does not double-list a dropped citation already present in unverified', () => {
     const ledger = createLedger()
     ledger.recordFailed('https://bad.example', 'rate limited')
@@ -316,6 +512,30 @@ describe('groundReport — the job boundary', () => {
       ledger,
     )
     expect(report.unverified).toHaveLength(1)
+  })
+
+  // The dedup key joins url and topic, so the separator must be a character that cannot occur
+  // in either — otherwise two distinct entries collide into one and a disavowal is silently
+  // dropped. A space does not qualify: url `https://a.example/x y` + topic `t` and url
+  // `https://a.example/x` + topic `y t` both join to `https://a.example/x y t`. The key's
+  // separator is ` ` written as an escape (the raw byte made git treat the file as binary).
+  it('keeps two distinct entries that would collide on a space-joined key', () => {
+    const ledger = createLedger()
+    ledger.recordRetrieved('https://good.example')
+    ledger.recordFailed('https://a.example/x y', 'x')
+    ledger.recordFailed('https://a.example/x', 'y')
+    const report = groundReport(
+      submitted({
+        report: 'Nothing relevant here.',
+        citations: [{ claim: 'ok', url: 'https://good.example', confidence: 'high' }],
+        unverified: [
+          { topic: 't', url: 'https://a.example/x y', reason: 'x' },
+          { topic: 'y t', url: 'https://a.example/x', reason: 'y' },
+        ],
+      }),
+      ledger,
+    )
+    expect(report.unverified).toHaveLength(2)
   })
 })
 

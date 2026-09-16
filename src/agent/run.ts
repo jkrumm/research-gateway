@@ -356,6 +356,7 @@ export async function runResearch(
         const result = groundReport(toGround, jobLedger)
         s.setAttributes({
           'grounding.pages_retrieved': result.grounding.pagesRetrieved,
+          'grounding.pages_missing': result.grounding.pagesMissing,
           'grounding.pages_failed': result.grounding.pagesFailed,
           'grounding.citations_dropped': result.grounding.citationsDropped,
           'grounding.confidence_capped': result.grounding.confidenceCapped,
@@ -425,6 +426,7 @@ export async function runResearch(
         'report.citations': grounded.citations.length,
         'report.sources': grounded.sources.length,
         'grounding.pages_retrieved': grounded.grounding.pagesRetrieved,
+        'grounding.pages_missing': grounded.grounding.pagesMissing,
         'grounding.pages_failed': grounded.grounding.pagesFailed,
         'grounding.citations_dropped': grounded.grounding.citationsDropped,
         'grounding.confidence_capped': grounded.grounding.confidenceCapped,
@@ -457,6 +459,7 @@ export async function runResearch(
         sources: grounded.sources.length,
         status: grounded.status,
         pagesRetrieved: grounded.grounding.pagesRetrieved,
+        pagesMissing: grounded.grounding.pagesMissing,
         pagesFailed: grounded.grounding.pagesFailed,
         citationsDropped: grounded.grounding.citationsDropped,
         confidenceCapped: grounded.grounding.confidenceCapped,
