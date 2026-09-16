@@ -70,6 +70,9 @@ export type RunCost = z.infer<typeof RunCost>
 // trusting the model's own account of its work.
 export const Grounding = z.object({
   pagesRetrieved: z.number().describe('Pages whose full text was actually retrieved this run.'),
+  pagesMissing: z
+    .number()
+    .describe('Pages where the origin itself answered 404/410 — definitive absence, not a fetch failure.'),
   pagesFailed: z.number().describe('Pages a fetch was attempted on and failed (rate limit, error, refusal).'),
   citationsKept: z.number().describe('Citations backed by a page this run actually retrieved or saw as a search snippet.'),
   citationsDropped: z

@@ -140,6 +140,7 @@ export async function runWorker(args: {
           'llm.input_tokens': usage.inputTokens,
           'llm.output_tokens': usage.outputTokens,
           'ledger.retrieved': snapshot.retrieved.length,
+          'ledger.missing': snapshot.missing.length,
           'ledger.failed': snapshot.failed.length,
           'ledger.snippet': snapshot.snippet.length,
         })
@@ -159,6 +160,7 @@ export async function runWorker(args: {
           'worker.error': String(err).slice(0, 300),
           'worker.elapsed_ms': Date.now() - start,
           'ledger.retrieved': snapshot.retrieved.length,
+          'ledger.missing': snapshot.missing.length,
           'ledger.failed': snapshot.failed.length,
           'ledger.snippet': snapshot.snippet.length,
         })
