@@ -2,7 +2,7 @@ import { describe, it, expect } from 'bun:test'
 // Imported directly from the pure modules (no `env.js` chain) — same convention as
 // run.test.ts. See the note at the top of assemble.ts.
 import { createLedger, mergeLedgers, normalizeUrl } from './ledger.js'
-import { groundClaims, groundDigest, groundReport } from './ground.js'
+import { groundClaims, groundDigest, groundReport, degradeClaimsOnUnverifiedSources } from './ground.js'
 import type { SubmittedReport, WorkerDigest } from './schema.js'
 
 function digest(overrides: Partial<WorkerDigest> = {}): WorkerDigest {
@@ -88,23 +88,21 @@ describe('groundClaims', () => {
   it('caps a snippet-backed claim at medium, however high the model asserted', () => {
     const ledger = createLedger()
     ledger.recordSnippet('https://a.example')
-    const { kept, cappedCount } = groundClaims(
-      [{ claim: 'A', url: 'https://a.example', confidence: 'high' }],
-      ledger,
-    )
+    const claim = { claim: 'A', url: 'https://a.example', confidence: 'high' as const }
+    const { kept, capped } = groundClaims([claim], ledger)
     expect(kept[0]?.confidence).toBe('medium')
-    expect(cappedCount).toBe(1)
+    expect(capped).toEqual(new Set([0]))
   })
 
   it('does not UPGRADE a low-confidence claim about a fully retrieved page', () => {
     const ledger = createLedger()
     ledger.recordRetrieved('https://a.example')
-    const { kept, cappedCount } = groundClaims(
+    const { kept, capped } = groundClaims(
       [{ claim: 'A', url: 'https://a.example', confidence: 'low' }],
       ledger,
     )
     expect(kept[0]?.confidence).toBe('low')
-    expect(cappedCount).toBe(0)
+    expect(capped.size).toBe(0)
   })
 
   it('drops a claim whose fetch failed, carrying the failure reason into the drop note', () => {
@@ -316,6 +314,209 @@ describe('groundReport — the job boundary', () => {
       ledger,
     )
     expect(report.unverified).toHaveLength(1)
+  })
+
+  // ── Regression for issue #4 (the 2026-08-06 stale-wiki-module run) ──────────
+  // The report declared a wiki module stale while its own unverified block said the module
+  // was "too large to fetch — 121 KB" — the claim cited a sibling host's revision timestamp,
+  // so the URL rules saw nothing wrong. A claim whose text names the subject of an
+  // unverified entry must degrade with it.
+  describe('claims resting on an unverified document (issue #4)', () => {
+    const incidentLedger = () => {
+      const ledger = createLedger()
+      ledger.recordFailed('https://wiki.example/Module:Items?action=raw', 'too large to fetch — 121 KB')
+      ledger.recordRetrieved('https://mirror.example/Module:Items?action=raw')
+      return ledger
+    }
+
+    const incidentRun = () =>
+      groundReport(
+        submitted({
+          report: 'The item module is stale and unusable for the current patch.',
+          citations: [
+            {
+              claim: 'the Module:Items page is stale, last edited 2025-09-17',
+              url: 'https://mirror.example/Module:Items?action=raw',
+              confidence: 'high',
+            },
+          ],
+          unverified: [
+            {
+              topic: 'Module:Items wiki page',
+              url: 'https://wiki.example/Module:Items?action=raw',
+              reason: 'too large to fetch — 121 KB',
+            },
+          ],
+        }),
+        incidentLedger(),
+      )
+
+    it('caps a citation asserting facts about an unverified document at low', () => {
+      const report = incidentRun()
+      expect(report.citations).toHaveLength(1)
+      expect(report.citations[0]?.confidence).toBe('low')
+      // A cap alone is not lost evidence — same semantics as the snippet cap — but the
+      // warning must still name it.
+      expect(report.warnings.some((w) => w.includes('capped at low'))).toBe(true)
+    })
+
+    it('counts the cap in grounding so the transparency channel sees it', () => {
+      const report = incidentRun()
+      expect(report.grounding.citationsKept).toBe(1)
+      expect(report.grounding.confidenceCapped).toBe(1)
+    })
+
+    it('leaves claims that do not name the unverified subject untouched', () => {
+      const ledger = incidentLedger()
+      ledger.recordRetrieved('https://docs.example/champions')
+      const report = groundReport(
+        submitted({
+          citations: [
+            { claim: 'champion win rates come from docs.example', url: 'https://docs.example/champions', confidence: 'high' },
+          ],
+          unverified: [
+            { topic: 'Module:Items wiki page', url: 'https://wiki.example/Module:Items', reason: 'too large to fetch' },
+          ],
+        }),
+        ledger,
+      )
+      expect(report.citations[0]?.confidence).toBe('high')
+      expect(report.grounding.confidenceCapped).toBe(0)
+      expect(report.status).toBe('ok')
+    })
+
+    it('needs two shared distinctive tokens — one is just context the report legitimately shares', () => {
+      const ledger = createLedger()
+      ledger.recordRetrieved('https://immich.app/docs/install')
+      ledger.recordFailed('https://immich.app/docs/bulk-delete', 'rate limited')
+      const unverified = [{ topic: 'bulk delete docs', url: 'https://immich.app/docs/bulk-delete', reason: 'rate limited' }]
+      // "bulk" alone is shared; the claim is about the install flow, not the blocked page.
+      const one = groundReport(
+        submitted({
+          citations: [
+            { claim: 'Immich bulk operations run after the initial docker compose install', url: 'https://immich.app/docs/install', confidence: 'high' },
+          ],
+          unverified,
+        }),
+        ledger,
+      )
+      expect(one.citations[0]?.confidence).toBe('high')
+      // Two shared tokens (bulk, delete) name the blocked document itself.
+      const two = degradeClaimsOnUnverifiedSources(
+        [{ claim: 'bulk delete removes assets', url: 'https://immich.app/docs/install', confidence: 'high' }],
+        unverified,
+      )
+      expect(two.kept[0]?.confidence).toBe('low')
+    })
+
+    it('does not lower a claim the model already capped at low', () => {
+      const { kept, degraded } = degradeClaimsOnUnverifiedSources(
+        [{ claim: 'the Module:Items page is stale', url: 'https://mirror.example/Module:Items', confidence: 'low' }],
+        [{ topic: 'Module:Items wiki page', url: 'https://wiki.example/Module:Items' }],
+      )
+      expect(kept[0]?.confidence).toBe('low')
+      expect(degraded.size).toBe(0)
+    })
+
+    it('matches subject tokens from the URL path, not the host', () => {
+      const { kept } = degradeClaimsOnUnverifiedSources(
+        [{ claim: 'Module:Items is stale and unusable', url: 'https://other.example/x', confidence: 'high' }],
+        [{ topic: 'bulk delete docs', url: 'https://wiki.example/Module:Items?action=raw' }],
+      )
+      expect(kept[0]?.confidence).toBe('low')
+    })
+
+    it('does NOT degrade a claim about a document the ledger says was retrieved anyway (issue #1 direction)', () => {
+      const ledger = createLedger()
+      ledger.recordRetrieved('https://www.npmjs.com/package/@modelcontextprotocol/server')
+      const report = groundReport(
+        submitted({
+          citations: [
+            {
+              claim: 'the npm package page shows latest is 2.0.0',
+              url: 'https://www.npmjs.com/package/@modelcontextprotocol/server',
+              confidence: 'high',
+            },
+          ],
+          unverified: [
+            {
+              topic: 'npm package page',
+              url: 'https://www.npmjs.com/package/@modelcontextprotocol/server',
+              reason: "Fetch failed with 'request exceeds the pay-as-you-go limit'",
+            },
+          ],
+        }),
+        ledger,
+      )
+      expect(report.citations[0]?.confidence).toBe('high')
+      expect(report.grounding.confidenceCapped).toBe(0)
+    })
+
+    // The URL gate caps a snippet-backed claim to `medium` and the subject gate then
+    // degrades the SAME claim to `low`. Two passes touched one citation, so the count must
+    // be the union (1), not the sum (2) — `confidenceCapped` describes citations, not passes.
+    it('counts a claim capped AND degraded once, not twice', () => {
+      const ledger = createLedger()
+      ledger.recordSnippet('https://mirror.example/Module:Items?action=raw')
+      ledger.recordFailed('https://wiki.example/Module:Items?action=raw', 'too large to fetch — 121 KB')
+      const report = groundReport(
+        submitted({
+          report: 'The item module is stale.',
+          citations: [
+            {
+              claim: 'the Module:Items page is stale, last edited 2025-09-17',
+              url: 'https://mirror.example/Module:Items?action=raw',
+              confidence: 'high',
+            },
+          ],
+          unverified: [
+            {
+              topic: 'Module:Items wiki page',
+              url: 'https://wiki.example/Module:Items?action=raw',
+              reason: 'too large to fetch — 121 KB',
+            },
+          ],
+        }),
+        ledger,
+      )
+      expect(report.citations).toHaveLength(1)
+      expect(report.citations[0]?.confidence).toBe('low')
+      expect(report.grounding.citationsKept).toBe(1)
+      expect(report.grounding.confidenceCapped).toBe(1)
+    })
+
+    // A subject-matched citation asserts facts about a document the run never read. The
+    // degradation must reach a text-only client that reads ONLY the prose — status flips
+    // and the banner prepends, not just a warnings[] entry.
+    it('flips status to partial and prepends the banner when a subject match degrades a citation', () => {
+      const ledger = createLedger()
+      ledger.recordRetrieved('https://mirror.example/Module:Items?action=raw')
+      ledger.recordFailed('https://wiki.example/Module:Items?action=raw', 'too large to fetch — 121 KB')
+      const report = groundReport(
+        submitted({
+          report: 'The item module is stale and unusable for the current patch.',
+          citations: [
+            {
+              claim: 'the Module:Items page is stale, last edited 2025-09-17',
+              url: 'https://mirror.example/Module:Items?action=raw',
+              confidence: 'high',
+            },
+          ],
+          unverified: [
+            {
+              topic: 'Module:Items wiki page',
+              url: 'https://wiki.example/Module:Items?action=raw',
+              reason: 'too large to fetch — 121 KB',
+            },
+          ],
+        }),
+        ledger,
+      )
+      expect(report.status).toBe('partial')
+      expect(report.report.startsWith('> **Partial result')).toBe(true)
+      expect(report.report).toContain('confidence lowered to match the evidence actually retrieved')
+      expect(report.warnings.some((w) => w.includes('capped at low'))).toBe(true)
+    })
   })
 })
 
