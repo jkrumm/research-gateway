@@ -117,6 +117,24 @@ describe('runFetchChain span events', () => {
     expect(attrOf(events![0]!.attributes, 'ok')).toBe(false)
   })
 
+  it('records a redirect-to-404 as missing against the REDIRECT TARGET, not the requested URL', async () => {
+    // safeFetch follows redirects by hand, so the response the chain sees is the target's.
+    // The 404 says the target does not exist; the requested URL's fate is unknown — a
+    // missing record on it would wrongly ground or drop claims about THAT url.
+    const TARGET = 'https://203.0.113.20/gone'
+    const ledger = createLedger()
+    stubFetch((url) =>
+      url === PAGE
+        ? new Response(null, { status: 302, headers: { location: TARGET } })
+        : new Response('nope', { status: 404 }),
+    )
+
+    await runFetchChain(PAGE, { ledger, renderBaseUrl: RENDER_BASE })
+
+    expect(ledger.tierOf(TARGET)).toBe('missing')
+    expect(ledger.tierOf(PAGE)).toBe('unseen')
+  })
+
   it('emits nothing when the SSRF refusal returns before any attempt was recorded', async () => {
     stubFetch(() => new Response('unreachable', { status: 200 }))
 
