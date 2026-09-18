@@ -261,6 +261,100 @@ describe('resolveConsistencyReview', () => {
       replace: 'The boot line ends at Plated Steelcaps — no enchant follows it in 7.2',
     })
   })
+
+  // ── URL preservation: count, order, and span boundaries ──────────────────────
+  //
+  // The pre-fix check compared URL SETS (membership + size). On a body carrying the same
+  // URL twice, dropping one occurrence left the set unchanged; re-pairing which URL sat in
+  // which slot left set and size both unchanged — both returned corrected:true at b8fbddd3.
+  // Fixtures are ~2k chars because on a short body the anchor-coverage cap refuses these
+  // spans before the URL logic is reached; the hole needed a realistically sized report,
+  // which is why it was live in production and invisible in the original short fixture.
+
+  const URL_A = 'https://example.com/run-data'
+  const URL_B = 'https://example.com/run-analysis'
+
+  // ~2k body whose citation sentence carries URL_A TWICE and whose last line carries
+  // URL_B — a count change on A and an A/B re-pairing are both invisible to a set check.
+  // Leading prose is unique filler so anchors stay unambiguous.
+  const LONG_BODY =
+    'The benchmark harness measured throughput across three separate runs of the same suite. '.repeat(8) +
+    'The first run established the baseline numbers for the whole comparison. '.repeat(8) +
+    'The second and third runs confirmed the baseline held under sustained load. '.repeat(8) +
+    `Full methodology is documented online (${URL_A}), with the raw data alongside it (${URL_A}).\n\n` +
+    `The follow-up analysis is published separately (${URL_B}).`
+
+  it('refuses a span that drops one of two occurrences of a URL — the set check was blind to this', () => {
+    // Pre-fix: the surviving occurrence kept the set at {A, B} and this returned
+    // corrected:true. Now the categorical rule refuses any span carrying a URL.
+    expect(LONG_BODY.length).toBeGreaterThan(1900)
+    const result = resolveConsistencyReview(LONG_BODY, {
+      consistent: false,
+      edits: [{ find: `, with the raw data alongside it (${URL_A})`, replace: '' }],
+    })
+    expect(result).toEqual({ report: LONG_BODY, corrected: false, appliedEdits: [] })
+  })
+
+  it('refuses a span that swaps which URL sits where — set and size unchanged, order changed', () => {
+    // Pre-fix: [A, A, B] -> [B, B, A] keeps the set {A, B} and size 2 — accepted. Now
+    // refused categorically: the span necessarily carries the URLs it re-pairs.
+    const result = resolveConsistencyReview(LONG_BODY, {
+      consistent: false,
+      edits: [
+        {
+          find: `Full methodology is documented online (${URL_A}), with the raw data alongside it (${URL_A}).\n\nThe follow-up analysis is published separately (${URL_B}).`,
+          replace: `Full methodology is documented online (${URL_B}), with the raw data alongside it (${URL_B}).\n\nThe follow-up analysis is published separately (${URL_A}).`,
+        },
+      ],
+    })
+    expect(result).toEqual({ report: LONG_BODY, corrected: false, appliedEdits: [] })
+  })
+
+  it('refuses a span whose find anchor carries a URL — categorical rule fires before application', () => {
+    const result = resolveConsistencyReview(LONG_BODY, {
+      consistent: false,
+      edits: [
+        {
+          find: `Full methodology is documented online (${URL_A})`,
+          replace: 'Full methodology is documented elsewhere',
+        },
+      ],
+    })
+    expect(result).toEqual({ report: LONG_BODY, corrected: false, appliedEdits: [] })
+  })
+
+  it('still accepts a prose edit adjacent to a URL — the categorical rule is not over-broad', () => {
+    const result = resolveConsistencyReview(LONG_BODY, {
+      consistent: false,
+      edits: [
+        {
+          find: 'Full methodology is documented online',
+          replace: 'Full methodology is documented elsewhere online',
+        },
+      ],
+    })
+    expect(result.corrected).toBe(true)
+    expect(result.report).toContain(URL_A)
+    expect(result.report).toContain(URL_B)
+  })
+
+  it('catches a span whose boundary splits a URL mid-host — no complete URL in the span text, so only the sequence check can refuse it', () => {
+    // The span starts INSIDE the first URL, at its `//`: the find text carries no
+    // scheme-complete URL, so the categorical rule lets it through — the exact residual
+    // the ordered-sequence comparison exists for. The splice rewrites the URL's host, and
+    // the byte-identical sequence check refuses the set. This is why that check is NOT
+    // dead code once the categorical rule holds.
+    const result = resolveConsistencyReview(LONG_BODY, {
+      consistent: false,
+      edits: [
+        {
+          find: '//example.com/run-data), with the raw data alongside it',
+          replace: '//example.com/run-data-mirror), with the raw data alongside it',
+        },
+      ],
+    })
+    expect(result).toEqual({ report: LONG_BODY, corrected: false, appliedEdits: [] })
+  })
 })
 
 // ── Schema boundary (test gap 2) ──────────────────────────────────────────────
