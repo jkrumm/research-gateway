@@ -137,35 +137,99 @@ export function resolveSynthesisReport(report: SubmittedReport, digests: WorkerD
 // pure helpers must stay testable without secrets.
 
 export interface ConsistencyResolution {
-  // The report text to carry forward — the corrected text when the reviewer delivered one,
-  // otherwise the original untouched.
+  // The report text to carry forward — the text with the reviewer's spans applied when the
+  // edit set was accepted, otherwise the original untouched.
   report: string
-  // True only when the reviewer actually returned a corrected body that was accepted. Drives
-  // the `consistency.outcome` span attribute, the `research.consistency_gate` span, and the
+  // True only when the reviewer's edit set was accepted and applied. Drives the
+  // `consistency.outcome` span attribute, the `research.consistency_gate` span, and the
   // report's own warning line.
   corrected: boolean
 }
 
+// Defensive cap on the reviewer's edit count. A consistency pass has no plausible use for
+// more than a handful of spans — a body with twenty distinct self-contradictions is a
+// synthesis failure, not something a review pass should be rewriting wholesale. The schema
+// enforces the same bound; this guards the resolver against callers that bypass it.
+const MAX_EDITS = 20
+
+// Growth bound. A contradiction fix rewords a sentence, it does not write paragraphs: any
+// single span more than doubling its own size, or the whole body growing by more than a
+// quarter of its original length, is editorializing (or padding) and refuses the set. The
+// old whole-body contract needed a hard floor because it replaced everything; spans make
+// gross-size surgery unreachable, so this only has to bound the residual latitude.
+const MAX_SPAN_GROWTH = 2
+const MAX_TOTAL_GROWTH = 1.25
+
+// Extracts every URL appearing anywhere in a report body (markdown links, bare URLs,
+// autolinks), for the citation-preservation check below. Deliberately loose — it must not
+// miss a URL the prose carried, because missing one makes an edit set that deleted it look
+// citation-clean.
+const URL_RE = /https?:\/\/[^\s<>()\[\]{}"'`]+/g
+
+function urlsIn(text: string): Set<string> {
+  return new Set(text.match(URL_RE) ?? [])
+}
+
 // Adjudicates the consistency reviewer's submission against the report it reviewed. The
-// reviewer only ever contributes PROSE: a "consistent" verdict is accepted as-is, and a
-// correction is spliced in only when its replacement body is a plausible report — long
-// enough not to be a truncation or an echo, and not materially SHORTER than the original
-// (a rewrite is supposed to resolve contradictions, not delete the sections that contained
-// them). Anything else — no tool call, malformed args, an echoed verdict, a gutted report —
-// falls back to the original text: a flawed report that reaches the caller beats no report.
+// reviewer contributes find/replace SPANS, applied here by exact match — it never re-authors
+// the body, so the whole-report swap a length floor cannot see is structurally impossible.
+// The edit set is all-or-nothing: if ANY span fails to apply, NONE is applied and the
+// original continues unchanged. Partial application could resolve one contradiction while
+// introducing a fresh one, and the caller cannot tell which spans landed — so a set that
+// cannot be applied cleanly in full is treated as a failed review, not a half-success.
 //
-// The floor is generous (a correction is a near-copy of the original plus small rewrites),
-// which is the point: it catches only wholesale loss, not editorial latitude. This does not
-// defend the grounding invariant — citations are untouched here and groundReport re-derives
-// everything downstream regardless.
+// A span is refused when its `find` anchor is absent from the (working) text, occurs more
+// than once (ambiguous — splicing could rewrite the wrong occurrence), is a no-op
+// (`find === replace`), or when applying the whole set would change the set of URLs carried
+// in the prose (citations and their references must survive the review untouched — the
+// reviewer's license is resolving self-contradictions, not re-sourcing the report).
+//
+// Anything else — no tool call, malformed args, an echoed verdict, an over-large edit set —
+// falls back to the original text: a flawed report that reaches the caller beats no report.
+// This does not defend the grounding invariant itself — citations are untouched here and
+// groundReport re-derives everything downstream regardless.
 export function resolveConsistencyReview(
   original: string,
   review: ConsistencyReview | null,
 ): ConsistencyResolution {
   if (!review || review.consistent) return { report: original, corrected: false }
 
-  const corrected = review.report?.trim() ?? ''
-  if (corrected.length < 200) return { report: original, corrected: false }
-  if (corrected.length < original.trim().length * 0.8) return { report: original, corrected: false }
-  return { report: corrected, corrected: true }
+  const edits = review.edits ?? []
+  if (edits.length === 0 || edits.length > MAX_EDITS) {
+    return { report: original, corrected: false }
+  }
+
+  const sourceUrls = urlsIn(original)
+  let working = original
+  for (const edit of edits) {
+    // The anchor must occur EXACTLY once in the CURRENT working text, not the original:
+    // an earlier span's replacement may legitimately have consumed or created later
+    // anchors. Sequential application against working text is the contract the prompt
+    // describes. Spliced by hand rather than via String.replace so `$&`-style patterns in
+    // a replacement are never interpreted — report prose can legitimately contain them.
+    const first = working.indexOf(edit.find)
+    if (first === -1 || working.indexOf(edit.find, first + 1) !== -1) {
+      return { report: original, corrected: false }
+    }
+    if (edit.find === edit.replace) return { report: original, corrected: false }
+    if (edit.replace.length > edit.find.length * MAX_SPAN_GROWTH) {
+      return { report: original, corrected: false }
+    }
+    working = working.slice(0, first) + edit.replace + working.slice(first + edit.find.length)
+  }
+
+  if (working.length > original.length * MAX_TOTAL_GROWTH) {
+    return { report: original, corrected: false }
+  }
+
+  // Citation preservation: the set of URLs in the prose must be identical after the edits.
+  // A reviewer may not re-source the report — dropping a URL strips a citation reference,
+  // adding one invents evidence the run never retrieved.
+  const resultUrls = urlsIn(working)
+  if (resultUrls.size !== sourceUrls.size) return { report: original, corrected: false }
+  for (const url of sourceUrls) {
+    if (!resultUrls.has(url)) return { report: original, corrected: false }
+  }
+
+  return { report: working, corrected: true }
 }

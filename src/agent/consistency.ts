@@ -16,15 +16,16 @@ import { createIdleWatchdog } from '../lib/idle-watchdog.js'
 type AnyTool = Tool<any, any>
 
 // The post-synthesis internal-consistency pass (issue #5): one lead-model call that reads the
-// finished report body back and returns either a clean verdict or a corrected body. No tools,
-// no retrieval — the contradicting statements are already in the text under review, and the
-// field-notes case that motivated this (parallel digests disagreeing inside one report) needs
-// no new evidence to catch.
+// finished report body back and returns either a clean verdict or a set of find/replace
+// spans. No tools, no retrieval — the contradicting statements are already in the text under
+// review, and the field-notes case that motivated this (parallel digests disagreeing inside
+// one report) needs no new evidence to catch.
 //
 // Never throws, like synthesize: a failed or malformed review degrades to the ORIGINAL
 // report — a flawed report that reaches the caller still beats no report, and grounding
-// downstream is unaffected either way. The reviewer contributes prose only; citations,
-// sources and unverified pass through untouched, and groundReport re-derives them after.
+// downstream is unaffected either way. The reviewer contributes find/replace spans only,
+// applied by exact match in resolveConsistencyReview; citations, sources and unverified pass
+// through untouched, and groundReport re-derives them after.
 
 function extractReview(toolCalls: ReadonlyArray<{ toolName: string; input: unknown }>): ConsistencyReviewInput | null {
   const reviewCall = toolCalls.find((c) => c.toolName === 'submit_review')
