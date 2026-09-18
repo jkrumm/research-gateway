@@ -3,6 +3,7 @@
 // the convention documented at the top of `assemble.ts`.
 
 import type { ConsistencyReview, SubmittedReport, WorkerDigest } from './schema.js'
+import type { UsageStats } from '../lib/usage.js'
 
 // Collapse extraction padding (huge whitespace runs Readability/Tavily leave behind in
 // table cells) without destroying document structure. This exact sequence was measured
@@ -144,6 +145,10 @@ export interface ConsistencyResolution {
   // `consistency.outcome` span attribute, the `research.consistency_gate` span, and the
   // report's own warning line.
   corrected: boolean
+  // The find/replace pairs that were applied, and how many, so an accepted edit is never
+  // silent: the caller emits them on the research.consistency span and the consistency.done
+  // log (both empty/0 whenever `corrected` is false).
+  appliedEdits: Array<{ find: string; replace: string }>
 }
 
 // Defensive cap on the reviewer's edit count. A consistency pass has no plausible use for
@@ -159,6 +164,25 @@ const MAX_EDITS = 20
 // gross-size surgery unreachable, so this only has to bound the residual latitude.
 const MAX_SPAN_GROWTH = 2
 const MAX_TOTAL_GROWTH = 1.25
+
+// Anchor bound, measured against the ORIGINAL text — the growth bounds above cap how much
+// a span may ADD, but nothing bounded how much a span may COVER, so a single edit whose
+// `find` is the entire body passed every check and re-authored the report wholesale
+// (measured at 49fd3e60: a 317-char body replaced end to end, `corrected: true`). A
+// legitimate anchor is a contradiction's span plus enough surrounding text to be unique —
+// never a meaningful fraction of the body. Two caps, both enforced:
+//   per-span  `find.length <= min(1200, 0.25 × original length)` — closes the single-anchor
+//             door; 1200 chars is generous headroom over any real contradiction, and the
+//             25%-of-body term keeps the door closed on short bodies where 1200 alone
+//             would re-open it (no absolute floor — a floor on short bodies re-opens the
+//             hole, and over-rejection there degrades benignly to the original);
+//   whole-set `Σ find.length <= 0.35 × original length` — closes the chunked-reassembly
+//             door, where N individually-small spans jointly cover the body. 35% stays
+//             clear of the sum four legitimate 25%-bound spans could theoretically reach
+//             while still allowing several real fixes per pass.
+const MAX_ANCHOR_CHARS = 1200
+const MAX_ANCHOR_COVERAGE = 0.25
+const MAX_SET_COVERAGE = 0.35
 
 // Extracts every URL appearing anywhere in a report body (markdown links, bare URLs,
 // autolinks), for the citation-preservation check below. Deliberately loose — it must not
@@ -180,9 +204,10 @@ function urlsIn(text: string): Set<string> {
 //
 // A span is refused when its `find` anchor is absent from the (working) text, occurs more
 // than once (ambiguous — splicing could rewrite the wrong occurrence), is a no-op
-// (`find === replace`), or when applying the whole set would change the set of URLs carried
-// in the prose (citations and their references must survive the review untouched — the
-// reviewer's license is resolving self-contradictions, not re-sourcing the report).
+// (`find === replace`), is over-large for the body it is editing (see the anchor bounds
+// above), or when applying the whole set would change the set of URLs carried in the prose
+// (citations and their references must survive the review untouched — the reviewer's
+// license is resolving self-contradictions, not re-sourcing the report).
 //
 // Anything else — no tool call, malformed args, an echoed verdict, an over-large edit set —
 // falls back to the original text: a flawed report that reaches the caller beats no report.
@@ -192,16 +217,28 @@ export function resolveConsistencyReview(
   original: string,
   review: ConsistencyReview | null,
 ): ConsistencyResolution {
-  if (!review || review.consistent) return { report: original, corrected: false }
+  if (!review || review.consistent)
+    return { report: original, corrected: false, appliedEdits: [] }
 
   const edits = review.edits ?? []
   if (edits.length === 0 || edits.length > MAX_EDITS) {
-    return { report: original, corrected: false }
+    return { report: original, corrected: false, appliedEdits: [] }
   }
+
+  // Both anchor caps measure against the ORIGINAL, before any span applies — coverage is a
+  // property of the text under review, not of the half-edited working copy.
+  const maxAnchor = Math.min(MAX_ANCHOR_CHARS, MAX_ANCHOR_COVERAGE * original.length)
+  const maxSet = MAX_SET_COVERAGE * original.length
+  let setAnchorChars = 0
 
   const sourceUrls = urlsIn(original)
   let working = original
+  const appliedEdits: Array<{ find: string; replace: string }> = []
   for (const edit of edits) {
+    if (edit.find.length > maxAnchor) return { report: original, corrected: false, appliedEdits: [] }
+    setAnchorChars += edit.find.length
+    if (setAnchorChars > maxSet) return { report: original, corrected: false, appliedEdits: [] }
+
     // The anchor must occur EXACTLY once in the CURRENT working text, not the original:
     // an earlier span's replacement may legitimately have consumed or created later
     // anchors. Sequential application against working text is the contract the prompt
@@ -209,27 +246,85 @@ export function resolveConsistencyReview(
     // a replacement are never interpreted — report prose can legitimately contain them.
     const first = working.indexOf(edit.find)
     if (first === -1 || working.indexOf(edit.find, first + 1) !== -1) {
-      return { report: original, corrected: false }
+      return { report: original, corrected: false, appliedEdits: [] }
     }
-    if (edit.find === edit.replace) return { report: original, corrected: false }
+    if (edit.find === edit.replace)
+      return { report: original, corrected: false, appliedEdits: [] }
     if (edit.replace.length > edit.find.length * MAX_SPAN_GROWTH) {
-      return { report: original, corrected: false }
+      return { report: original, corrected: false, appliedEdits: [] }
     }
     working = working.slice(0, first) + edit.replace + working.slice(first + edit.find.length)
+    appliedEdits.push(edit)
   }
 
   if (working.length > original.length * MAX_TOTAL_GROWTH) {
-    return { report: original, corrected: false }
+    return { report: original, corrected: false, appliedEdits: [] }
   }
 
   // Citation preservation: the set of URLs in the prose must be identical after the edits.
   // A reviewer may not re-source the report — dropping a URL strips a citation reference,
   // adding one invents evidence the run never retrieved.
   const resultUrls = urlsIn(working)
-  if (resultUrls.size !== sourceUrls.size) return { report: original, corrected: false }
+  if (resultUrls.size !== sourceUrls.size) return { report: original, corrected: false, appliedEdits: [] }
   for (const url of sourceUrls) {
-    if (!resultUrls.has(url)) return { report: original, corrected: false }
+    if (!resultUrls.has(url)) return { report: original, corrected: false, appliedEdits: [] }
   }
 
-  return { report: working, corrected: true }
+  return { report: working, corrected: true, appliedEdits }
+}
+
+// ── Consistency-gate bookkeeping (issue #16 follow-up) ────────────────────────
+//
+// The gate-time bookkeeping run.ts does around the consistency pass — the lead-usage fold
+// and the corrected/edits bookkeeping — factored out of run.ts so it is unit-testable here,
+// env-free like everything else in this module (run.ts's own import chain boots env.js;
+// run.test.ts's convention imports these helpers instead). Pure: takes the pieces, returns
+// the pieces — no env, no span, no logger.
+//
+// The consistency WARNING itself is NOT merged here: the gate runs before groundReport, so
+// grounded.warnings does not exist yet and appending the consistency line now would drop the
+// evidence warnings at report assembly. run.ts merges CONSISTENCY_WARNING into
+// grounded.warnings after grounding, exactly as it did before this helper existed.
+//
+// UsageStats comes in as a type-only import and the fold is inlined field-by-field, same
+// as round.ts: lib/usage.js re-exports from a module that imports env.js at the top, and
+// pulling that in would silently break this module's env-free premise.
+
+// The warning run.ts appends to the public report when the review pass rewrote the body —
+// so a caller learns the prose it is reading is a second draft. Lives beside the resolver
+// so the text and the condition that triggers it cannot drift apart.
+export const CONSISTENCY_WARNING =
+  'An internal-consistency review found self-contradictions in the report prose and rewrote the affected passages; the citations were not changed by that pass.'
+
+export interface ConsistencyGateResult {
+  corrected: boolean
+  // Applied span count — zeroed when corrected is false, so corrected:true with zero
+  // details is never indistinguishable from a silent rewrite in a trace.
+  edits: number
+  // The lead bucket with the review pass's usage folded in.
+  leadUsage: UsageStats
+}
+
+export function applyConsistencyGate(args: {
+  // What the review pass returned (the awaited result of reviewConsistency). The report
+  // text is not carried here — the resolver returns the original untouched on every
+  // rejection path, so review.report is always the text to carry forward.
+  review: { corrected: boolean; appliedEdits: Array<{ find: string; replace: string }>; usage: UsageStats }
+  // The lead bucket accumulated so far (plan + synthesis), before this pass.
+  leadUsage: UsageStats
+}): ConsistencyGateResult {
+  const { review, leadUsage } = args
+  const u = review.usage
+  return {
+    corrected: review.corrected,
+    edits: review.corrected ? review.appliedEdits.length : 0,
+    leadUsage: {
+      inputTokens: leadUsage.inputTokens + u.inputTokens,
+      outputTokens: leadUsage.outputTokens + u.outputTokens,
+      totalTokens: leadUsage.totalTokens + u.totalTokens,
+      reasoningTokens: leadUsage.reasoningTokens + u.reasoningTokens,
+      cachedInputTokens: leadUsage.cachedInputTokens + u.cachedInputTokens,
+      durationMs: leadUsage.durationMs + u.durationMs,
+    },
+  }
 }

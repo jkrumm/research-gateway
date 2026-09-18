@@ -2,7 +2,8 @@ import { describe, it, expect } from 'bun:test'
 // Imported from `extract.ts` directly, NOT `consistency.ts` — the review pass's import graph
 // (llm.ts) pulls in `env.ts`, which parses `process.env` at import time and throws without
 // secrets. Same convention as run.test.ts importing from `assemble.ts`.
-import { resolveConsistencyReview } from './extract.js'
+import { resolveConsistencyReview, applyConsistencyGate, CONSISTENCY_WARNING } from './extract.js'
+import { ConsistencyReview } from './schema.js'
 
 const SOURCE_URL = 'https://example.com/patch-notes'
 const OTHER_URL = 'https://example.com/build-guide'
@@ -21,11 +22,11 @@ const ORIGINAL =
 describe('resolveConsistencyReview', () => {
   it('returns the original untouched when the reviewer finds no contradiction', () => {
     const result = resolveConsistencyReview(ORIGINAL, { consistent: true })
-    expect(result).toEqual({ report: ORIGINAL, corrected: false })
+    expect(result).toEqual({ report: ORIGINAL, corrected: false, appliedEdits: [] })
   })
 
   it('returns the original when no review arrived (no tool call)', () => {
-    expect(resolveConsistencyReview(ORIGINAL, null)).toEqual({ report: ORIGINAL, corrected: false })
+    expect(resolveConsistencyReview(ORIGINAL, null)).toEqual({ report: ORIGINAL, corrected: false, appliedEdits: [] })
   })
 
   it('accepts a legitimate one-span correction', () => {
@@ -78,7 +79,7 @@ describe('resolveConsistencyReview', () => {
         },
       ],
     })
-    expect(swap).toEqual({ report: ORIGINAL, corrected: false })
+    expect(swap).toEqual({ report: ORIGINAL, corrected: false, appliedEdits: [] })
   })
 
   it('rejects a span whose replacement drops a URL from the prose', () => {
@@ -91,7 +92,7 @@ describe('resolveConsistencyReview', () => {
         },
       ],
     })
-    expect(result).toEqual({ report: ORIGINAL, corrected: false })
+    expect(result).toEqual({ report: ORIGINAL, corrected: false, appliedEdits: [] })
   })
 
   it('rejects padding — spans cannot inflate the body, only restate spans', () => {
@@ -108,12 +109,12 @@ describe('resolveConsistencyReview', () => {
         },
       ],
     })
-    expect(bloated).toEqual({ report: ORIGINAL, corrected: false })
+    expect(bloated).toEqual({ report: ORIGINAL, corrected: false, appliedEdits: [] })
   })
 
   it('falls back to the original when consistent is false but no edits came back', () => {
     const result = resolveConsistencyReview(ORIGINAL, { consistent: false })
-    expect(result).toEqual({ report: ORIGINAL, corrected: false })
+    expect(result).toEqual({ report: ORIGINAL, corrected: false, appliedEdits: [] })
   })
 
   it('falls back to the original when an anchor is absent — a hallucinated span', () => {
@@ -121,7 +122,7 @@ describe('resolveConsistencyReview', () => {
       consistent: false,
       edits: [{ find: 'This sentence does not appear anywhere in the report', replace: 'Whatever' }],
     })
-    expect(result).toEqual({ report: ORIGINAL, corrected: false })
+    expect(result).toEqual({ report: ORIGINAL, corrected: false, appliedEdits: [] })
   })
 
   it('falls back to the original when an anchor occurs more than once — ambiguous', () => {
@@ -134,7 +135,7 @@ describe('resolveConsistencyReview', () => {
         },
       ],
     })
-    expect(result).toEqual({ report: ORIGINAL + '\n\n' + ORIGINAL, corrected: false })
+    expect(result).toEqual({ report: ORIGINAL + '\n\n' + ORIGINAL, corrected: false, appliedEdits: [] })
   })
 
   it('falls back to the original when a span is a no-op', () => {
@@ -147,7 +148,7 @@ describe('resolveConsistencyReview', () => {
         },
       ],
     })
-    expect(result).toEqual({ report: ORIGINAL, corrected: false })
+    expect(result).toEqual({ report: ORIGINAL, corrected: false, appliedEdits: [] })
   })
 
   it('falls back to the original when any one span is bad — all-or-nothing, not partial', () => {
@@ -162,12 +163,12 @@ describe('resolveConsistencyReview', () => {
         { find: 'Still no such sentence', replace: 'Whatever' },
       ],
     })
-    expect(result).toEqual({ report: ORIGINAL, corrected: false })
+    expect(result).toEqual({ report: ORIGINAL, corrected: false, appliedEdits: [] })
   })
 
   it('falls back to the original when the edit set is empty', () => {
     const result = resolveConsistencyReview(ORIGINAL, { consistent: false, edits: [] })
-    expect(result).toEqual({ report: ORIGINAL, corrected: false })
+    expect(result).toEqual({ report: ORIGINAL, corrected: false, appliedEdits: [] })
   })
 
   it('inserts a replacement containing $& literally — no replace-pattern interpretation', () => {
@@ -183,5 +184,177 @@ describe('resolveConsistencyReview', () => {
     expect(result.corrected).toBe(true)
     expect(result.report).toContain('$& is matched literally here')
     expect(result.report).not.toContain('entirely ($&')
+  })
+  // ── Anchor bounds (issue #16 follow-up) ────────────────────────────────────
+  //
+  // Growth bounds cap how much a span may ADD; nothing bounded how much a span may COVER,
+  // so a single edit whose find was the entire body passed every check and re-authored the
+  // report wholesale. Both caps below measure against the ORIGINAL text.
+
+  it('rejects a single edit whose find is the ENTIRE body — the whole-body anchor bypass', () => {
+    // Reproduced at 49fd3e60: unique anchor, both URLs kept verbatim, growth within bounds —
+    // and the report was nonetheless replaced wholesale with unrelated prose.
+    const replace =
+      'Wholesale rewritten body that agrees with itself. '.repeat(7) +
+      ` (${SOURCE_URL}) (${OTHER_URL})`
+    const result = resolveConsistencyReview(ORIGINAL, {
+      consistent: false,
+      edits: [{ find: ORIGINAL, replace }],
+    })
+    expect(result).toEqual({ report: ORIGINAL, corrected: false, appliedEdits: [] })
+  })
+
+  it('rejects chunked reassembly — N individually-small spans jointly covering the body', () => {
+    // The 2-span companion to the whole-body anchor: each span under the per-span cap, but
+    // Σfind over the set cap. Chunks are cut small enough to stay unique in ORIGINAL.
+    const chunk = ORIGINAL.slice(0, Math.floor(ORIGINAL.length * 0.3))
+    const rest = ORIGINAL.slice(Math.floor(ORIGINAL.length * 0.5), Math.floor(ORIGINAL.length * 0.8))
+    const result = resolveConsistencyReview(ORIGINAL, {
+      consistent: false,
+      edits: [
+        { find: chunk, replace: 'R'.repeat(chunk.length) },
+        { find: rest, replace: 'R'.repeat(rest.length) },
+      ],
+    })
+    expect(result).toEqual({ report: ORIGINAL, corrected: false, appliedEdits: [] })
+  })
+
+  it('still accepts a 75-char fix on a 2k-char body — the caps do not choke real edits', () => {
+    const long =
+      'The benchmark harness measured throughput across three runs. '.repeat(30) +
+      'Patch 7.2 removed boot enchantments entirely, so the boot line ends at tier-2 upgrades.\n\n' +
+      `See the official notes (${SOURCE_URL}) for the full removal list.\n\n` +
+      `Plated Steelcaps into the Gargoyle Enchant remains the standard tank line (${OTHER_URL}).`
+    expect(long.length).toBeGreaterThan(2000)
+    const result = resolveConsistencyReview(long, {
+      consistent: false,
+      edits: [
+        {
+          find: 'Patch 7.2 removed boot enchantments entirely',
+          replace: 'Patch 7.2 removed boot enchantments and their upgrade path',
+        },
+      ],
+    })
+    expect(result.corrected).toBe(true)
+    expect(result.appliedEdits).toHaveLength(1)
+    expect(result.appliedEdits[0]?.find).toBe('Patch 7.2 removed boot enchantments entirely')
+  })
+
+  it('carries the applied spans out on the resolution — an accepted edit is never silent', () => {
+    const result = resolveConsistencyReview(ORIGINAL, {
+      consistent: false,
+      edits: [
+        {
+          find: 'Plated Steelcaps into the Gargoyle Enchant remains the standard tank line',
+          replace: 'The boot line ends at Plated Steelcaps — no enchant follows it in 7.2',
+        },
+        {
+          find: 'Patch 7.2 removed boot enchantments entirely',
+          replace: 'Patch 7.2 removed boot enchantments and their upgrade path',
+        },
+      ],
+    })
+    expect(result.corrected).toBe(true)
+    expect(result.appliedEdits).toHaveLength(2)
+    expect(result.appliedEdits[0]).toEqual({
+      find: 'Plated Steelcaps into the Gargoyle Enchant remains the standard tank line',
+      replace: 'The boot line ends at Plated Steelcaps — no enchant follows it in 7.2',
+    })
+  })
+})
+
+// ── Schema boundary (test gap 2) ──────────────────────────────────────────────
+//
+// The schema is the boundary a real `submit_review` tool call actually passes through
+// (consistency.ts's extractReview safeParses against it); the resolver's own MAX_EDITS guard
+// only defends against callers that bypass it. Pins the .max(20) so a schema loosening fails
+// a test here and not in production.
+
+describe('ConsistencyReview schema', () => {
+  const validEdit = { find: 'a sentence', replace: 'another sentence' }
+
+  it('accepts exactly 20 edits', () => {
+    const parsed = ConsistencyReview.safeParse({ consistent: false, edits: Array(20).fill(validEdit) })
+    expect(parsed.success).toBe(true)
+  })
+
+  it('rejects 21 edits', () => {
+    const parsed = ConsistencyReview.safeParse({ consistent: false, edits: Array(21).fill(validEdit) })
+    expect(parsed.success).toBe(false)
+  })
+
+  it('accepts edits omitted entirely and treats it the same as an empty array downstream', () => {
+    const omitted = ConsistencyReview.safeParse({ consistent: false })
+    expect(omitted.success).toBe(true)
+    expect((omitted.data?.edits ?? []).length).toBe(0)
+    // Same shape the resolver sees from an explicit empty array — resolved identically.
+    expect(resolveConsistencyReview(ORIGINAL, omitted.data ?? null)).toEqual(
+      resolveConsistencyReview(ORIGINAL, { consistent: false, edits: [] }),
+    )
+  })
+
+  it('rejects an edit with an empty find', () => {
+    const parsed = ConsistencyReview.safeParse({ consistent: false, edits: [{ find: '', replace: 'x' }] })
+    expect(parsed.success).toBe(false)
+  })
+})
+
+// ── applyConsistencyGate (test gap 3) ─────────────────────────────────────────
+//
+// The gate's merge/attribute logic, factored out of run.ts into env-free extract.ts per the
+// run.test.ts convention (run.ts's import chain boots env.js, so its wiring is untestable
+// directly). These pin the merge contract run.ts depends on: usage fold, warning append,
+// edits count zeroed on a clean review.
+
+describe('applyConsistencyGate', () => {
+  const leadUsage = {
+    inputTokens: 100,
+    outputTokens: 50,
+    totalTokens: 150,
+    reasoningTokens: 10,
+    cachedInputTokens: 20,
+    durationMs: 500,
+  }
+  const reviewUsage = {
+    inputTokens: 7,
+    outputTokens: 3,
+    totalTokens: 10,
+    reasoningTokens: 1,
+    cachedInputTokens: 2,
+    durationMs: 25,
+  }
+
+  it('folds the review pass usage into the lead bucket', () => {
+    const gate = applyConsistencyGate({
+      review: { corrected: true, appliedEdits: [{ find: 'a', replace: 'b' }], usage: reviewUsage },
+      leadUsage,
+    })
+    expect(gate.leadUsage).toEqual({
+      inputTokens: 107,
+      outputTokens: 53,
+      totalTokens: 160,
+      reasoningTokens: 11,
+      cachedInputTokens: 22,
+      durationMs: 525,
+    })
+  })
+
+  it('reports corrected:true and the applied count when the pass rewrote the body', () => {
+    const gate = applyConsistencyGate({
+      review: { corrected: true, appliedEdits: [{ find: 'a', replace: 'b' }, { find: 'c', replace: 'd' }], usage: reviewUsage },
+      leadUsage,
+    })
+    expect(gate.corrected).toBe(true)
+    expect(gate.edits).toBe(2)
+  })
+
+  it('zeroes the edit count when the review found nothing — but usage still folds in', () => {
+    const gate = applyConsistencyGate({
+      review: { corrected: false, appliedEdits: [], usage: reviewUsage },
+      leadUsage,
+    })
+    expect(gate.corrected).toBe(false)
+    expect(gate.edits).toBe(0)
+    expect(gate.leadUsage.inputTokens).toBe(107)
   })
 })

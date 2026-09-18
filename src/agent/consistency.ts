@@ -5,6 +5,7 @@ import { consistencyPrompt } from './prompt.js'
 import { ConsistencyReview } from './schema.js'
 import type { ConsistencyReview as ConsistencyReviewInput } from './schema.js'
 import { resolveConsistencyReview } from './extract.js'
+import type { ConsistencyResolution } from './extract.js'
 import { log } from '../lib/log.js'
 import { withSpan } from '../lib/otel.js'
 import { env } from '../env.js'
@@ -34,10 +35,18 @@ function extractReview(toolCalls: ReadonlyArray<{ toolName: string; input: unkno
   return parsed.success ? parsed.data : null
 }
 
+// One line per applied span, bounded — long enough to recognize the passage in a trace,
+// short enough that a HyperDX row stays a row.
+const SPAN_SNIPPET_CHARS = 120
+
+function truncateForSpan(text: string): string {
+  return text.length <= SPAN_SNIPPET_CHARS ? text : `${text.slice(0, SPAN_SNIPPET_CHARS)}…`
+}
+
 export async function reviewConsistency(args: {
   report: string
   jobId: string
-}): Promise<{ report: string; corrected: boolean; usage: UsageStats }> {
+}): Promise<{ report: string; corrected: boolean; appliedEdits: ConsistencyResolution['appliedEdits']; usage: UsageStats }> {
   const { report, jobId } = args
   const start = Date.now()
 
@@ -71,15 +80,27 @@ export async function reviewConsistency(args: {
 
         const usage = toUsageStats(result.usage, Date.now() - start)
         const resolution = resolveConsistencyReview(report, extractReview(result.toolCalls))
+        // An accepted edit is never silent: the spans land on the span and the done log,
+        // where the trace can show exactly what the review pass changed in the body.
+        // Truncated per span — observability, not a changelog; the full text is the report.
+        const applied = resolution.appliedEdits.map(
+          (e) => `${truncateForSpan(e.find)} -> ${truncateForSpan(e.replace)}`,
+        )
         span.setAttributes({
           'llm.output_tokens': usage.outputTokens,
           'consistency.outcome': resolution.corrected ? 'corrected' : 'consistent',
+          'consistency.edits': resolution.appliedEdits.length,
+          // Span attributes are scalar-only (SpanAttributes in otel.ts), so the list goes
+          // out JSON-encoded; the log path stringifies arrays itself.
+          'consistency.applied': JSON.stringify(applied),
         })
         log('consistency.done', {
           jobId,
           ms: Date.now() - start,
           outputTokens: usage.outputTokens,
           corrected: resolution.corrected,
+          edits: resolution.appliedEdits.length,
+          applied,
         })
         return { ...resolution, usage }
       } catch (err) {
@@ -89,7 +110,12 @@ export async function reviewConsistency(args: {
         span.setAttributes({ 'consistency.outcome': 'failed' })
         span.setStatus('error', String(err).slice(0, 300))
         log('consistency.failed', { jobId, error: String(err) })
-        return { report, corrected: false, usage: { ...emptyUsage(), durationMs: Date.now() - start } }
+        return {
+          report,
+          corrected: false,
+          appliedEdits: [],
+          usage: { ...emptyUsage(), durationMs: Date.now() - start },
+        }
       } finally {
         idle.clear()
       }
