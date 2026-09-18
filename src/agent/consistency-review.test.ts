@@ -2,7 +2,7 @@ import { describe, it, expect } from 'bun:test'
 // Imported from `extract.ts` directly, NOT `consistency.ts` — the review pass's import graph
 // (llm.ts) pulls in `env.ts`, which parses `process.env` at import time and throws without
 // secrets. Same convention as run.test.ts importing from `assemble.ts`.
-import { resolveConsistencyReview, applyConsistencyGate, CONSISTENCY_WARNING, urlsIn } from './extract.js'
+import { resolveConsistencyReview, applyConsistencyGate, CONSISTENCY_WARNING, citationTokensIn } from './extract.js'
 import { ConsistencyReview } from './schema.js'
 
 const SOURCE_URL = 'https://example.com/patch-notes'
@@ -22,11 +22,11 @@ const ORIGINAL =
 describe('resolveConsistencyReview', () => {
   it('returns the original untouched when the reviewer finds no contradiction', () => {
     const result = resolveConsistencyReview(ORIGINAL, { consistent: true })
-    expect(result).toEqual({ report: ORIGINAL, corrected: false, appliedEdits: [] })
+    expect(result).toEqual({ report: ORIGINAL, corrected: false, appliedEdits: [], vetoed: false })
   })
 
   it('returns the original when no review arrived (no tool call)', () => {
-    expect(resolveConsistencyReview(ORIGINAL, null)).toEqual({ report: ORIGINAL, corrected: false, appliedEdits: [] })
+    expect(resolveConsistencyReview(ORIGINAL, null)).toEqual({ report: ORIGINAL, corrected: false, appliedEdits: [], vetoed: false })
   })
 
   it('accepts a legitimate one-span correction', () => {
@@ -79,7 +79,9 @@ describe('resolveConsistencyReview', () => {
         },
       ],
     })
-    expect(swap).toEqual({ report: ORIGINAL, corrected: false, appliedEdits: [] })
+    // The replace carries a URL token — a citation veto under the token grammar, not a
+    // mere set mismatch.
+    expect(swap).toEqual({ report: ORIGINAL, corrected: false, appliedEdits: [], vetoed: true })
   })
 
   it('rejects a span whose replacement drops a URL from the prose', () => {
@@ -92,7 +94,8 @@ describe('resolveConsistencyReview', () => {
         },
       ],
     })
-    expect(result).toEqual({ report: ORIGINAL, corrected: false, appliedEdits: [] })
+    // The find anchor carries a URL token — categorical citation veto.
+    expect(result).toEqual({ report: ORIGINAL, corrected: false, appliedEdits: [], vetoed: true })
   })
 
   it('rejects padding — spans cannot inflate the body, only restate spans', () => {
@@ -109,12 +112,14 @@ describe('resolveConsistencyReview', () => {
         },
       ],
     })
-    expect(bloated).toEqual({ report: ORIGINAL, corrected: false, appliedEdits: [] })
+    // The replace carries a URL token — categorical citation veto (the growth cap would
+    // also refuse this set, but the veto fires first in the loop).
+    expect(bloated).toEqual({ report: ORIGINAL, corrected: false, appliedEdits: [], vetoed: true })
   })
 
   it('falls back to the original when consistent is false but no edits came back', () => {
     const result = resolveConsistencyReview(ORIGINAL, { consistent: false })
-    expect(result).toEqual({ report: ORIGINAL, corrected: false, appliedEdits: [] })
+    expect(result).toEqual({ report: ORIGINAL, corrected: false, appliedEdits: [], vetoed: false })
   })
 
   it('falls back to the original when an anchor is absent — a hallucinated span', () => {
@@ -122,7 +127,7 @@ describe('resolveConsistencyReview', () => {
       consistent: false,
       edits: [{ find: 'This sentence does not appear anywhere in the report', replace: 'Whatever' }],
     })
-    expect(result).toEqual({ report: ORIGINAL, corrected: false, appliedEdits: [] })
+    expect(result).toEqual({ report: ORIGINAL, corrected: false, appliedEdits: [], vetoed: false })
   })
 
   it('falls back to the original when an anchor occurs more than once — ambiguous', () => {
@@ -135,7 +140,7 @@ describe('resolveConsistencyReview', () => {
         },
       ],
     })
-    expect(result).toEqual({ report: ORIGINAL + '\n\n' + ORIGINAL, corrected: false, appliedEdits: [] })
+    expect(result).toEqual({ report: ORIGINAL + '\n\n' + ORIGINAL, corrected: false, appliedEdits: [], vetoed: false })
   })
 
   it('falls back to the original when a span is a no-op', () => {
@@ -148,7 +153,7 @@ describe('resolveConsistencyReview', () => {
         },
       ],
     })
-    expect(result).toEqual({ report: ORIGINAL, corrected: false, appliedEdits: [] })
+    expect(result).toEqual({ report: ORIGINAL, corrected: false, appliedEdits: [], vetoed: false })
   })
 
   it('falls back to the original when any one span is bad — all-or-nothing, not partial', () => {
@@ -163,12 +168,12 @@ describe('resolveConsistencyReview', () => {
         { find: 'Still no such sentence', replace: 'Whatever' },
       ],
     })
-    expect(result).toEqual({ report: ORIGINAL, corrected: false, appliedEdits: [] })
+    expect(result).toEqual({ report: ORIGINAL, corrected: false, appliedEdits: [], vetoed: false })
   })
 
   it('falls back to the original when the edit set is empty', () => {
     const result = resolveConsistencyReview(ORIGINAL, { consistent: false, edits: [] })
-    expect(result).toEqual({ report: ORIGINAL, corrected: false, appliedEdits: [] })
+    expect(result).toEqual({ report: ORIGINAL, corrected: false, appliedEdits: [], vetoed: false })
   })
 
   it('inserts a replacement containing $& literally — no replace-pattern interpretation', () => {
@@ -201,7 +206,7 @@ describe('resolveConsistencyReview', () => {
       consistent: false,
       edits: [{ find: ORIGINAL, replace }],
     })
-    expect(result).toEqual({ report: ORIGINAL, corrected: false, appliedEdits: [] })
+    expect(result).toEqual({ report: ORIGINAL, corrected: false, appliedEdits: [], vetoed: false })
   })
 
   it('rejects chunked reassembly — N individually-small spans jointly covering the body', () => {
@@ -216,7 +221,7 @@ describe('resolveConsistencyReview', () => {
         { find: rest, replace: 'R'.repeat(rest.length) },
       ],
     })
-    expect(result).toEqual({ report: ORIGINAL, corrected: false, appliedEdits: [] })
+    expect(result).toEqual({ report: ORIGINAL, corrected: false, appliedEdits: [], vetoed: false })
   })
 
   it('still accepts a 75-char fix on a 2k-char body — the caps do not choke real edits', () => {
@@ -292,7 +297,7 @@ describe('resolveConsistencyReview', () => {
       consistent: false,
       edits: [{ find: `, with the raw data alongside it (${URL_A})`, replace: '' }],
     })
-    expect(result).toEqual({ report: LONG_BODY, corrected: false, appliedEdits: [] })
+    expect(result).toEqual({ report: LONG_BODY, corrected: false, appliedEdits: [], vetoed: true })
   })
 
   it('refuses a span that swaps which URL sits where — set and size unchanged, order changed', () => {
@@ -307,7 +312,7 @@ describe('resolveConsistencyReview', () => {
         },
       ],
     })
-    expect(result).toEqual({ report: LONG_BODY, corrected: false, appliedEdits: [] })
+    expect(result).toEqual({ report: LONG_BODY, corrected: false, appliedEdits: [], vetoed: true })
   })
 
   it('refuses a span whose find anchor carries a URL — categorical rule fires before application', () => {
@@ -320,7 +325,7 @@ describe('resolveConsistencyReview', () => {
         },
       ],
     })
-    expect(result).toEqual({ report: LONG_BODY, corrected: false, appliedEdits: [] })
+    expect(result).toEqual({ report: LONG_BODY, corrected: false, appliedEdits: [], vetoed: true })
   })
 
   it('still accepts a prose edit adjacent to a URL — the categorical rule is not over-broad', () => {
@@ -353,7 +358,7 @@ describe('resolveConsistencyReview', () => {
         },
       ],
     })
-    expect(result).toEqual({ report: LONG_BODY, corrected: false, appliedEdits: [] })
+    expect(result).toEqual({ report: LONG_BODY, corrected: false, appliedEdits: [], vetoed: true })
   })
 
   // ── Paren-aware URL extraction ─────────────────────────────────────────────
@@ -366,23 +371,23 @@ describe('resolveConsistencyReview', () => {
   // ')' while they outnumber '('.
 
   it('extracts a balanced-paren path whole — Foo_(bar) is one URL, not Foo_', () => {
-    expect(urlsIn('see https://en.wikipedia.org/wiki/Foo_(bar) for details')).toEqual([
+    expect(citationTokensIn('see https://en.wikipedia.org/wiki/Foo_(bar) for details').map((t) => t.text)).toEqual([
       'https://en.wikipedia.org/wiki/Foo_(bar)',
     ])
   })
 
   it('extracts nested balanced parens whole — a_(b_(c)) survives both levels', () => {
-    expect(urlsIn('https://ex.example/a_(b_(c))')).toEqual(['https://ex.example/a_(b_(c))'])
+    expect(citationTokensIn('https://ex.example/a_(b_(c))').map((t) => t.text)).toEqual(['https://ex.example/a_(b_(c))'])
   })
 
   it('does not swallow the trailing prose paren after a bare URL', () => {
     // "see https://x.example/a)" — the ')' is prose, the URL has none, so the trim peels it.
-    expect(urlsIn('see https://x.example/a)')).toEqual(['https://x.example/a'])
+    expect(citationTokensIn('see https://x.example/a)').map((t) => t.text)).toEqual(['https://x.example/a'])
   })
 
   it('stops a bare URL at whitespace like before — parens do not make the scan greedy across prose', () => {
-    expect(urlsIn('(https://ex.example/r_(s)) end')).toEqual(['https://ex.example/r_(s)'])
-    expect(urlsIn('plain https://ex.example/no-parens, then prose')).toEqual([
+    expect(citationTokensIn('(https://ex.example/r_(s)) end').map((t) => t.text)).toEqual(['https://ex.example/r_(s)'])
+    expect(citationTokensIn('plain https://ex.example/no-parens, then prose').map((t) => t.text)).toEqual([
       'https://ex.example/no-parens,',
     ])
   })
@@ -404,7 +409,7 @@ describe('resolveConsistencyReview', () => {
       consistent: false,
       edits: [{ find: '(bar)', replace: '(baz)' }],
     })
-    expect(result).toEqual({ report: PAREN_BODY, corrected: false, appliedEdits: [] })
+    expect(result).toEqual({ report: PAREN_BODY, corrected: false, appliedEdits: [], vetoed: true })
   })
 
   it('refuses a bare (bar)-bearing span too — sequence comparison, not the categorical rule, is the layer that fires', () => {
@@ -422,7 +427,149 @@ describe('resolveConsistencyReview', () => {
       consistent: false,
       edits: [{ find: '(bar)) in detail', replace: '(baz)) in detail' }],
     })
-    expect(result).toEqual({ report: PAREN_BODY, corrected: false, appliedEdits: [] })
+    expect(result).toEqual({ report: PAREN_BODY, corrected: false, appliedEdits: [], vetoed: true })
+  })
+
+  // ── Non-URL citation markers (round 5) ─────────────────────────────────────
+  //
+  // The pre-token-grammar resolver protected only URL strings: [^source-a]→[^source-b],
+  // [census-2021]→[census-2011], [1]→[2] and bare marker deletion all returned
+  // corrected:true on a ~5k body (the anchor cap min(1200, 0.25×len) refuses nothing
+  // there) — while prompt.ts:151-152 promises citations and their markdown references
+  // survive the review exactly as given. The token grammar closes the class: every
+  // citation-bearing token (markers, labels, destinations, autolinks, definition lines,
+  // URLs) is untouchable, by range intersection AND by byte-for-byte sequence. Each
+  // fixture below is ≥4.8k chars with every anchor unique, and each refusal was shown
+  // ACCEPTED by the pre-fix resolver.
+
+  const R5_FILLER_A = 'The benchmark harness measured throughput across three separate runs of the same suite. '.repeat(28)
+  const R5_FILLER_B = 'The follow-up analysis revisits each assumption of the baseline in turn. '.repeat(28)
+
+  // ~5k body carrying one marker of every non-URL shape, each exactly once (the resolver
+  // refuses ambiguous anchors, so duplicates would corrupt the fixtures' meaning).
+  const R5_BODY =
+    R5_FILLER_A +
+    'The cohort tables were rebuilt from the census extract[^source-a] after the merge.\n\n' +
+    'Migration flows follow the census label [census-2021] as printed in the appendix.\n\n' +
+    'The national ranking table[1] confirms the trend for every region.\n\n' +
+    'The raw sheet is referenced at //mirror.example/notes for auditors.\n\n' +
+    '[appendix-methods]: https://example.com/appendix\n\n' +
+    'The full build guide is linked as [build guide](https://example.com/guide) in the header.\n\n' +
+    'Release notes arrive by autolink <https://example.com/auto> each week.\n\n' +
+    R5_FILLER_B
+  expect(R5_BODY.length).toBeGreaterThanOrEqual(4800)
+
+  it('refuses a footnote marker swap [^source-a]→[^source-b] — accepted by the pre-fix resolver', () => {
+    const result = resolveConsistencyReview(R5_BODY, {
+      consistent: false,
+      edits: [{ find: '[^source-a]', replace: '[^source-b]' }],
+    })
+    expect(result).toEqual({ report: R5_BODY, corrected: false, appliedEdits: [], vetoed: true })
+  })
+
+  it('refuses a label swap [census-2021]→[census-2011] — accepted by the pre-fix resolver', () => {
+    const result = resolveConsistencyReview(R5_BODY, {
+      consistent: false,
+      edits: [{ find: '[census-2021]', replace: '[census-2011]' }],
+    })
+    expect(result).toEqual({ report: R5_BODY, corrected: false, appliedEdits: [], vetoed: true })
+  })
+
+  it('refuses a numeric marker swap [1]→[2] — accepted by the pre-fix resolver', () => {
+    const result = resolveConsistencyReview(R5_BODY, {
+      consistent: false,
+      edits: [{ find: '[1]', replace: '[2]' }],
+    })
+    expect(result).toEqual({ report: R5_BODY, corrected: false, appliedEdits: [], vetoed: true })
+  })
+
+  it('refuses a definition-label edit [appendix-methods]→[appendix-x] — accepted by the pre-fix resolver', () => {
+    const result = resolveConsistencyReview(R5_BODY, {
+      consistent: false,
+      edits: [{ find: '[appendix-methods]', replace: '[appendix-x]' }],
+    })
+    expect(result).toEqual({ report: R5_BODY, corrected: false, appliedEdits: [], vetoed: true })
+  })
+
+  it('refuses marker deletion on a ≥4.8k body — the small-body refusal was the anchor cap, not citation protection', () => {
+    const result = resolveConsistencyReview(R5_BODY, {
+      consistent: false,
+      edits: [{ find: '[^source-a]', replace: '' }],
+    })
+    expect(result).toEqual({ report: R5_BODY, corrected: false, appliedEdits: [], vetoed: true })
+  })
+
+  it('refuses a span whose boundary SPLITS a marker — no complete token in the span text, refused by range', () => {
+    // find `census-2021]` slices the [census-2021] token at its left bracket: the span
+    // text carries no complete marker, so the range-intersection test is what refuses it.
+    const result = resolveConsistencyReview(R5_BODY, {
+      consistent: false,
+      edits: [{ find: 'census-2021]', replace: 'census-2011]' }],
+    })
+    expect(result).toEqual({ report: R5_BODY, corrected: false, appliedEdits: [], vetoed: true })
+  })
+
+  it('refuses a replace that INVENTS a marker — a reference to a citation that never existed', () => {
+    // The find is pure prose; the replace plants [^invented], a footnote reference to a
+    // citation that never existed. The replace carries a complete token, so the
+    // categorical rule refuses the set.
+    const result = resolveConsistencyReview(R5_BODY, {
+      consistent: false,
+      edits: [
+        {
+          find: 'confirms the trend for every region',
+          replace: '[^invented] settles the trend for every region',
+        },
+      ],
+    })
+    expect(result).toEqual({ report: R5_BODY, corrected: false, appliedEdits: [], vetoed: true })
+  })
+
+  it('refuses a seam-fabricated URL token — replace ends in `https:` ahead of prose `//…`', () => {
+    // Neither span text carries a scheme-complete URL (no `//` after the colon inside the
+    // replace), and the find carries none at all — the sequence comparison is the layer
+    // that catches the token born at the splice seam.
+    const result = resolveConsistencyReview(R5_BODY, {
+      consistent: false,
+      edits: [{ find: 'The raw sheet is referenced at ', replace: 'The raw sheet is referenced at https:' }],
+    })
+    expect(result).toEqual({ report: R5_BODY, corrected: false, appliedEdits: [], vetoed: true })
+  })
+
+  it('still accepts a reword of prose AROUND every marker shape — the grammar is not over-broad', () => {
+    // Four spans, each rewording prose adjacent to a different marker class; no span
+    // intersects a token. All apply, and the token sequence is unchanged.
+    const result = resolveConsistencyReview(R5_BODY, {
+      consistent: false,
+      edits: [
+        { find: 'The cohort tables were rebuilt from the census extract', replace: 'The cohort tables were rebuilt once more from the census extract' },
+        { find: 'as printed in the appendix', replace: 'as printed in the revised appendix' },
+        { find: 'confirms the trend for every region', replace: 'confirms the trend in every region' },
+        { find: 'The raw sheet is referenced at //mirror.example/notes for auditors', replace: 'The raw sheet is referenced by auditors from the mirror' },
+      ],
+    })
+    expect(result.corrected).toBe(true)
+    expect(result.vetoed).toBe(false)
+    expect(result.appliedEdits).toHaveLength(4)
+    expect(result.report).toContain('[^source-a]')
+    expect(result.report).toContain('[census-2021]')
+    expect(result.report).toContain('[1]')
+  })
+
+  it('reports vetoed:false for refusals that are not citation vetoes — ambiguity keeps its own cause', () => {
+    // An ambiguous anchor that does NOT touch a token refuses the set without a veto:
+    // the trace must not blame citations for a span that merely failed to apply.
+    const doubled = R5_BODY + '\n\n' + 'The national ranking table[1] confirms the trend for every region.'
+    const result = resolveConsistencyReview(doubled, {
+      consistent: false,
+      edits: [{ find: 'confirms the trend for every region', replace: 'settles the trend for every region' }],
+    })
+    expect(result).toEqual({
+      report: doubled,
+      corrected: false,
+      appliedEdits: [],
+      vetoed: false,
+    })
   })
 })
 
@@ -489,7 +636,7 @@ describe('applyConsistencyGate', () => {
 
   it('folds the review pass usage into the lead bucket', () => {
     const gate = applyConsistencyGate({
-      review: { corrected: true, appliedEdits: [{ find: 'a', replace: 'b' }], usage: reviewUsage },
+      review: { corrected: true, appliedEdits: [{ find: 'a', replace: 'b' }], vetoed: false, usage: reviewUsage },
       leadUsage,
     })
     expect(gate.leadUsage).toEqual({
@@ -504,7 +651,7 @@ describe('applyConsistencyGate', () => {
 
   it('reports corrected:true and the applied count when the pass rewrote the body', () => {
     const gate = applyConsistencyGate({
-      review: { corrected: true, appliedEdits: [{ find: 'a', replace: 'b' }, { find: 'c', replace: 'd' }], usage: reviewUsage },
+      review: { corrected: true, appliedEdits: [{ find: 'a', replace: 'b' }, { find: 'c', replace: 'd' }], vetoed: false, usage: reviewUsage },
       leadUsage,
     })
     expect(gate.corrected).toBe(true)
@@ -513,11 +660,20 @@ describe('applyConsistencyGate', () => {
 
   it('zeroes the edit count when the review found nothing — but usage still folds in', () => {
     const gate = applyConsistencyGate({
-      review: { corrected: false, appliedEdits: [], usage: reviewUsage },
+      review: { corrected: false, appliedEdits: [], vetoed: false, usage: reviewUsage },
       leadUsage,
     })
     expect(gate.corrected).toBe(false)
     expect(gate.edits).toBe(0)
     expect(gate.leadUsage.inputTokens).toBe(107)
+  })
+
+  it('carries the citation veto through to the gate result', () => {
+    const gate = applyConsistencyGate({
+      review: { corrected: false, appliedEdits: [], vetoed: true, usage: reviewUsage },
+      leadUsage,
+    })
+    expect(gate.vetoed).toBe(true)
+    expect(gate.edits).toBe(0)
   })
 })

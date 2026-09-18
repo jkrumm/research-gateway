@@ -2,7 +2,8 @@
 // pure helpers can be unit-tested without booting the whole env/LLM import chain. Mirrors
 // the convention documented at the top of `assemble.ts`.
 
-import type { ConsistencyReview, SubmittedReport, WorkerDigest } from './schema.js'
+import { MAX_EDITS } from './schema.js'
+import type { ConsistencyEdit, ConsistencyReview, SubmittedReport, WorkerDigest } from './schema.js'
 import type { UsageStats } from '../lib/usage.js'
 
 // Collapse extraction padding (huge whitespace runs Readability/Tavily leave behind in
@@ -148,14 +149,19 @@ export interface ConsistencyResolution {
   // The find/replace pairs that were applied, and how many, so an accepted edit is never
   // silent: the caller emits them on the research.consistency span and the consistency.done
   // log (both empty/0 whenever `corrected` is false).
-  appliedEdits: Array<{ find: string; replace: string }>
+  appliedEdits: ConsistencyEdit[]
+  // True when the edit set was refused because it moved, split, deleted or invented a
+  // citation-bearing token (marker, label, URL) rather than failing to apply — a distinct
+  // outcome from a clean review or a clean correction, so traces can tell "the reviewer
+  // tried to touch a citation" from "nothing needed changing".
+  vetoed: boolean
 }
 
 // Defensive cap on the reviewer's edit count. A consistency pass has no plausible use for
 // more than a handful of spans — a body with twenty distinct self-contradictions is a
 // synthesis failure, not something a review pass should be rewriting wholesale. The schema
-// enforces the same bound; this guards the resolver against callers that bypass it.
-const MAX_EDITS = 20
+// enforces the same bound (MAX_EDITS is defined there and imported above); this guards the
+// resolver against callers that bypass it.
 
 // Growth bound. A contradiction fix rewords a sentence, it does not write paragraphs: any
 // single span more than doubling its own size, or the whole body growing by more than a
@@ -184,28 +190,48 @@ const MAX_ANCHOR_CHARS = 1200
 const MAX_ANCHOR_COVERAGE = 0.25
 const MAX_SET_COVERAGE = 0.35
 
-// Extracts every URL appearing anywhere in a report body (markdown links, bare URLs,
-// autolinks), in document order, for the citation-preservation check in
-// resolveConsistencyReview. Deliberately loose — it must not miss a URL the prose carried,
-// because missing one makes an edit set that deleted it look citation-clean. Returns an
-// ORDERED array, not a Set: the check compares occurrence count and position, both of
-// which a Set discards. Paren-aware: real-world paths carry balanced parentheses
-// (Wikipedia's Foo_(bar)), so the scan lets '(' and ')' through and then trims — trailing
-// ')' characters are peeled while they outnumber '(' inside the match, keeping a balanced
-// (bar) in the path without swallowing the prose paren in "see https://x.example/a)". The
-// earlier [^()]* body cut the match at the FIRST paren, recording Foo_(bar) as Foo_: a span
-// editing (bar)→(baz) inside the URL then produced the same recorded URL on both sides of
-// the sequence comparison and was accepted (measured at a68bf10b). Trailing punctuation
-// beyond the trim (a ',' directly after the closing paren) rides along inside the recorded
-// URL — deterministic on both sides of the comparison, so it costs nothing, and an edit
-// that reshapes citation-adjacent punctuation is refused by the sequence check, which is
-// the safe direction. Exported for the matcher tests: the resolver exposes only refusals,
-// not the recorded URLs, so extraction shape is not observable through
-// resolveConsistencyReview.
+// Extracts every citation-bearing token appearing anywhere in a report body, in document
+// order, with its [start, end) range, for the citation-preservation checks in
+// resolveConsistencyReview. This is the ONE matcher behind both defenses — the categorical
+// span-intersection refusal and the ordered sequence comparison — so a marker class added
+// here is protected by both layers at once, and no second, looser pattern can re-open a
+// closed hole.
+//
+// Token classes (every shape a markdown citation reference can take in report prose):
+//   bare/inline URLs        — https?:// runs, paren-aware: balanced parens stay inside the
+//                             token (Wikipedia's Foo_(bar)); trailing ')' is peeled while it
+//                             outnumbers '(' so a prose paren after a URL is not swallowed;
+//                             a trailing ',' rides along — deterministic on both sides of
+//                             the comparison, and refusing punctuation reshaping is the safe
+//                             direction;
+//   autolinks               — <https://…>;
+//   markdown destinations   — the url half of ](url) links;
+//   reference definitions   — [label]: url lines;
+//   footnote/reference uses — [^x] and [n] (digits) markers;
+//   label uses              — [label] brackets that are not a definition colon and not one
+//                             of the shapes above — census-style tags and wikilink-ish
+//                             labels, which report prose legitimately carries.
+//
+// Ordered by start; nested/overlapping shapes cannot occur (a URL inside a label cannot
+// contain ']' by construction — the label body excludes ']').
 const URL_RE = /https?:\/\/[^\s<>\[\]{}"'`]+/g
 
-export function urlsIn(text: string): string[] {
-  const out: string[] = []
+export interface CitationToken {
+  start: number
+  end: number
+  // The byte-for-byte token text. URLs are the trimmed match; label/marker tokens carry
+  // their brackets so a swap of label contents is a different token.
+  text: string
+}
+
+export function citationTokensIn(text: string): CitationToken[] {
+  const out: CitationToken[] = []
+
+  // URLs first — a URL can contain ']'? No ([^\[\]...] excludes it), but a bare URL inside
+  // a ]( ) destination or a definition line is the SAME url token either way, and a URL
+  // inside [label](url) sits outside the label token, so collecting every URL match first
+  // and letting the bracket scans skip URL-covered spans keeps each URL exactly one token.
+  const urlSpans: Array<{ start: number; end: number; text: string }> = []
   let m: RegExpExecArray | null
   while ((m = URL_RE.exec(text)) !== null) {
     let url = m[0]
@@ -215,18 +241,83 @@ export function urlsIn(text: string): string[] {
       if (closes <= opens) break
       url = url.slice(0, -1)
     }
-    if (url) out.push(url)
+    if (url) urlSpans.push({ start: m.index, end: m.index + url.length, text: url })
   }
-  return out
+
+  const urlAt = (start: number, end: number): boolean =>
+    urlSpans.some((u) => start < u.end && u.start < end)
+
+  // Markdown link destinations: ](url) — the url half only, the label half is a label
+  // token below. Skipped when the destination is itself inside a URL span (cannot happen
+  // for a scheme-complete URL, but the check costs nothing and keeps one-url-one-token).
+  const DEST_RE = /\]\((https?:\/\/[^\s)]*)\)/g
+  while ((m = DEST_RE.exec(text)) !== null) {
+    const start = m.index + 2
+    const end = start + m[1]!.length
+    if (!urlAt(start, end)) out.push({ start, end, text: m[1]! })
+  }
+
+  // Reference definitions: [label]: url — label AND url are both protected (the label is
+  // what a [label] use resolves to; moving the line or rewording its label re-points every
+  // use of it).
+  const DEF_RE = /\[([^\[\]]+)\]:[ \t]*(\S[^\s]*)/g
+  while ((m = DEF_RE.exec(text)) !== null) {
+    const label = { start: m.index, end: m.index + 1 + m[1]!.length + 1, text: `[${m[1]!}]` }
+    const urlStart = m.index + m[0].indexOf(m[2]!, m[1]!.length + 2)
+    const urlEnd = urlStart + m[2]!.length
+    if (!urlAt(label.start, label.end)) out.push(label)
+    if (!urlAt(urlStart, urlEnd)) out.push({ start: urlStart, end: urlEnd, text: m[2]! })
+  }
+
+  // Footnote / numeric reference uses: [^x] and [1]. The body excludes '[' so nested
+  // markers cannot confuse the scan; inside a URL they cannot occur (URLs exclude '[').
+  // Skips a bracket already emitted as a definition label — a definition's label is ALSO a
+  // bracket match, so without this the definition line would carry the label token twice
+  // (harmless for the veto, which only asks "any token here", but it would double-count
+  // the token in the sequence comparison and refuse every clean report with a definition).
+  const MARKER_RE = /\[\^?[^\[\]\s]+\]/g
+  while ((m = MARKER_RE.exec(text)) !== null) {
+    const start = m.index
+    const end = m.index + m[0].length
+    if (urlAt(start, end)) continue
+    if (out.some((t) => t.start === start && t.end === end)) continue
+    out.push({ start, end, text: m[0] })
+  }
+
+  // Remaining label uses: [label] not consumed above. Anything MARKER_RE already took is
+  // excluded by shape (a marker is [^…]/[digits]; a label here is the rest) — but a label
+  // token must not double-cover a marker, so re-scan and skip URL/def/marker overlaps by
+  // position. A label body may not contain ']' or start a definition, and must not be
+  // empty or whitespace-only.
+  const LABEL_RE = /\[([^\[\]]+)\]/g
+  while ((m = LABEL_RE.exec(text)) !== null) {
+    const start = m.index
+    const end = m.index + m[0].length
+    if (urlAt(start, end)) continue
+    // Definitions were handled above (their ':' follows the bracket); markers are a subset
+    // of this pattern too — both are already in `out`, so skip those exact positions.
+    const already = out.some((t) => t.start === start && t.end === end)
+    if (already) continue
+    out.push({ start, end, text: m[0] })
+  }
+
+  out.push(...urlSpans)
+  return out.sort((a, b) => a.start - b.start || a.end - b.end)
 }
 
-// Whether a span string carries a URL at all. Delegates to urlsIn so the categorical rule
-// and the sequence comparison share ONE matcher — a second, looser pattern here would
-// re-open exactly the hole urlsIn closed. (Sharing the global URL_RE across calls is safe:
-// the exec loop above always runs to completion, which resets lastIndex — the hazard that
-// bans .test() on it.)
-function touchesUrl(text: string): boolean {
-  return urlsIn(text).length > 0
+// Whether a span string carries a citation-bearing token at all — the categorical rule.
+// Delegates to the one extractor so the categorical rule and the sequence comparison share
+// a single grammar; a second, looser pattern here would re-open exactly the holes the
+// grammar closes. (Sharing the global regexes across calls is safe: every exec loop above
+// runs to completion, which resets lastIndex — the hazard that bans .test() on them.)
+function touchesCitation(text: string): boolean {
+  return citationTokensIn(text).length > 0
+}
+
+// Ordered list of citation-token texts — the sequence the citation-preservation backstop
+// compares byte for byte.
+function citationSequence(text: string): string[] {
+  return citationTokensIn(text).map((t) => t.text)
 }
 
 // Adjudicates the consistency reviewer's submission against the report it reviewed. The
@@ -240,22 +331,25 @@ function touchesUrl(text: string): boolean {
 // A span is refused when its `find` anchor is absent from the (working) text, occurs more
 // than once (ambiguous — splicing could rewrite the wrong occurrence), is a no-op
 // (`find === replace`), is over-large for the body it is editing (see the anchor bounds
-// above), or when either end of the span touches a URL (categorical — see touchesUrl:
-// prompt.ts already promises the reviewer that "a span may not add, remove, or alter a
-// URL"; this enforces that promise in code, per the repo rule that citation guarantees
+// above), or when either end of the span intersects a citation-bearing token
+// (touchesCitation — categorical; see the token grammar above: prompt.ts already promises
+// the reviewer that citations and their markdown references survive the review exactly as
+// given; this enforces that promise in code, per the repo rule that citation guarantees
 // never live in a prompt alone).
 //
 // Three defenses stand between an edit set and the report, each covering a hole the
-// previous one leaves:
+// previous one leaves, and all three now run on ONE token grammar (citationTokensIn):
 //   1. bounded local spans — the anchor/growth caps above keep every edit a sentence-scale
 //      rewording, never a wholesale re-authoring;
-//   2. no span touches a citation reference — the categorical URL refusal means a span
-//      can neither carry a URL across nor cut one out, so the URL-bearing citation prose
-//      itself is untouchable;
-//   3. URL sequence byte-identical in order and count — the element-wise comparison below
-//      is the backstop for what 1 and 2 leave: a span whose boundary splits a URL mid-host
-//      has no scheme inside its own text, passes the categorical check, and is caught only
-//      by the sequence comparison. NOT dead code, and deliberately not marked unreachable.
+//   2. no span intersects a citation token — the categorical refusal means a span can
+//      neither carry a reference across, cut one out, nor straddle one at its boundary
+//      (a boundary-split token sits inside the span's [start, end) range and is caught
+//      even when the span text itself carries no complete marker);
+//   3. citation-token sequence byte-identical in order and count — the element-wise
+//      comparison below is the backstop for what 1 and 2 leave: a token created at a
+//      splice seam (a replace ending in `https:` before prose `//host`) or split across
+//      two cooperating spans whose texts are individually token-free.
+//
 // The accepted residual: claim-to-citation pairing inside a reworded span is deliberately
 // undefended — a span may reword the prose that surrounds a citation, and prose is what
 // carries the pairing, so which claim a reference supports can drift. Defending it would
@@ -271,11 +365,11 @@ export function resolveConsistencyReview(
   review: ConsistencyReview | null,
 ): ConsistencyResolution {
   if (!review || review.consistent)
-    return { report: original, corrected: false, appliedEdits: [] }
+    return { report: original, corrected: false, appliedEdits: [], vetoed: false }
 
   const edits = review.edits ?? []
   if (edits.length === 0 || edits.length > MAX_EDITS) {
-    return { report: original, corrected: false, appliedEdits: [] }
+    return { report: original, corrected: false, appliedEdits: [], vetoed: false }
   }
 
   // Both anchor caps measure against the ORIGINAL, before any span applies — coverage is a
@@ -284,23 +378,16 @@ export function resolveConsistencyReview(
   const maxSet = MAX_SET_COVERAGE * original.length
   let setAnchorChars = 0
 
-  const sourceUrls = urlsIn(original)
-  let working = original
-  const appliedEdits: Array<{ find: string; replace: string }> = []
-  for (const edit of edits) {
-    if (edit.find.length > maxAnchor) return { report: original, corrected: false, appliedEdits: [] }
-    setAnchorChars += edit.find.length
-    if (setAnchorChars > maxSet) return { report: original, corrected: false, appliedEdits: [] }
+  // The citation-token SEQUENCE of the original text, for the backstop comparison below.
+  const sourceTokens = citationTokensIn(original)
 
-    // Categorical URL refusal: a span whose find or replace carries a URL is refused
-    // outright, whichever direction it would move the URL count in. Repaired at the span
-    // boundary rather than after application because the set comparison below sees only
-    // the net result — a span that drops one of two occurrences of the same URL (or swaps
-    // which URL sits where) leaves the URL SET unchanged and sailed through it (measured
-    // at b8fbddd3). Prompt rules forbade this already; the guarantee lives here now.
-    if (touchesUrl(edit.find) || touchesUrl(edit.replace)) {
-      return { report: original, corrected: false, appliedEdits: [] }
-    }
+  let working = original
+  const appliedEdits: ConsistencyEdit[] = []
+
+  for (const edit of edits) {
+    if (edit.find.length > maxAnchor) return { report: original, corrected: false, appliedEdits: [], vetoed: false }
+    setAnchorChars += edit.find.length
+    if (setAnchorChars > maxSet) return { report: original, corrected: false, appliedEdits: [], vetoed: false }
 
     // The anchor must occur EXACTLY once in the CURRENT working text, not the original:
     // an earlier span's replacement may legitimately have consumed or created later
@@ -309,35 +396,53 @@ export function resolveConsistencyReview(
     // a replacement are never interpreted — report prose can legitimately contain them.
     const first = working.indexOf(edit.find)
     if (first === -1 || working.indexOf(edit.find, first + 1) !== -1) {
-      return { report: original, corrected: false, appliedEdits: [] }
+      return { report: original, corrected: false, appliedEdits: [], vetoed: false }
     }
+
+    // Categorical citation refusal: a span whose find or replace intersects a
+    // citation-bearing token is refused outright, whichever direction it would move the
+    // count in. Range-based against the CURRENT working text, not a text scan of the span
+    // alone — a span whose boundary slices a marker (find `census-2021]`, replace
+    // `census-2011]`) carries no complete token in its own text, so only its position
+    // gives it away. Runs after the uniqueness check so a set refused for ambiguity is
+    // never misattributed to a citation veto. Repaired at the span boundary rather than
+    // after application because the sequence comparison below sees only the net result
+    // (measured at b8fbddd3).
+    const anchorEnd = first + edit.find.length
+    const workingTokens = citationTokensIn(working)
+    const intersects = workingTokens.some((t) => first < t.end && t.start < anchorEnd)
+    if (intersects || touchesCitation(edit.find) || touchesCitation(edit.replace)) {
+      return { report: original, corrected: false, appliedEdits: [], vetoed: true }
+    }
+
     if (edit.find === edit.replace)
-      return { report: original, corrected: false, appliedEdits: [] }
+      return { report: original, corrected: false, appliedEdits: [], vetoed: false }
     if (edit.replace.length > edit.find.length * MAX_SPAN_GROWTH) {
-      return { report: original, corrected: false, appliedEdits: [] }
+      return { report: original, corrected: false, appliedEdits: [], vetoed: false }
     }
     working = working.slice(0, first) + edit.replace + working.slice(first + edit.find.length)
     appliedEdits.push(edit)
   }
 
   if (working.length > original.length * MAX_TOTAL_GROWTH) {
-    return { report: original, corrected: false, appliedEdits: [] }
+    return { report: original, corrected: false, appliedEdits: [], vetoed: false }
   }
 
-  // Citation preservation, backstop layer (defense 3 in the doc comment above): the URL
-  // SEQUENCE in the prose must be byte-identical, in order and count, after the edits.
-  // Element-wise against the ordered arrays — not Set membership, which discards exactly
-  // the two shapes the categorical span check cannot see (the drop-one-occurrence and the
-  // swap; a boundary-split URL passes the span check too and is caught only here).
-  const resultUrls = urlsIn(working)
+  // Citation preservation, backstop layer (defense 3 in the doc comment above): the
+  // citation-token SEQUENCE in the prose must be byte-identical, in order and count, after
+  // the edits. Element-wise against the ordered arrays — not Set membership, which discards
+  // exactly the shapes the categorical span check cannot see (drop-one-occurrence, swap,
+  // and any token born at a splice seam: a replace ending in `https:` ahead of prose
+  // `//host` fabricates a URL token with no URL inside either span's own text).
+  const resultTokens = citationSequence(working)
   if (
-    resultUrls.length !== sourceUrls.length ||
-    resultUrls.some((url, i) => url !== sourceUrls[i])
+    resultTokens.length !== sourceTokens.length ||
+    resultTokens.some((token, i) => token !== sourceTokens[i]?.text)
   ) {
-    return { report: original, corrected: false, appliedEdits: [] }
+    return { report: original, corrected: false, appliedEdits: [], vetoed: true }
   }
 
-  return { report: working, corrected: true, appliedEdits }
+  return { report: working, corrected: true, appliedEdits, vetoed: false }
 }
 
 // ── Consistency-gate bookkeeping (issue #16 follow-up) ────────────────────────
@@ -368,6 +473,10 @@ export interface ConsistencyGateResult {
   // Applied span count — zeroed when corrected is false, so corrected:true with zero
   // details is never indistinguishable from a silent rewrite in a trace.
   edits: number
+  // True when the review was refused for moving, splitting, deleting or inventing a
+  // citation-bearing token — distinct from a clean review or a clean correction so a trace
+  // can show the reviewer overstepped onto citations.
+  vetoed: boolean
   // The lead bucket with the review pass's usage folded in.
   leadUsage: UsageStats
 }
@@ -376,7 +485,7 @@ export function applyConsistencyGate(args: {
   // What the review pass returned (the awaited result of reviewConsistency). The report
   // text is not carried here — the resolver returns the original untouched on every
   // rejection path, so review.report is always the text to carry forward.
-  review: { corrected: boolean; appliedEdits: Array<{ find: string; replace: string }>; usage: UsageStats }
+  review: Pick<ConsistencyResolution, 'corrected' | 'appliedEdits' | 'vetoed'> & { usage: UsageStats }
   // The lead bucket accumulated so far (plan + synthesis), before this pass.
   leadUsage: UsageStats
 }): ConsistencyGateResult {
@@ -385,6 +494,7 @@ export function applyConsistencyGate(args: {
   return {
     corrected: review.corrected,
     edits: review.corrected ? review.appliedEdits.length : 0,
+    vetoed: review.vetoed,
     leadUsage: {
       inputTokens: leadUsage.inputTokens + u.inputTokens,
       outputTokens: leadUsage.outputTokens + u.outputTokens,

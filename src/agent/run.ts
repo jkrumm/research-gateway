@@ -3,7 +3,7 @@ import { planResearch } from './plan.js'
 import { runWorker } from './worker.js'
 import { synthesize } from './synthesize.js'
 import { reviewConsistency } from './consistency.js'
-import { applyConsistencyGate, CONSISTENCY_WARNING, type ConsistencyGateResult } from './extract.js'
+import { applyConsistencyGate, CONSISTENCY_WARNING } from './extract.js'
 import { assembleReport, nextRoundQuestions } from './assemble.js'
 import { mergeLedgers, type LedgerSnapshot } from './ledger.js'
 import { groundReport } from './ground.js'
@@ -293,12 +293,6 @@ export async function runResearch(
 
       let submitted: SubmittedReport
       let reason: 'submit_report' | 'assembled'
-      // Set by the consistency gate below — the lead-usage fold and applied-edit count live
-      // in extract.ts's env-free applyConsistencyGate so they are unit-testable outside
-      // run.ts's env-chained import graph (run.test.ts's convention imports such helpers
-      // directly). The warning merge stays at report assembly: the gate runs before
-      // groundReport, so grounded.warnings does not exist yet.
-      let gate: ConsistencyGateResult | null = null
       if (synthesized) {
         submitted = synthesized
         reason = 'submit_report'
@@ -316,8 +310,12 @@ export async function runResearch(
       // may return a corrected body. On any failure the ORIGINAL report continues: this pass
       // degrades to a no-op rather than risking the whole job's output. `reason` is reported
       // unchanged — it records how the report was PRODUCED, which the review does not alter.
-      // The gate result comes back with the reviewed report (a callback-only write to `gate`
-      // would read as `null` to TypeScript's flow analysis at the report assembly below).
+      // The gate's bookkeeping (lead-usage fold, applied/vetoed counts) lives in extract.ts's
+      // env-free applyConsistencyGate, unit-testable outside run.ts's env-chained import
+      // graph (run.test.ts's convention imports such helpers directly). The warning merge
+      // stays at report assembly: the gate runs before groundReport, so grounded.warnings
+      // does not exist yet. The outcome returns whole from the callback rather than being
+      // written into a closure variable, so it is a const — no nullable bookkeeping.
       const gateOutcome = await withSpan(
         'research.consistency_gate',
         { 'report.reason': reason },
@@ -327,6 +325,7 @@ export async function runResearch(
           leadUsage = merged.leadUsage
           gateSpan.setAttributes({
             'consistency.corrected': review.corrected,
+            'consistency.vetoed': review.vetoed,
             'consistency.edits': review.appliedEdits.length,
             'report.chars_before': submitted.report.length,
             'report.chars_after': review.report.length,
@@ -338,7 +337,7 @@ export async function runResearch(
         },
       )
       submitted = gateOutcome.reviewed
-      gate = gateOutcome.gate
+      const gate = gateOutcome.gate
 
       // The job-level gate. Every citation the synthesis model asserted is checked against the
       // union of what the workers' tools actually retrieved, `sources` is replaced by the pages
@@ -387,7 +386,7 @@ export async function runResearch(
       const search = readSearchSpend(jobId)
       const report: ResearchReport = {
         ...grounded,
-        warnings: gate?.corrected === true
+        warnings: gate.corrected === true
           ? [...grounded.warnings, CONSISTENCY_WARNING]
           : grounded.warnings,
         cost: {
@@ -412,8 +411,8 @@ export async function runResearch(
         'research.rounds': round,
         'research.workers': workersDispatchedTotal,
         'research.digests': allDigests.length,
-        'consistency.corrected': gate?.corrected ?? false,
-        'consistency.edits': gate?.edits ?? 0,
+        'consistency.corrected': gate.corrected,
+        'consistency.edits': gate.edits,
         'research.outcome_partial': grounded.status === 'partial',
         'report.status': grounded.status,
         'report.citations': grounded.citations.length,
@@ -444,8 +443,9 @@ export async function runResearch(
         rounds: round,
         workers: workersDispatchedTotal,
         digests: allDigests.length,
-        consistencyCorrected: gate?.corrected ?? false,
-        consistencyEdits: gate?.edits ?? 0,
+        consistencyCorrected: gate.corrected,
+        consistencyVetoed: gate.vetoed,
+        consistencyEdits: gate.edits,
         citations: grounded.citations.length,
         sources: grounded.sources.length,
         status: grounded.status,
