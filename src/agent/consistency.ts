@@ -2,8 +2,9 @@ import { generateText, tool } from 'ai'
 import type { Tool } from 'ai'
 import { leadModel } from '../lib/llm.js'
 import { consistencyPrompt } from './prompt.js'
-import { ConsistencyReview } from './schema.js'
-import type { ConsistencyReview as ConsistencyReviewInput } from './schema.js'
+// The schema (runtime validator) and its inferred shape (type) share a name, so the value
+// import carries an inline type-only rename rather than a second import statement.
+import { ConsistencyReview, type ConsistencyReview as ConsistencyReviewInput } from './schema.js'
 import { resolveConsistencyReview } from './extract.js'
 import type { ConsistencyResolution } from './extract.js'
 import { log } from '../lib/log.js'
@@ -46,7 +47,13 @@ function truncateForSpan(text: string): string {
 export async function reviewConsistency(args: {
   report: string
   jobId: string
-}): Promise<{ report: string; corrected: boolean; appliedEdits: ConsistencyResolution['appliedEdits']; usage: UsageStats }> {
+}): Promise<{
+  report: string
+  corrected: boolean
+  appliedEdits: ConsistencyResolution['appliedEdits']
+  vetoed: boolean
+  usage: UsageStats
+}> {
   const { report, jobId } = args
   const start = Date.now()
 
@@ -88,7 +95,16 @@ export async function reviewConsistency(args: {
         )
         span.setAttributes({
           'llm.output_tokens': usage.outputTokens,
-          'consistency.outcome': resolution.corrected ? 'corrected' : 'consistent',
+          // 'vetoed' — the reviewer tried to move, split, delete or invent a citation token
+          // and the resolver refused the whole set — is its own outcome, distinct from a
+          // clean review ('consistent') and a clean correction ('corrected'): a trace can
+          // then show the reviewer overstepped onto citations rather than merely finding
+          // nothing to fix.
+          'consistency.outcome': resolution.vetoed
+            ? 'vetoed'
+            : resolution.corrected
+              ? 'corrected'
+              : 'consistent',
           'consistency.edits': resolution.appliedEdits.length,
           // Span attributes are scalar-only (SpanAttributes in otel.ts), so the list goes
           // out JSON-encoded; the log path stringifies arrays itself.
@@ -99,6 +115,7 @@ export async function reviewConsistency(args: {
           ms: Date.now() - start,
           outputTokens: usage.outputTokens,
           corrected: resolution.corrected,
+          vetoed: resolution.vetoed,
           edits: resolution.appliedEdits.length,
           applied,
         })
@@ -114,6 +131,7 @@ export async function reviewConsistency(args: {
           report,
           corrected: false,
           appliedEdits: [],
+          vetoed: false,
           usage: { ...emptyUsage(), durationMs: Date.now() - start },
         }
       } finally {

@@ -128,11 +128,16 @@ export const ConsistencyEdit = z.object({
 })
 export type ConsistencyEdit = z.infer<typeof ConsistencyEdit>
 
+// Defensive cap on the reviewer's edit count, shared with extract.ts's resolver guard. The
+// schema is the boundary a real `submit_review` tool call passes through; the resolver
+// re-checks against callers that bypass it — one constant so the two cannot drift.
+export const MAX_EDITS = 20
+
 export const ConsistencyReview = z.object({
   consistent: z.boolean().describe('Whether the report was found free of self-contradictions.'),
   edits: z
     .array(ConsistencyEdit)
-    .max(20)
+    .max(MAX_EDITS)
     .optional()
     .describe(
       'REQUIRED when consistent is false: the minimal find/replace spans that resolve the contradictions. Omit or pass empty when consistent is true.',
