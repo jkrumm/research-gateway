@@ -185,13 +185,22 @@ const MAX_ANCHOR_COVERAGE = 0.25
 const MAX_SET_COVERAGE = 0.35
 
 // Extracts every URL appearing anywhere in a report body (markdown links, bare URLs,
-// autolinks), for the citation-preservation check below. Deliberately loose — it must not
-// miss a URL the prose carried, because missing one makes an edit set that deleted it look
-// citation-clean.
+// autolinks), in document order, for the citation-preservation check in
+// resolveConsistencyReview. Deliberately loose — it must not miss a URL the prose carried,
+// because missing one makes an edit set that deleted it look citation-clean. Returns an
+// ORDERED array, not a Set: the check compares occurrence count and position, both of
+// which a Set discards.
 const URL_RE = /https?:\/\/[^\s<>()\[\]{}"'`]+/g
 
-function urlsIn(text: string): Set<string> {
-  return new Set(text.match(URL_RE) ?? [])
+function urlsIn(text: string): string[] {
+  return text.match(URL_RE) ?? []
+}
+
+// Whether a span string carries a URL at all. Uses match() on the shared global URL_RE,
+// never .test(): a /g regex's lastIndex advances across .test() calls, so a later check
+// can silently miss a URL sitting before the stale offset. match() resets lastIndex.
+function touchesUrl(text: string): boolean {
+  return (text.match(URL_RE) ?? []).length > 0
 }
 
 // Adjudicates the consistency reviewer's submission against the report it reviewed. The
@@ -205,9 +214,27 @@ function urlsIn(text: string): Set<string> {
 // A span is refused when its `find` anchor is absent from the (working) text, occurs more
 // than once (ambiguous — splicing could rewrite the wrong occurrence), is a no-op
 // (`find === replace`), is over-large for the body it is editing (see the anchor bounds
-// above), or when applying the whole set would change the set of URLs carried in the prose
-// (citations and their references must survive the review untouched — the reviewer's
-// license is resolving self-contradictions, not re-sourcing the report).
+// above), or when either end of the span touches a URL (categorical — see touchesUrl:
+// prompt.ts already promises the reviewer that "a span may not add, remove, or alter a
+// URL"; this enforces that promise in code, per the repo rule that citation guarantees
+// never live in a prompt alone).
+//
+// Three defenses stand between an edit set and the report, each covering a hole the
+// previous one leaves:
+//   1. bounded local spans — the anchor/growth caps above keep every edit a sentence-scale
+//      rewording, never a wholesale re-authoring;
+//   2. no span touches a citation reference — the categorical URL refusal means a span
+//      can neither carry a URL across nor cut one out, so the URL-bearing citation prose
+//      itself is untouchable;
+//   3. URL sequence byte-identical in order and count — the element-wise comparison below
+//      is the backstop for what 1 and 2 leave: a span whose boundary splits a URL mid-host
+//      has no scheme inside its own text, passes the categorical check, and is caught only
+//      by the sequence comparison. NOT dead code, and deliberately not marked unreachable.
+// The accepted residual: claim-to-citation pairing inside a reworded span is deliberately
+// undefended — a span may reword the prose that surrounds a citation, and prose is what
+// carries the pairing, so which claim a reference supports can drift. Defending it would
+// mean refusing nearly every legitimate edit; the reviewer's prompt-side rules are the
+// defense of record there.
 //
 // Anything else — no tool call, malformed args, an echoed verdict, an over-large edit set —
 // falls back to the original text: a flawed report that reaches the caller beats no report.
@@ -239,6 +266,16 @@ export function resolveConsistencyReview(
     setAnchorChars += edit.find.length
     if (setAnchorChars > maxSet) return { report: original, corrected: false, appliedEdits: [] }
 
+    // Categorical URL refusal: a span whose find or replace carries a URL is refused
+    // outright, whichever direction it would move the URL count in. Repaired at the span
+    // boundary rather than after application because the set comparison below sees only
+    // the net result — a span that drops one of two occurrences of the same URL (or swaps
+    // which URL sits where) leaves the URL SET unchanged and sailed through it (measured
+    // at b8fbddd3). Prompt rules forbade this already; the guarantee lives here now.
+    if (touchesUrl(edit.find) || touchesUrl(edit.replace)) {
+      return { report: original, corrected: false, appliedEdits: [] }
+    }
+
     // The anchor must occur EXACTLY once in the CURRENT working text, not the original:
     // an earlier span's replacement may legitimately have consumed or created later
     // anchors. Sequential application against working text is the contract the prompt
@@ -261,13 +298,17 @@ export function resolveConsistencyReview(
     return { report: original, corrected: false, appliedEdits: [] }
   }
 
-  // Citation preservation: the set of URLs in the prose must be identical after the edits.
-  // A reviewer may not re-source the report — dropping a URL strips a citation reference,
-  // adding one invents evidence the run never retrieved.
+  // Citation preservation, backstop layer (defense 3 in the doc comment above): the URL
+  // SEQUENCE in the prose must be byte-identical, in order and count, after the edits.
+  // Element-wise against the ordered arrays — not Set membership, which discards exactly
+  // the two shapes the categorical span check cannot see (the drop-one-occurrence and the
+  // swap; a boundary-split URL passes the span check too and is caught only here).
   const resultUrls = urlsIn(working)
-  if (resultUrls.size !== sourceUrls.size) return { report: original, corrected: false, appliedEdits: [] }
-  for (const url of sourceUrls) {
-    if (!resultUrls.has(url)) return { report: original, corrected: false, appliedEdits: [] }
+  if (
+    resultUrls.length !== sourceUrls.length ||
+    resultUrls.some((url, i) => url !== sourceUrls[i])
+  ) {
+    return { report: original, corrected: false, appliedEdits: [] }
   }
 
   return { report: working, corrected: true, appliedEdits }
