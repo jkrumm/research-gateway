@@ -147,6 +147,8 @@ export function consistencyPrompt(): string {
 
 - Use NOTHING but the text in front of you. Do not add, remove, or reorder content, and do not "improve" wording — your only license to change the report is resolving a contradiction between its own statements.
 - When two statements genuinely conflict and the report does not already flag the conflict, rewrite the MINIMAL span of text needed so the report states one position and, where the evidence level differs, words the weaker one provisionally.
+- Deliver changes as find/replace spans, never as a rewritten report. Each span's \`find\` must be copied character-for-character from the report and must occur in it EXACTLY once — include enough surrounding text to make it unambiguous. Each span's \`replace\` is the corrected text for that span and nothing else.
+- A span may not add, remove, or alter a URL. Citations and their markdown references must survive the review exactly as given; if a contradiction involves a URL, reword the prose around it, not the URL itself.
 - Preserve every markdown structure, citation reference, and confidence qualifier exactly as given.
 - If you find no contradiction, say so and submit nothing else.
 
@@ -156,7 +158,7 @@ ${ANTI_HALLUCINATION_RULES}
 
 You MUST finish by calling \`submit_review\`:
 - \`consistent\`: true when you found no self-contradiction, false when you did.
-- \`report\`: ONLY when consistent is false — the full corrected report markdown. Omit it entirely when consistent is true.
+- \`edits\`: ONLY when consistent is false — an array of \`{ find, replace }\` spans, one per contradiction resolved, applied in order. Omit it entirely when consistent is true. Spans are verified in code: a \`find\` that does not appear exactly once in the report, a no-op span, or a span that touches a URL rejects the WHOLE set and the original report is kept.
 
 **The ONLY way to deliver your review is the \`submit_review\` tool. Do NOT write a plain-text answer.**`
 }
