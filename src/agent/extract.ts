@@ -189,18 +189,44 @@ const MAX_SET_COVERAGE = 0.35
 // resolveConsistencyReview. Deliberately loose — it must not miss a URL the prose carried,
 // because missing one makes an edit set that deleted it look citation-clean. Returns an
 // ORDERED array, not a Set: the check compares occurrence count and position, both of
-// which a Set discards.
-const URL_RE = /https?:\/\/[^\s<>()\[\]{}"'`]+/g
+// which a Set discards. Paren-aware: real-world paths carry balanced parentheses
+// (Wikipedia's Foo_(bar)), so the scan lets '(' and ')' through and then trims — trailing
+// ')' characters are peeled while they outnumber '(' inside the match, keeping a balanced
+// (bar) in the path without swallowing the prose paren in "see https://x.example/a)". The
+// earlier [^()]* body cut the match at the FIRST paren, recording Foo_(bar) as Foo_: a span
+// editing (bar)→(baz) inside the URL then produced the same recorded URL on both sides of
+// the sequence comparison and was accepted (measured at a68bf10b). Trailing punctuation
+// beyond the trim (a ',' directly after the closing paren) rides along inside the recorded
+// URL — deterministic on both sides of the comparison, so it costs nothing, and an edit
+// that reshapes citation-adjacent punctuation is refused by the sequence check, which is
+// the safe direction. Exported for the matcher tests: the resolver exposes only refusals,
+// not the recorded URLs, so extraction shape is not observable through
+// resolveConsistencyReview.
+const URL_RE = /https?:\/\/[^\s<>\[\]{}"'`]+/g
 
-function urlsIn(text: string): string[] {
-  return text.match(URL_RE) ?? []
+export function urlsIn(text: string): string[] {
+  const out: string[] = []
+  let m: RegExpExecArray | null
+  while ((m = URL_RE.exec(text)) !== null) {
+    let url = m[0]
+    while (url.endsWith(')')) {
+      const opens = (url.match(/\(/g) ?? []).length
+      const closes = (url.match(/\)/g) ?? []).length
+      if (closes <= opens) break
+      url = url.slice(0, -1)
+    }
+    if (url) out.push(url)
+  }
+  return out
 }
 
-// Whether a span string carries a URL at all. Uses match() on the shared global URL_RE,
-// never .test(): a /g regex's lastIndex advances across .test() calls, so a later check
-// can silently miss a URL sitting before the stale offset. match() resets lastIndex.
+// Whether a span string carries a URL at all. Delegates to urlsIn so the categorical rule
+// and the sequence comparison share ONE matcher — a second, looser pattern here would
+// re-open exactly the hole urlsIn closed. (Sharing the global URL_RE across calls is safe:
+// the exec loop above always runs to completion, which resets lastIndex — the hazard that
+// bans .test() on it.)
 function touchesUrl(text: string): boolean {
-  return (text.match(URL_RE) ?? []).length > 0
+  return urlsIn(text).length > 0
 }
 
 // Adjudicates the consistency reviewer's submission against the report it reviewed. The

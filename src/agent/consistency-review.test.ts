@@ -2,7 +2,7 @@ import { describe, it, expect } from 'bun:test'
 // Imported from `extract.ts` directly, NOT `consistency.ts` — the review pass's import graph
 // (llm.ts) pulls in `env.ts`, which parses `process.env` at import time and throws without
 // secrets. Same convention as run.test.ts importing from `assemble.ts`.
-import { resolveConsistencyReview, applyConsistencyGate, CONSISTENCY_WARNING } from './extract.js'
+import { resolveConsistencyReview, applyConsistencyGate, CONSISTENCY_WARNING, urlsIn } from './extract.js'
 import { ConsistencyReview } from './schema.js'
 
 const SOURCE_URL = 'https://example.com/patch-notes'
@@ -354,6 +354,75 @@ describe('resolveConsistencyReview', () => {
       ],
     })
     expect(result).toEqual({ report: LONG_BODY, corrected: false, appliedEdits: [] })
+  })
+
+  // ── Paren-aware URL extraction ─────────────────────────────────────────────
+  //
+  // URL_RE excluded every parenthesis, so Wikipedia-style balanced-paren paths were
+  // recorded truncated: Foo_(bar) was extracted as Foo_. A span editing (bar)→(baz) INSIDE
+  // such a URL carried no scheme-complete URL in either end, left the truncated
+  // sequence [Foo_] unchanged on both sides, and was accepted — a live citation silently
+  // rewritten. Verified at a68bf10b; the matcher now lets parens through and trims trailing
+  // ')' while they outnumber '('.
+
+  it('extracts a balanced-paren path whole — Foo_(bar) is one URL, not Foo_', () => {
+    expect(urlsIn('see https://en.wikipedia.org/wiki/Foo_(bar) for details')).toEqual([
+      'https://en.wikipedia.org/wiki/Foo_(bar)',
+    ])
+  })
+
+  it('extracts nested balanced parens whole — a_(b_(c)) survives both levels', () => {
+    expect(urlsIn('https://ex.example/a_(b_(c))')).toEqual(['https://ex.example/a_(b_(c))'])
+  })
+
+  it('does not swallow the trailing prose paren after a bare URL', () => {
+    // "see https://x.example/a)" — the ')' is prose, the URL has none, so the trim peels it.
+    expect(urlsIn('see https://x.example/a)')).toEqual(['https://x.example/a'])
+  })
+
+  it('stops a bare URL at whitespace like before — parens do not make the scan greedy across prose', () => {
+    expect(urlsIn('(https://ex.example/r_(s)) end')).toEqual(['https://ex.example/r_(s)'])
+    expect(urlsIn('plain https://ex.example/no-parens, then prose')).toEqual([
+      'https://ex.example/no-parens,',
+    ])
+  })
+
+  it('refuses a span editing (bar)→(baz) inside a Foo_(bar) URL — the hole this closes', () => {
+    // The span text carries no scheme-complete URL (the URL's scheme sits outside the
+    // span), so the categorical rule cannot fire — before the paren-aware matcher this
+    // whole edit was invisible: truncated extraction recorded Foo_ on both sides and the
+    // sequence comparison passed while the live citation changed. Now the full URL is
+    // extracted on each side and the sequence check refuses the set.
+    const PAREN_BODY =
+      'The benchmark harness measured throughput across three separate runs of the same suite. '.repeat(8) +
+      'The first run established the baseline numbers for the whole comparison. '.repeat(8) +
+      'The second and third runs confirmed the baseline held under sustained load. '.repeat(8) +
+      'The disambiguation page covers every revision of the mechanic (https://en.wikipedia.org/wiki/Foo_(bar)) in detail.\n\n' +
+      `The follow-up analysis is published separately (${URL_B}).`
+    expect(PAREN_BODY.length).toBeGreaterThan(1900)
+    const result = resolveConsistencyReview(PAREN_BODY, {
+      consistent: false,
+      edits: [{ find: '(bar)', replace: '(baz)' }],
+    })
+    expect(result).toEqual({ report: PAREN_BODY, corrected: false, appliedEdits: [] })
+  })
+
+  it('refuses a bare (bar)-bearing span too — sequence comparison, not the categorical rule, is the layer that fires', () => {
+    // Same fixture, but the span carries the whole truncated-to-the-eye citation paren
+    // block: still no scheme-complete URL inside the span text, so the categorical rule
+    // lets it through and the sequence check is what refuses. Assert the refusal, not
+    // which layer fired — the two share one matcher by construction.
+    const PAREN_BODY =
+      'The benchmark harness measured throughput across three separate runs of the same suite. '.repeat(8) +
+      'The first run established the baseline numbers for the whole comparison. '.repeat(8) +
+      'The second and third runs confirmed the baseline held under sustained load. '.repeat(8) +
+      'The disambiguation page covers every revision of the mechanic (https://en.wikipedia.org/wiki/Foo_(bar)) in detail.\n\n' +
+      `The follow-up analysis is published separately (${URL_B}).`
+    const result = resolveConsistencyReview(PAREN_BODY, {
+      consistent: false,
+      edits: [{ find: '(bar)) in detail', replace: '(baz)) in detail' }],
+    })
+    expect(result).toEqual({ report: PAREN_BODY, corrected: false, appliedEdits: [] })
   })
 })
 
