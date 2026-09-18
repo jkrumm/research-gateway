@@ -109,6 +109,42 @@ export const SubQuestion = z.object({
 })
 export type SubQuestion = z.infer<typeof SubQuestion>
 
+// The internal-consistency reviewer's submission (issue #5) — one lead-model pass over the
+// finished report body, before grounding. Internal contract: the reviewer contributes only
+// find/replace SPANS, applied by exact match in code (see extract.ts's adjudication); it
+// never re-authors the body, so a whole-report swap — the failure mode a length floor cannot
+// see — is structurally impossible. Everything else about the report is re-derived
+// downstream (ground.ts).
+export const ConsistencyEdit = z.object({
+  find: z
+    .string()
+    .min(1)
+    .describe(
+      'The exact text to replace, copied character-for-character from the report under review. Must appear in the report exactly once.',
+    ),
+  replace: z
+    .string()
+    .describe('The corrected text for that span. Same length is not required; identical text (a no-op) is not allowed.'),
+})
+export type ConsistencyEdit = z.infer<typeof ConsistencyEdit>
+
+// Defensive cap on the reviewer's edit count, shared with extract.ts's resolver guard. The
+// schema is the boundary a real `submit_review` tool call passes through; the resolver
+// re-checks against callers that bypass it — one constant so the two cannot drift.
+export const MAX_EDITS = 20
+
+export const ConsistencyReview = z.object({
+  consistent: z.boolean().describe('Whether the report was found free of self-contradictions.'),
+  edits: z
+    .array(ConsistencyEdit)
+    .max(MAX_EDITS)
+    .optional()
+    .describe(
+      'REQUIRED when consistent is false: the minimal find/replace spans that resolve the contradictions. Omit or pass empty when consistent is true.',
+    ),
+})
+export type ConsistencyReview = z.infer<typeof ConsistencyReview>
+
 export const ResearchPlan = z.object({ subQuestions: z.array(SubQuestion).min(1) })
 export type ResearchPlan = z.infer<typeof ResearchPlan>
 

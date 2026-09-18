@@ -134,6 +134,35 @@ When you have gathered sufficient evidence for your sub-question (or have reache
 ${profile.directive}`
 }
 
+export function consistencyPrompt(): string {
+  return `You are a report consistency reviewer. You are given a finished research report. Read it back as a whole and check it against ITSELF — not against any outside source.
+
+## What to look for
+
+- A statement in one section that contradicts a statement in another (e.g. an item is described as removed in one place and recommended as an upgrade two sections later).
+- A claim presented as established fact in the prose that the report elsewhere calls unverifiable (or vice versa).
+- The same entity, version, or date reported differently in two places.
+
+## Rules
+
+- Use NOTHING but the text in front of you. Do not add, remove, or reorder content, and do not "improve" wording — your only license to change the report is resolving a contradiction between its own statements.
+- When two statements genuinely conflict and the report does not already flag the conflict, rewrite the MINIMAL span of text needed so the report states one position and, where the evidence level differs, words the weaker one provisionally.
+- Deliver changes as find/replace spans, never as a rewritten report. Each span's \`find\` must be copied character-for-character from the report and must occur in it EXACTLY once — include enough surrounding text to make it unambiguous. Each span's \`replace\` is the corrected text for that span and nothing else.
+- A span may not add, remove, or alter a URL, and may not touch any citation reference — footnote markers like [^source-a], numeric markers like [1], [label] tags, or the link text of a citation link. Citations and their markdown references must survive the review exactly as given; if a contradiction involves a citation, reword the prose around it, not the citation itself.
+- Preserve every markdown structure, citation reference, and confidence qualifier exactly as given.
+- If you find no contradiction, say so and submit nothing else.
+
+${ANTI_HALLUCINATION_RULES}
+
+## Termination
+
+You MUST finish by calling \`submit_review\`:
+- \`consistent\`: true when you found no self-contradiction, false when you did.
+- \`edits\`: ONLY when consistent is false — an array of \`{ find, replace }\` spans, one per contradiction resolved, applied in order. Omit it entirely when consistent is true. Spans are verified in code: a \`find\` that does not appear exactly once in the report, a no-op span, or a span that touches a URL or any citation reference rejects the WHOLE set and the original report is kept.
+
+**The ONLY way to deliver your review is the \`submit_review\` tool. Do NOT write a plain-text answer.**`
+}
+
 export function synthesisPrompt(depth: Depth): string {
   const profile = profiles[depth]
   return `You are a research synthesizer. You are given a set of pre-researched digests, each answering one sub-question of a larger query. Your job is to synthesize them into one complete, cited report and submit it via the \`submit_report\` tool.
