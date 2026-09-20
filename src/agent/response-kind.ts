@@ -59,6 +59,25 @@ export function isRawContentType(contentType: string | null | undefined): boolea
 // hint in githubFile already makes.
 const DEFINITIVE_MISSING = new Set([404, 410])
 
+// The largest body the chain will hand to the synchronous parsers (linkedom's parseHTML +
+// Readability, and the site adapters that read the same document) — in CHARACTERS of the
+// response text, a proxy for the DOM size the parser will build.
+//
+// Measured into existence on 2026-09-20: the fetch chain runs those parsers INLINE on the
+// event loop every job shares (one Bun process — src/index.ts has a single listener), so one
+// oversized page stalls heartbeats (job-store.ts reaps on a 90s-stale heartbeat, even on a
+// live process), the idle watchdog, and the HTTP listener together; the fully-developed
+// shape is the 2026-08-06 wedge in docs/measurements.md (listener dead while jobs kept
+// running). 2M chars is far above any real article page (typical: <200k) so the cap never
+// bites honest traffic, but bounds the worst-case synchronous parse to a fraction of a
+// second instead of seconds-plus GC.
+//
+// Over-cap is a MISS like any other, not an error: the chain falls through to lightpanda
+// (a real browser in its own process and memory budget — exactly the right reader for a
+// page too heavy for this one) and then Tavily Extract. `wayback` applies the same cap —
+// an archived copy of a huge page is just as capable of stalling the loop.
+export const PARSE_INPUT_CAP = 2_000_000
+
 /** True when no later step in the fetch chain could possibly do better. */
 export function isDefinitivelyMissing(status: number): boolean {
   return DEFINITIVE_MISSING.has(status)

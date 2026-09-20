@@ -7,7 +7,7 @@ import { log } from '../lib/log.js'
 import { getActiveSpan } from '../lib/otel.js'
 import { normalizeText, capText, TEXT_CAP } from './extract.js'
 import { resolveSite } from './site-adapters.js'
-import { isRawContentType, isDefinitivelyMissing } from './response-kind.js'
+import { isRawContentType, isDefinitivelyMissing, PARSE_INPUT_CAP } from './response-kind.js'
 import { parseRenderResponse, renderUrl } from './lightpanda.js'
 import { fetchYoutubeTranscript } from './ytdlp.js'
 import { waybackLookupUrl, isArchiveUrl, parseSnapshotDate, archiveBanner, snapshotAgeDays } from './archive.js'
@@ -268,7 +268,7 @@ export async function runFetchChain(url: string, opts: FetchChainOptions): Promi
   // entry — `attempts` stays an honest record of what actually happened, and a caller reading
   // it back (fetch-bench.ts, `tool.fetchPage` logs) sees exactly one `tavily-extract` entry for
   // these URLs, not two dishonest failures in front of it.
-  let rdReason: 'thin' | 'threw' = 'thin'
+  let rdReason: 'thin' | 'threw' | 'oversized' = 'thin'
   let rdChars = 0
 
   if (site.skipToExtract) {
@@ -319,10 +319,20 @@ export async function runFetchChain(url: string, opts: FetchChainOptions): Promi
         // the content-type branch and the HTML branch have to share this.
         const body = await res.text()
         const contentType = res.headers.get('content-type')
+        const rawKind = isRawContentType(contentType)
 
-        // A non-HTML body IS the answer — hand it back verbatim rather than asking an HTML
-        // parser to find an article in it.
-        if (isRawContentType(contentType)) {
+        if (body.length > PARSE_INPUT_CAP) {
+          // parseHTML runs synchronously on the shared event loop and its cost scales with
+          // the body it is handed, so an oversized page must not reach it — normalizeText's
+          // regex passes over a raw body are the cheaper cousin, and the same guard covers
+          // both. See PARSE_INPUT_CAP's header: this is the cap that keeps heartbeats and
+          // the HTTP listener alive. A thin miss, so the chain falls through to the
+          // renderers — lightpanda is a real browser in its own process, exactly the right
+          // reader for a page this heavy. rdChars stays 0 like the `threw` path — no
+          // extraction ran; the body size is in the attempt's error string.
+          rdReason = 'oversized'
+          attempt(attempts, rawKind ? 'raw' : step1, t1, { ok: false, error: `oversized (${body.length} chars > ${PARSE_INPUT_CAP})` })
+        } else if (rawKind) {
           const raw = normalizeText(body)
           if (raw.length > 0) {
             attempt(attempts, 'raw', t1, { ok: true, chars: raw.length })
@@ -419,6 +429,14 @@ export async function runFetchChain(url: string, opts: FetchChainOptions): Promi
         return fail(originalReason)
       }
       const body = await res.text()
+      if (body.length > PARSE_INPUT_CAP) {
+        // Same cap as step 1: an archived copy of a huge page stalls the loop just as hard.
+        // A thin miss — Wayback is the LAST step, so this degrades to `fail` like every
+        // other wayback miss, never an error out of the chain.
+        const ms = attempt(attempts, 'wayback', tW, { ok: false, chars: body.length, error: `oversized (${body.length} chars > ${PARSE_INPUT_CAP})` })
+        onArchive?.({ ok: false, ms, snapshotAgeDays: null })
+        return fail(originalReason)
+      }
       const { document } = parseHTML(body)
       const article = new Readability(document as unknown as ConstructorParameters<typeof Readability>[0]).parse()
       const raw = article?.textContent?.trim()

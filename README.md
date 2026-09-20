@@ -51,7 +51,7 @@ talk to — and plain bearer HTTP for everything else (Hermes, scripts, curl).
 | Endpoint | Auth | Body / Params | Returns |
 |-|-|-|-|
 | `GET /` | public | — | discovery: the public route list, `/openapi`, the MCP tools |
-| `GET /health` | public | — | `{ status: "ok", lastRestartAt, reaped, interrupted }` — only `status` gates anything (Docker healthcheck, rollhook); the counts show an unclean restart to a keyword monitor. See [Restarts](#restarts-and-what-they-cost) |
+| `GET /health` | public | — | `{ status: "ok", lastRestartAt, reaped, interrupted }` — only `status` gates anything (Docker healthcheck, rollhook); the counts show an unclean restart to a keyword monitor. Also carries `draining`, `jobs`, the cgroup `memory` ratio and `eventLoopLagMs`. See [Restarts](#restarts-and-what-they-cost) |
 | `GET /health/render` | public | — | `{ renderer, active, queued, error }` — the sidecar. **Deliberately not part of `/health`**: the renderer is optional, and a broken one must not block deploys of a gateway that is otherwise fine |
 | `GET /health/tavily` | public | — | live account state from `api.tavily.com/usage` incl. `overPlan` — crossing into pay-as-you-go was otherwise silent |
 | `GET /health/ytdlp` | public | — | `{ ytdlp, version, error }` — `yt-dlp --version` inside the container |
@@ -280,6 +280,17 @@ re-arming (`process.memory_recovered`) below 75%. A watchdog that only logged is
 2026-09-04 OOM kill exposed — all three concurrent jobs died with the process because nothing
 upstream ever stopped admitting more.
 
+**Event-loop stalls are measured, not inferred.** `lib/loop-watch.ts` samples timer drift every
+5 s; a lag over 1 s logs `process.loop_lag` at error level, and the latest sample is exposed as
+`eventLoopLagMs` on `GET /health`. One Bun process serves everything — listener, heartbeats and
+every job — so a stall shows up three ways at once: the HTTP listener goes quiet, a live job's
+heartbeat goes stale (a `job.reaped_on_read` on a process that never died), and the idle watchdog
+aborts live workers. 2026-09-20 produced exactly that shape; the structural fix is the
+`PARSE_INPUT_CAP` in `response-kind.ts`, which stops the fetch chain from handing unbounded page
+bodies to the synchronous linkedom/Readability parse (over-cap falls through to lightpanda and
+Tavily Extract, its normal fallbacks). If `process.loop_lag` still fires with the cap in place,
+the next step is offloading the parse to a Bun Worker.
+
 What survives neither is a SIGKILL. The next boot reaps any job whose heartbeat is >90s stale to
 a terminal `error` ("lost, resubmit"), and that reap is the thing to watch:
 
@@ -288,7 +299,8 @@ a terminal `error` ("lost, resubmit"), and that reap is the thing to watch:
   kill: `job.error`, an `worker.failed`/`plan.fallback` burst, memory pressure, and a drain
   that cut live jobs. Thresholds and the reasoning: `docs/hyperdx-dashboard.md` § Alerts.
 - `GET /health` carries `lastRestartAt`, `reaped` (this boot), `interrupted` (this process
-  lifetime), `draining`, `jobs.running` / `jobs.queued` and the cgroup `memory` ratio — enough
+  lifetime), `draining`, `jobs.running` / `jobs.queued`, the cgroup `memory` ratio and
+  `eventLoopLagMs` — enough
   for a keyword monitor with no log access to see load, shedding and shutdown state. Only
   `status` gates anything; a draining container still serves polls correctly, so it stays `ok`.
 - **A kernel OOM kill leaves no container log line, and `docker inspect` on the restarted

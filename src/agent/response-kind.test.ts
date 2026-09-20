@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test'
-import { isRawContentType, isDefinitivelyMissing } from './response-kind.js'
+import { isRawContentType, isDefinitivelyMissing, PARSE_INPUT_CAP } from './response-kind.js'
 
 describe('isRawContentType', () => {
   it('accepts JSON, including with charset parameters and odd casing', () => {
@@ -67,5 +67,22 @@ describe('isDefinitivelyMissing', () => {
   it('does not short-circuit success', () => {
     expect(isDefinitivelyMissing(200)).toBe(false)
     expect(isDefinitivelyMissing(204)).toBe(false)
+  })
+})
+
+describe('PARSE_INPUT_CAP', () => {
+  // The number is the fix, not a tuning default: it is what bounds the worst-case
+  // synchronous parse (linkedom + Readability on the shared event loop) that starved
+  // heartbeats and the HTTP listener on 2026-09-20. If someone moves it, they should do
+  // it with the measurements in hand, not by editing the constant on a hunch.
+  it('stays at the measured value the oversized-body guard depends on', () => {
+    expect(PARSE_INPUT_CAP).toBe(2_000_000)
+  })
+
+  it('sits far above any real article page so it never bites honest traffic', () => {
+    // Typical article pages land under 200k chars (fetch-chain.ts's header); the largest
+    // real pages are an order of magnitude past that. The cap is for adversarial and
+    // accidental giants, not for pages the parser can handle.
+    expect(PARSE_INPUT_CAP).toBeGreaterThanOrEqual(1_000_000)
   })
 })

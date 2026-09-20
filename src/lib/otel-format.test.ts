@@ -55,6 +55,10 @@ describe('severityFor', () => {
     expect(severityFor('process.memory_pressure', { currentBytes: 1, limitBytes: 2 })).toBe('error')
   })
 
+  it('is error for the loop-watch', () => {
+    expect(severityFor('process.loop_lag', { lagMs: 4_812, intervalMs: 5_000 })).toBe('error')
+  })
+
   it('is info for process.exit / beforeExit — console-only, they run after the OTel flush', () => {
     expect(severityFor('process.exit', { code: 0 })).toBe('info')
     expect(severityFor('process.beforeExit', { code: 0 })).toBe('info')

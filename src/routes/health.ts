@@ -4,6 +4,7 @@ import { env } from '../env.js'
 import { fetchTavilyUsage } from '../lib/tavily-account.js'
 import { restartStats, isDraining, jobCounts } from '../lib/job-store.js'
 import { memorySnapshot } from '../lib/memory-watch.js'
+import { loopSnapshot } from '../lib/loop-watch.js'
 
 async function readYtdlpVersion(): Promise<string> {
   const proc = Bun.spawn([env.YTDLP_PATH, '--version'], {
@@ -32,6 +33,7 @@ export const healthRoute = new Elysia()
       draining: isDraining(),
       jobs: jobCounts(),
       memory: memorySnapshot(),
+      eventLoopLagMs: loopSnapshot(),
     }),
     {
       response: z.object({
@@ -56,12 +58,18 @@ export const healthRoute = new Elysia()
           })
           .nullable()
           .describe('cgroup memory usage against its limit; null off-cgroup (local dev, tests)'),
+        eventLoopLagMs: z
+          .number()
+          .nullable()
+          .describe(
+            'Event-loop lag in ms from the most recent 5s sample (lib/loop-watch.ts) — how late that interval fired; sustained high values mean the loop is being blocked (synchronous parsing, GC). Null before the first sample exists (the first seconds of a boot)',
+          ),
       }),
       detail: {
         tags: ['System'],
         summary: 'Liveness probe',
         description:
-          'Returns `{ status: "ok" }` if the service process is up, plus `lastRestartAt` and the `reaped` / `interrupted` job counts of this process lifetime — an unclean restart shows as `reaped` > 0 until the next deploy. `draining`, `jobs`, and `memory` are monitor-facing visibility into load and shutdown state, added alongside the restart fields. Only `status` gates anything (Docker healthcheck, rollhook) — a draining container still serves polls correctly, so none of the new fields degrade it. No auth required.',
+          'Returns `{ status: "ok" }` if the service process is up, plus `lastRestartAt` and the `reaped` / `interrupted` job counts of this process lifetime — an unclean restart shows as `reaped` > 0 until the next deploy. `draining`, `jobs`, `memory`, and `eventLoopLagMs` are monitor-facing visibility into load, shutdown and event-loop state, added alongside the restart fields. Only `status` gates anything (Docker healthcheck, rollhook) — a draining container still serves polls correctly, so none of the new fields degrade it. No auth required.',
       },
     },
   )

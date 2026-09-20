@@ -10,6 +10,7 @@ import { probeRoutes } from './routes/probe.js'
 import { log } from './lib/log.js'
 import { flushOtel } from './lib/otel.js'
 import { startMemoryWatch } from './lib/memory-watch.js'
+import { startLoopWatch } from './lib/loop-watch.js'
 import { beginDraining, jobCounts, waitForDrain, setMemoryPressure } from './lib/job-store.js'
 
 // ── Process-level diagnostics ────────────────────────────────────────────────
@@ -136,6 +137,10 @@ process.on('unhandledRejection', (reason) => {
   log('process.unhandledRejection', { reason: String(reason), stack })
 })
 startMemoryWatch(setMemoryPressure)
+// See lib/loop-watch.ts — measures timer drift every 5 s so a starved loop (the 2026-09-20
+// reaped-on-read / worker.failed shape, listener dead while jobs kept running) is visible
+// and measurable instead of only diagnosable after the fact.
+startLoopWatch()
 // The drain window is only real while the compose `stop_grace_period` (vps repo) stays above
 // it, and those two numbers live in two repos. If they ever drift the wrong way, Docker
 // SIGKILLs before `drainThenExit` gets to log anything — the identical silent shape this file
