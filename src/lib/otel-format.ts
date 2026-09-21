@@ -42,8 +42,10 @@ export type LogSeverity = 'info' | 'warn' | 'error'
  *   `unhandledRejection` (the two process-level handlers in index.ts, already logged as loud
  *   failures there), or is one of ERROR_EVENTS: the reaps (job.reaped, job.reaped_on_read —
  *   every one is a job a caller lost to a restart, and the count is what the HyperDX alert
- *   fires on) and the memory watchdog (process.memory_pressure — the only in-process
- *   warning a cgroup OOM kill leaves, since SIGKILL runs no handler). NOT process.exit /
+ *   fires on), the memory watchdog (process.memory_pressure — the only in-process
+ *   warning a cgroup OOM kill leaves, since SIGKILL runs no handler), and the loop-watch
+ *   (process.loop_lag — the only in-process warning of a starved event loop, the shape behind
+ *   the 2026-09-20 reaped-on-read on a LIVE process). NOT process.exit /
  *   process.beforeExit: those handlers run after the OTel flush has already happened (see
  *   flushThenExit in index.ts — "console only"), so a severity there reaches no exporter,
  *   and a routine deploy's `process.exit code 0` would read as an error on the console for
@@ -67,6 +69,7 @@ const ERROR_EVENTS = new Set([
   'job.reaped',
   'job.reaped_on_read',
   'process.memory_pressure',
+  'process.loop_lag',
 ])
 
 export function severityFor(event: string, fields: Record<string, unknown> = {}): LogSeverity {
