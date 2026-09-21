@@ -59,6 +59,75 @@ export function isRawContentType(contentType: string | null | undefined): boolea
 // hint in githubFile already makes.
 const DEFINITIVE_MISSING = new Set([404, 410])
 
+// The largest body the chain will hand to the synchronous parsers (linkedom's parseHTML +
+// Readability, and the site adapters that read the same document) — in CHARACTERS of the
+// response text, a proxy for the DOM size the parser will build.
+//
+// Measured into existence on 2026-09-20: the fetch chain runs those parsers INLINE on the
+// event loop every job shares (one Bun process — src/index.ts has a single listener), so one
+// oversized page stalls heartbeats (job-store.ts reaps on a 90s-stale heartbeat, even on a
+// live process), the idle watchdog, and the HTTP listener together; the fully-developed
+// shape is the 2026-08-06 wedge in docs/measurements.md (listener dead while jobs kept
+// running). 2M chars is far above any real article page (typical: <200k) so the cap never
+// bites honest traffic, but bounds the worst-case synchronous parse to a fraction of a
+// second instead of seconds-plus GC.
+//
+// Over-cap is a MISS like any other, not an error: the chain falls through to lightpanda
+// (a real browser in its own process and memory budget — exactly the right reader for a
+// page too heavy for this one) and then Tavily Extract. `wayback` applies the same cap —
+// an archived copy of a huge page is just as capable of stalling the loop.
+//
+// This cap bounds only what the PARSER is handed. It is applied to an already-materialized
+// string, so on its own it leaves the download, the UTF-8 decode and the allocation in front
+// of it unbounded — which is what MAX_BODY_BYTES below is for. The two are a pair.
+export const PARSE_INPUT_CAP = 2_000_000
+
+// The largest response body `safeFetch` will download and decode, in BYTES.
+//
+// `await res.text()` was the hole PARSE_INPUT_CAP could not close: it materializes the WHOLE
+// body before anything can inspect it, on the one event loop this process shares with every
+// job's heartbeat, the idle watchdog and the HTTP listener. A host answering with gigabytes
+// — adversarial, or just an accidentally huge artifact — was therefore downloaded, decoded
+// and allocated in full before the cap ever saw a character. That is the stall shape behind
+// the 2026-09-20 reaped-on-read on a LIVE process (lib/loop-watch.ts). fetch-chain.ts's
+// `readBoundedBody` counts against this while it reads, and cuts rather than continues.
+//
+// 4x PARSE_INPUT_CAP because the two count different things: this one counts BYTES off the
+// wire, the parse cap counts CHARACTERS of decoded text, and a UTF-8 character is at most 4
+// bytes. Sizing it at exactly 4x is what guarantees the byte bound can never cut a body the
+// character cap would have accepted — so a page that is honest but enormous still reaches
+// the parse decision, and PARSE_INPUT_CAP stays the single number that decides parsing.
+export const MAX_BODY_BYTES = PARSE_INPUT_CAP * 4
+
+// A response body as the fetch chain holds it: decoded text, plus whether the byte bound cut
+// it short. `readBoundedBody` (fetch-chain.ts) produces these; it is the only thing that ever
+// touches a socket.
+export interface BoundedBody {
+  /** The decoded body: the whole of it, unless `truncated`. */
+  text: string
+  /** True when the body was CUT at MAX_BODY_BYTES rather than read to the end. */
+  truncated: boolean
+}
+
+/**
+ * Why this body may not be handed to the synchronous parser, or null when it may.
+ *
+ * Two bounds, and they are not the same bound twice. `truncated` is the byte bound: the body
+ * never arrived in full, so there is no document to build and no way to know what was in the
+ * part that did not arrive. The length check is PARSE_INPUT_CAP, the character cap on what
+ * `parseHTML`/Readability — and the site adapters that read the same document — may be handed
+ * on the one event loop every job shares.
+ *
+ * Shared by step 1 and the Wayback rescue so both apply the same two bounds and report the
+ * same reason; over either is a MISS like any other, and the caller falls through to its next
+ * step rather than failing.
+ */
+export function parseInputOverflow(body: BoundedBody): string | null {
+  if (body.truncated) return `oversized (body over ${MAX_BODY_BYTES} bytes)`
+  if (body.text.length > PARSE_INPUT_CAP) return `oversized (${body.text.length} chars over ${PARSE_INPUT_CAP})`
+  return null
+}
+
 /** True when no later step in the fetch chain could possibly do better. */
 export function isDefinitivelyMissing(status: number): boolean {
   return DEFINITIVE_MISSING.has(status)

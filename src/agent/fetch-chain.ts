@@ -7,7 +7,8 @@ import { log } from '../lib/log.js'
 import { getActiveSpan } from '../lib/otel.js'
 import { normalizeText, capText, TEXT_CAP } from './extract.js'
 import { resolveSite } from './site-adapters.js'
-import { isRawContentType, isDefinitivelyMissing } from './response-kind.js'
+import { isRawContentType, isDefinitivelyMissing, PARSE_INPUT_CAP, MAX_BODY_BYTES, parseInputOverflow } from './response-kind.js'
+import type { BoundedBody } from './response-kind.js'
 import { parseRenderResponse, renderUrl } from './lightpanda.js'
 import { fetchYoutubeTranscript } from './ytdlp.js'
 import { waybackLookupUrl, isArchiveUrl, parseSnapshotDate, archiveBanner, snapshotAgeDays } from './archive.js'
@@ -142,10 +143,72 @@ const MIN_USABLE_CHARS = 200
 // Whether a response is verbatim-answer or document-to-extract, and whether a status means
 // "absent" rather than "not to you" — both live in response-kind.ts so they are unit-tested.
 
+// Reads a response body through a byte-counting reader, so nothing unbounded is ever
+// downloaded, decoded or allocated in one piece.
+//
+// `await res.text()` was the hole `PARSE_INPUT_CAP` could not close. It materializes the
+// ENTIRE body before anything in this file can look at it, and the UTF-8 decode runs on the
+// event loop this one Bun process shares with every job's heartbeat, the idle watchdog and
+// the HTTP listener — so a host that answers with gigabytes (adversarial, or an accidentally
+// huge artifact) was downloaded, decoded and allocated in full before a single character was
+// compared against the cap. The cap bounded the synchronous parse and nothing else. That is
+// the stall shape behind the 2026-09-20 reaped-on-read on a LIVE process (lib/loop-watch.ts).
+//
+// Reading it HERE is what makes every call site safe by construction: step 1 and the Wayback
+// rescue both went through `res.text()`, and the next one would have had to remember a guard.
+//
+// Over the cap is NOT an error, it is a miss like any other — the caller falls through to its
+// next step. `truncated` distinguishes a body that was cut from one read to the end, because
+// the two consumers differ: a raw JSON/CSV answer is still useful when cut short (`done` caps
+// what a worker receives at TEXT_CAP regardless, with the notice that says so), while the
+// HTML branch needs the whole document and treats a cut body as oversized.
+async function readBoundedBody(res: Response, jobId: string): Promise<BoundedBody> {
+  const body = res.body
+  // A 204/304 or a HEAD has no body at all: `res.text()` returned '' for these, and so does this.
+  if (!body) return { text: '', truncated: false }
+
+  const declared = Number(res.headers.get('content-length') ?? '')
+  if (Number.isFinite(declared) && declared > MAX_BODY_BYTES) {
+    // Cheap early-out: the origin declared its size up front, so not one byte is pulled.
+    await body.cancel().catch(() => {})
+    log('tool.fetchPage', { jobId, via: 'oversized', declaredBytes: declared, capBytes: MAX_BODY_BYTES })
+    return { text: '', truncated: true }
+  }
+
+  const reader = body.getReader()
+  const decoder = new TextDecoder()
+  let bytes = 0
+  let text = ''
+  try {
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      bytes += value.byteLength
+      if (bytes > MAX_BODY_BYTES) {
+        // CANCEL rather than drain: the remainder is never read off the socket, decoded or
+        // retained. The counted bytes are what tells an operator this response was cut.
+        await reader.cancel().catch(() => {})
+        log('tool.fetchPage', { jobId, via: 'oversized', readBytes: bytes, capBytes: MAX_BODY_BYTES })
+        return { text, truncated: true }
+      }
+      text += decoder.decode(value, { stream: true })
+    }
+    return { text: text + decoder.decode(), truncated: false }
+  } catch (err) {
+    // A body that errors mid-read (a dropped connection) must release the reader too, and the
+    // error still has to reach the caller's catch — a truncated body is not a substitute.
+    await reader.cancel().catch(() => {})
+    throw err
+  }
+}
+
 // Follows redirects BY HAND so every hop can be re-validated against the SSRF guard. A
 // single `fetch` with `redirect: 'follow'` would validate the first address and then follow
 // a 302 to anywhere — including the metadata service.
-async function safeFetch(startUrl: string, jobId = '-', maxHops = 3): Promise<Response> {
+//
+// Returns the body alongside the response because the body has already been read under the
+// cap; there is deliberately no `res.text()` left for a caller to reach for.
+async function safeFetch(startUrl: string, jobId = '-', maxHops = 3): Promise<{ res: Response; body: BoundedBody }> {
   let current = startUrl
   for (let hop = 0; ; hop++) {
     await assertPublicHttpUrl(current) // re-validate EVERY hop (initial + each redirect target)
@@ -156,14 +219,16 @@ async function safeFetch(startUrl: string, jobId = '-', maxHops = 3): Promise<Re
     })
     if (res.status >= 300 && res.status < 400) {
       const loc = res.headers.get('location')
-      if (!loc) return res
+      // A 3xx with no Location is not a redirect to follow; it is the answer, so its body is
+      // read like any other. The hops that DO redirect are never read — only the last one.
+      if (!loc) return { res, body: await readBoundedBody(res, jobId) }
       if (hop >= maxHops) throw new Error('too many redirects')
       const next = new URL(loc, current).toString() // resolve relative redirects
       log('tool.redirect', { jobId, from: current, to: next, status: res.status, hop: hop + 1 })
       current = next
       continue
     }
-    return res
+    return { res, body: await readBoundedBody(res, jobId) }
   }
 }
 
@@ -268,7 +333,11 @@ export async function runFetchChain(url: string, opts: FetchChainOptions): Promi
   // entry — `attempts` stays an honest record of what actually happened, and a caller reading
   // it back (fetch-bench.ts, `tool.fetchPage` logs) sees exactly one `tavily-extract` entry for
   // these URLs, not two dishonest failures in front of it.
-  let rdReason: 'thin' | 'threw' = 'thin'
+  // Why step 1 handed the page to the renderers instead of answering with it. Carried into
+  // every rendering attempt's log line, because "lightpanda was asked" means nothing without
+  // knowing what Readability had been given.
+  type Step1Miss = 'thin' | 'threw' | 'oversized'
+  let rdReason: Step1Miss = 'thin'
   let rdChars = 0
 
   if (site.skipToExtract) {
@@ -300,7 +369,7 @@ export async function runFetchChain(url: string, opts: FetchChainOptions): Promi
     const t1 = performance.now()
     let step1: FetchStep = 'readability'
     try {
-      const res = await safeFetch(fetchUrl, jobId)
+      const { res, body } = await safeFetch(fetchUrl, jobId)
 
       // A definitively-absent resource stops here. Every remaining step would ask the same
       // origin the same question and be told the same thing, and the last of them bills for it.
@@ -315,15 +384,19 @@ export async function runFetchChain(url: string, opts: FetchChainOptions): Promi
       if (!res.ok) {
         attempt(attempts, step1, t1, { ok: false, error: `HTTP ${res.status}` })
       } else {
-        // Read the body ONCE — a Response body is a stream and cannot be consumed twice, so
-        // the content-type branch and the HTML branch have to share this.
-        const body = await res.text()
+        // The body arrived with `res` — `safeFetch` read it under MAX_BODY_BYTES, so what is
+        // left to decide here is only what may be PARSED. Reading it once is still load-bearing:
+        // the content-type branch and the HTML branch have to share the same decoded string.
         const contentType = res.headers.get('content-type')
 
         // A non-HTML body IS the answer — hand it back verbatim rather than asking an HTML
-        // parser to find an article in it.
+        // parser to find an article in it. It gets no cap of its own: `normalizeText`'s passes
+        // are linear and bounded now by the byte reader, and `done` caps what a worker actually
+        // receives at TEXT_CAP with the notice that says so. Cutting it here would discard the
+        // payload of the very URL class this branch exists for — a large JSON or CSV dump is
+        // exactly what a model cites, and its first 2M characters are not waste.
         if (isRawContentType(contentType)) {
-          const raw = normalizeText(body)
+          const raw = normalizeText(body.text)
           if (raw.length > 0) {
             attempt(attempts, 'raw', t1, { ok: true, chars: raw.length })
             log('tool.fetchPage', { jobId, url, via: 'raw', chars: raw.length, contentType })
@@ -334,23 +407,34 @@ export async function runFetchChain(url: string, opts: FetchChainOptions): Promi
           // page to a browser.
           attempt(attempts, 'raw', t1, { ok: false, chars: 0, error: 'empty body' })
         } else {
-          const { document } = parseHTML(body)
-          // A site adapter reads its own markup; anything else, and any adapter that does not
-          // recognise what it got, falls through to Readability unchanged.
-          const adapted = site.extract ? site.extract(document as never) : null
-          if (adapted) step1 = 'site-adapter'
-          const article = adapted
-            ? null
-            : new Readability(document as unknown as ConstructorParameters<typeof Readability>[0]).parse()
-          const raw = adapted ?? article?.textContent?.trim()
-          const text = raw ? normalizeText(raw) : raw
-          rdChars = text?.length ?? 0
-          if (text && text.length >= MIN_USABLE_CHARS) {
-            attempt(attempts, step1, t1, { ok: true, chars: text.length })
-            log('tool.fetchPage', { jobId, url, via: step1, chars: text.length })
-            return done(step1, text)
+          const oversized = parseInputOverflow(body)
+          if (oversized) {
+            // A miss like every other, never an error: the chain falls through to the
+            // renderers, and lightpanda — a real browser in its own process and memory budget
+            // — is exactly the right reader for a page too heavy to parse here. `rdChars`
+            // stays 0 the way the `threw` path leaves it: no extraction ran, and the shape of
+            // the problem is in the attempt's error string.
+            rdReason = 'oversized'
+            attempt(attempts, step1, t1, { ok: false, chars: body.text.length, error: oversized })
+          } else {
+            const { document } = parseHTML(body.text)
+            // A site adapter reads its own markup; anything else, and any adapter that does not
+            // recognise what it got, falls through to Readability unchanged.
+            const adapted = site.extract ? site.extract(document as never) : null
+            if (adapted) step1 = 'site-adapter'
+            const article = adapted
+              ? null
+              : new Readability(document as unknown as ConstructorParameters<typeof Readability>[0]).parse()
+            const raw = adapted ?? article?.textContent?.trim()
+            const text = raw ? normalizeText(raw) : raw
+            rdChars = text?.length ?? 0
+            if (text && text.length >= MIN_USABLE_CHARS) {
+              attempt(attempts, step1, t1, { ok: true, chars: text.length })
+              log('tool.fetchPage', { jobId, url, via: step1, chars: text.length })
+              return done(step1, text)
+            }
+            attempt(attempts, step1, t1, { ok: false, chars: rdChars, error: `thin (${rdChars} chars)` })
           }
-          attempt(attempts, step1, t1, { ok: false, chars: rdChars, error: `thin (${rdChars} chars)` })
         }
       }
     } catch (err) {
@@ -412,14 +496,23 @@ export async function runFetchChain(url: string, opts: FetchChainOptions): Promi
       // — five hops, where the chain's default of 3 failed the whole rescue with "too many
       // redirects". Every hop is still re-validated against the SSRF guard inside safeFetch, so
       // this widens the budget, not the trust.
-      const res = await safeFetch(waybackLookupUrl(fetchUrl), jobId, 8)
+      const { res, body } = await safeFetch(waybackLookupUrl(fetchUrl), jobId, 8)
       if (!res.ok) {
         const ms = attempt(attempts, 'wayback', tW, { ok: false, error: `HTTP ${res.status}` })
         onArchive?.({ ok: false, ms, snapshotAgeDays: null })
         return fail(originalReason)
       }
-      const body = await res.text()
-      const { document } = parseHTML(body)
+      // The same two bounds as step 1, and for the same reason: an archived copy of a huge
+      // page stalls the loop just as hard as the live one, and a body that was CUT at
+      // MAX_BODY_BYTES is not a document Readability can read. Wayback is the last step, so
+      // this degrades to `fail` like every other miss here — never an error out of the chain.
+      const oversized = parseInputOverflow(body)
+      if (oversized) {
+        const ms = attempt(attempts, 'wayback', tW, { ok: false, chars: body.text.length, error: oversized })
+        onArchive?.({ ok: false, ms, snapshotAgeDays: null })
+        return fail(originalReason)
+      }
+      const { document } = parseHTML(body.text)
       const article = new Readability(document as unknown as ConstructorParameters<typeof Readability>[0]).parse()
       const raw = article?.textContent?.trim()
       const text = raw ? normalizeText(raw) : raw

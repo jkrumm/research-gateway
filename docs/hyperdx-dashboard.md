@@ -279,6 +279,15 @@ config is exported to `vps/observability/alerts/` — Mongo is not backed up, th
 | `memory pressure >= 1 (15m)` | 13 | ≥1 | Admission shed at 85% of the cgroup limit. The only in-process warning a SIGKILL allows |
 | `drain cut live jobs >= 1 (1h)` | 14 | ≥1 | `process.drained` with `remaining > 0` — the drain window elapsed with jobs still running |
 
+`process.loop_lag` (event-loop lag over 1s, error level) is deliberately NOT an alert: it is a
+diagnostic that explains other signals, not one to page on. A starved loop announces itself
+through the alerts above — a reaped-on-read on a live process, a `worker.failed` burst, the
+listener going quiet — and `GET /health`'s `eventLoopLagMs` / `eventLoopLagPeakMs` answer "is the
+loop slow right now" without a page. The 2026-09-20 reaped-on-read incident (live process,
+starved heartbeats) is the shape it was built to explain; the structural fix is `MAX_BODY_BYTES`
+in `response-kind.ts` with the byte-counting reader in `fetch-chain.ts`, which bound what the
+chain downloads and decodes, alongside `PARSE_INPUT_CAP`, which bounds the synchronous parse.
+
 `thresholdType: "above"` is **inclusive** (`above_exclusive` is the strict one), so
 `threshold: 1` fires at 1.
 
