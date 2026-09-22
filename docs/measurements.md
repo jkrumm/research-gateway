@@ -105,6 +105,26 @@ mistakes have the same shape — a number quoted from one run. Re-read this tabl
 either, and re-derive it after any change to depth routing, since deep wall time tracks
 `rounds` x `workers`.
 
+### Consistency-review pass — added latency (2026-09-23)
+
+The post-synthesis internal-consistency pass adds one unconditional lead-model call per job
+(`reviewConsistency()`, after synthesis/assembly and before `groundReport`). Measured from the
+`consistency.done` span of two real `scripts/smoke.ts` runs against the live IU endpoint + Tavily
+(one query each, n=1 per depth — treat as an order-of-magnitude estimate, not a distribution; see
+the caution at the top of this file):
+
+| depth | report size | consistency pass | job wall clock | added share |
+|-|-:|-:|-:|-:|
+| quick | 1.8k chars, 5 citations | 2.1s | 23.4s | ~9% |
+| deep | 29.3k chars, 33 citations | 6.9s | 154.3s | ~4.5% |
+
+Against the 30-day p50s above (quick 38s, deep 366s), the pass adds roughly 2s / 5.5% at quick
+and roughly 7s / 1.9% at deep — small relative to both the existing run-to-run spread (this file's
+own warning: deep wall clock alone has been seen to span 671s–1137s on identical config) and the
+`SHUTDOWN_DRAIN_MS` margin. **No change to the 1800s drain window**: even doubling the deep-tail
+estimate (~14s) leaves it two orders of magnitude under the 1237s measured max and nowhere near
+the 1800s budget.
+
 ## Measured baseline
 
 `standard`, 15 runs — 5 heterogeneous queries x 3 repetitions via
