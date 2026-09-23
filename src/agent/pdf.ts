@@ -23,7 +23,10 @@
 //
 // Dependency-free of env.js/log.js by design (same convention as ledger.ts/site-adapters.ts):
 // the caller passes every path/limit in, so this stays unit-testable without booting the
-// env-parsing chain.
+// env-parsing chain. `idle-watchdog.ts` is the one exception — it is equally dependency-free
+// (no imports at all), so pulling it in costs nothing this file doesn't already pay.
+
+import { createIdleWatchdog } from '../lib/idle-watchdog.js'
 
 /** The largest PDF this chain will download and feed to pdftotext. */
 export const PDF_MAX_BYTES = 25 * 1024 * 1024
@@ -31,7 +34,7 @@ export const PDF_MAX_BYTES = 25 * 1024 * 1024
 /** The largest stdout `pdftotext` may produce before this module stops reading it. */
 export const PDF_MAX_OUTPUT_BYTES = 2 * 1024 * 1024
 
-/** How long one `pdftotext` invocation may run before it is killed — a hang guard on this ONE subprocess's unit of work, not a job-level or wall-clock budget (see ~/.claude/rules/agent-limits.md). A killed extraction is a miss the fetch chain falls through from, exactly like a thrown parse error already is. */
+/** How long `pdftotext` (or the body feeding it) may go with NO progress before it is killed — an idle watchdog on this ONE subprocess's unit of work, not a job-level or wall-clock budget (see ~/.claude/rules/agent-limits.md). "Progress" is any of: a chunk read off the caller's body reader, a chunk written to pdftotext's stdin, a chunk read off its stdout — so a large-but-actively-streaming paper is never punished, only real silence is. A killed extraction is a miss the fetch chain falls through from, exactly like a thrown parse error already is. */
 export const PDF_HANG_GUARD_MS = 60_000
 
 const PDF_MAGIC = '%PDF-'
@@ -81,26 +84,71 @@ export interface ExtractPdfTextOptions {
   pdftotextPath: string
   maxBytes?: number
   maxOutputBytes?: number
+  /** No-progress idle timeout — see `PDF_HANG_GUARD_MS`'s doc comment. */
   hangGuardMs?: number
 }
 
-function readCapped(stream: ReadableStream<Uint8Array> | null, cap: number): Promise<{ text: string; truncated: boolean }> {
+// Thrown internally by `withIdle` when the idle watchdog aborts while something here is
+// mid-await — never escapes `extractPdfText`, which always translates it into the `overCap:
+// false, reason: 'pdftotext idle for …ms'` result.
+class PdfIdleError extends Error {}
+
+// Races `promise` against the idle watchdog's abort signal, so a stall on ANY single await —
+// the caller's body reader, pdftotext's stdin, pdftotext's stdout — unblocks this function the
+// moment the watchdog fires, rather than leaving it hung on a promise that will never settle on
+// its own (killing the child process alone does not resolve a pending read on the CALLER's
+// reader, which is not this module's to cancel out from under it).
+function withIdle<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) return Promise.reject(new PdfIdleError('idle'))
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = (): void => reject(new PdfIdleError('idle'))
+    signal.addEventListener('abort', onAbort, { once: true })
+    promise.then(
+      (v) => {
+        signal.removeEventListener('abort', onAbort)
+        resolve(v)
+      },
+      (e) => {
+        signal.removeEventListener('abort', onAbort)
+        reject(e)
+      },
+    )
+  })
+}
+
+function readCapped(
+  stream: ReadableStream<Uint8Array> | null,
+  cap: number,
+  opts?: { onChunk?: () => void; idleSignal?: AbortSignal },
+): Promise<{ text: string; truncated: boolean }> {
   if (!stream) return Promise.resolve({ text: '', truncated: false })
   return (async () => {
+    const reader = stream.getReader()
     const decoder = new TextDecoder()
     let text = ''
     let bytes = 0
     let truncated = false
-    for await (const chunk of stream) {
-      bytes += chunk.byteLength
-      // Past the cap, keep DRAINING without keeping: stopping the read would leave pdftotext
-      // blocked on a full pipe until the hang guard killed it, turning a long paper into a miss.
-      if (truncated) continue
-      if (bytes > cap) {
-        truncated = true
-        continue
+    try {
+      for (;;) {
+        const { done, value } = opts?.idleSignal ? await withIdle(reader.read(), opts.idleSignal) : await reader.read()
+        if (done || !value) break
+        opts?.onChunk?.()
+        bytes += value.byteLength
+        // Past the cap, keep DRAINING without keeping: stopping the read would leave pdftotext
+        // blocked on a full pipe until the idle watchdog killed it, turning a long paper into a miss.
+        if (truncated) continue
+        if (bytes > cap) {
+          truncated = true
+          continue
+        }
+        text += decoder.decode(value, { stream: true })
       }
-      text += decoder.decode(chunk, { stream: true })
+    } catch {
+      // An idle-aborted read, or the stream genuinely erroring (the process was SIGKILLed out
+      // from under it) — either way this returns what was captured so far, marked truncated,
+      // rather than rejecting: this function never threw before, and every call site relies on
+      // that (Promise.all in the success path has no `.catch`).
+      return { text, truncated: true }
     }
     if (!truncated) text += decoder.decode()
     return { text, truncated }
@@ -119,7 +167,7 @@ function readCapped(stream: ReadableStream<Uint8Array> | null, cap: number): Pro
 export async function extractPdfText(opts: ExtractPdfTextOptions): Promise<PdfExtractResult> {
   const maxBytes = opts.maxBytes ?? PDF_MAX_BYTES
   const maxOutputBytes = opts.maxOutputBytes ?? PDF_MAX_OUTPUT_BYTES
-  const hangGuardMs = opts.hangGuardMs ?? PDF_HANG_GUARD_MS
+  const idleMs = opts.hangGuardMs ?? PDF_HANG_GUARD_MS
 
   if (opts.declaredLength !== undefined && Number.isFinite(opts.declaredLength) && opts.declaredLength > maxBytes) {
     await opts.reader.cancel().catch(() => {})
@@ -132,11 +180,24 @@ export async function extractPdfText(opts: ExtractPdfTextOptions): Promise<PdfEx
     stderr: 'pipe',
   })
 
-  const hangController = new AbortController()
-  let hangTimer: ReturnType<typeof setTimeout> | undefined
+  // Idle watchdog, armed from the moment the process spawns and reset by every unit of
+  // progress this call can observe (a chunk read off the caller's body, a chunk written to
+  // pdftotext's stdin, a chunk read off its stdout) — see `PDF_HANG_GUARD_MS`'s doc comment for
+  // why this replaced a guard that only armed after the whole body was already piped in.
+  const watchdog = createIdleWatchdog(idleMs)
+  let idleFired = false
+  watchdog.signal.addEventListener('abort', () => {
+    idleFired = true
+    try {
+      proc.kill('SIGKILL')
+    } catch {
+      // already gone
+    }
+  })
+  watchdog.arm()
 
-  const stdoutPromise = readCapped(proc.stdout, maxOutputBytes)
-  const stderrPromise = readCapped(proc.stderr, 8_192).then((r) => r.text)
+  const stdoutPromise = readCapped(proc.stdout, maxOutputBytes, { onChunk: watchdog.arm, idleSignal: watchdog.signal })
+  const stderrPromise = readCapped(proc.stderr, 8_192, { idleSignal: watchdog.signal }).then((r) => r.text)
 
   let bytes = 0
   let overCap = false
@@ -145,11 +206,15 @@ export async function extractPdfText(opts: ExtractPdfTextOptions): Promise<PdfEx
     if (opts.head && opts.head.byteLength > 0) {
       bytes += opts.head.byteLength
       if (bytes > maxBytes) overCap = true
-      else await writer.write(opts.head)
+      else {
+        await withIdle(Promise.resolve(writer.write(opts.head)), watchdog.signal)
+        watchdog.arm()
+      }
     }
     if (!overCap) {
       for (;;) {
-        const { done, value } = await opts.reader.read()
+        const { done, value } = await withIdle(opts.reader.read(), watchdog.signal)
+        watchdog.arm()
         if (done || !value) break
         bytes += value.byteLength
         if (bytes > maxBytes) {
@@ -157,44 +222,40 @@ export async function extractPdfText(opts: ExtractPdfTextOptions): Promise<PdfEx
           await opts.reader.cancel().catch(() => {})
           break
         }
-        await writer.write(value)
+        await withIdle(Promise.resolve(writer.write(value)), watchdog.signal)
+        watchdog.arm()
       }
     } else {
       await opts.reader.cancel().catch(() => {})
     }
   } catch (err) {
-    clearTimeout(hangTimer)
+    watchdog.clear()
     try {
       proc.kill('SIGKILL')
     } catch {
       // already gone
     }
+    await opts.reader.cancel().catch(() => {})
     await stdoutPromise.catch(() => {})
     await stderrPromise.catch(() => {})
+    if (idleFired || err instanceof PdfIdleError) {
+      return { ok: false, overCap: false, reason: `pdftotext idle for ${idleMs}ms` }
+    }
     return { ok: false, overCap: false, reason: `pdf stream error: ${String(err)}` }
   }
 
   try {
-    await writer.end()
+    await withIdle(Promise.resolve(writer.end()), watchdog.signal)
   } catch {
     // A pdftotext that already died (killed above, or exited early on bad input) closes its
     // stdin pipe from its side — ending an already-closed sink throws and carries no new
-    // information here, so it is swallowed rather than surfaced as this call's own failure.
+    // information here, so it is swallowed rather than surfaced as this call's own failure. An
+    // idle-aborted `end()` swallows the same way: `idleFired` (or the final check below) is
+    // what reports it.
   }
-  // Armed only now that the whole body is piped in: the guard is on pdftotext's own work, and
-  // a slow download of a large paper is not a hung extraction.
-  hangTimer = setTimeout(() => {
-    hangController.abort()
-    try {
-      proc.kill('SIGKILL')
-    } catch {
-      // already gone
-    }
-  }, hangGuardMs)
-  hangTimer.unref?.()
 
   if (overCap) {
-    clearTimeout(hangTimer)
+    watchdog.clear()
     try {
       proc.kill('SIGKILL')
     } catch {
@@ -207,10 +268,10 @@ export async function extractPdfText(opts: ExtractPdfTextOptions): Promise<PdfEx
 
   const [{ text: stdout }, stderrText] = await Promise.all([stdoutPromise, stderrPromise])
   const code = await proc.exited
-  clearTimeout(hangTimer)
+  watchdog.clear()
 
-  if (hangController.signal.aborted) {
-    return { ok: false, overCap: false, reason: `pdftotext hang guard fired after ${hangGuardMs}ms` }
+  if (idleFired) {
+    return { ok: false, overCap: false, reason: `pdftotext idle for ${idleMs}ms` }
   }
   // `proc.signalCode`, not `proc.killed` — measured true on Bun for both a SIGKILL and a
   // clean fast exit alike (the same trap documented in agent/ytdlp.ts / lightpanda/server.ts).

@@ -141,3 +141,51 @@ describe('extractPdfText', () => {
     expect(pulled).toBeLessThan(10)
   })
 })
+
+describe('extractPdfText idle watchdog', () => {
+  const STALL_PATH = `${FIXTURES}/stall.sh`
+
+  it('kills a process that never reads stdin or writes stdout, and reports idle', async () => {
+    // One small chunk is enough to exercise the write path; `stall.sh` never drains its
+    // stdin or produces stdout, so once that one write/read exchange settles, nothing else
+    // ever progresses and the watchdog must fire on its own.
+    const reader = streamOf(new Uint8Array([1, 2, 3])).getReader()
+    const started = performance.now()
+    const result = await extractPdfText({ reader, pdftotextPath: STALL_PATH, hangGuardMs: 50 })
+    const elapsed = performance.now() - started
+    expect(result.ok).toBe(false)
+    if (!result.ok) {
+      expect(result.overCap).toBe(false)
+      expect(result.reason).toContain('idle')
+    }
+    // Bounded well under the 60s default — proves the watchdog fired, not a real timeout.
+    expect(elapsed).toBeLessThan(5_000)
+  })
+
+  it('unblocks and reports idle when the body reader itself stalls forever', async () => {
+    // `.read()` never resolves — mirrors a stalled response body stream. Killing the child
+    // process alone would never unblock this call, since nothing here owns that pending
+    // promise; the watchdog has to race it instead.
+    const neverReader = {
+      read: () => new Promise<{ done: boolean; value?: Uint8Array }>(() => {}),
+      cancel: async () => {},
+    }
+    const started = performance.now()
+    const result = await extractPdfText({ reader: neverReader, pdftotextPath: STALL_PATH, hangGuardMs: 50 })
+    const elapsed = performance.now() - started
+    expect(result.ok).toBe(false)
+    if (!result.ok) {
+      expect(result.overCap).toBe(false)
+      expect(result.reason).toContain('idle')
+    }
+    expect(elapsed).toBeLessThan(5_000)
+  })
+
+  it.skipIf(!PDFTOTEXT_PATH)('does not fire the watchdog on a real, actively-streaming extraction', async () => {
+    // Regression guard for the rewrite: a normal, fast extraction must not be punished by
+    // the new progress-based watchdog just because it now arms on every chunk.
+    const reader = streamOf(VALID_PDF).getReader()
+    const result = await extractPdfText({ reader, pdftotextPath: PDFTOTEXT_PATH!, hangGuardMs: 50 })
+    expect(result.ok).toBe(true)
+  })
+})
