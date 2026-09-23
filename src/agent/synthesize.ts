@@ -1,6 +1,6 @@
 import { generateText, tool } from 'ai'
 import type { Tool } from 'ai'
-import { synthesisModel, leadModelWithDoubledBudget, ROLE_BUDGETS } from '../lib/llm.js'
+import { synthesisModel, leadModelWithDoubledBudget, leadSubmitChoice, ROLE_BUDGETS } from '../lib/llm.js'
 import type { IuLanguageModel } from '../lib/llm.js'
 import { synthesisPrompt, backgroundSection } from './prompt.js'
 import { resolveSynthesisReport } from './extract.js'
@@ -58,7 +58,7 @@ export async function synthesize(args: {
       instructions: synthesisPrompt(depth),
       prompt: renderDigests(query, context, digests),
       tools: { submit_report: submitReportTool },
-      toolChoice: { type: 'tool', toolName: 'submit_report' },
+      toolChoice: leadSubmitChoice('submit_report'),
       maxRetries: 2,
       abortSignal: idle.signal,
       onStepEnd: () => idle.arm(),

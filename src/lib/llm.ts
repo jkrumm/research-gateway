@@ -1,7 +1,7 @@
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible'
 import { wrapLanguageModel, defaultSettingsMiddleware } from 'ai'
 import { env } from '../env.js'
-import { ROLE_BUDGETS, effortProviderSettings, roleProviderSettings } from './llm-settings.js'
+import { ROLE_BUDGETS, effortProviderSettings, roleProviderSettings, submitToolChoice } from './llm-settings.js'
 import type { LlmRole } from './llm-settings.js'
 
 export { ROLE_BUDGETS, REASONING_EFFORT } from './llm-settings.js'
@@ -47,3 +47,8 @@ export const workerModel = withRoleSettings(rawWorkerModel, 'workerStep')
 export function leadModelWithDoubledBudget(role: 'plan' | 'synthesis'): IuLanguageModel {
   return withRoleSettings(rawLeadModel, role, ROLE_BUDGETS[role] * 2)
 }
+
+// The `toolChoice` for a lead/worker call that must end in its submit tool — see
+// `submitToolChoice` for why it is not always a forced choice.
+export const leadSubmitChoice = <T extends string>(toolName: T) => submitToolChoice(env.IU_LEAD_MODEL, toolName)
+export const workerSubmitChoice = <T extends string>(toolName: T) => submitToolChoice(env.IU_WORKER_MODEL, toolName)

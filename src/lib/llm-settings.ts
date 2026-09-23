@@ -17,6 +17,21 @@ export function reasoningEffortFor(modelId: string): 'none' | typeof REASONING_E
   return /luna/i.test(modelId) ? 'none' : REASONING_EFFORT
 }
 
+// A forced `tool_choice` (a named tool, or 'required') is only accepted at effort 'none'.
+// DeepSeek thinking mode rejects both — "Thinking mode does not support this tool_choice",
+// HTTP 503 wrapping a 400, probed 2026-09-23 — and every lead call forces its submit tool, so
+// on deepseek-v4.1-flash at 'high' every plan/synthesis/consistency call failed into its
+// fallback. Above 'none' the named tool goes out as 'auto' instead: the caller keeps it the
+// only tool on offer, and a text-only reply lands in the caller's existing "no valid
+// submit_* call" fallback rather than the SDK's ToolChoiceViolationError (which is why this
+// is decided at the call site, not rewritten in a middleware behind the SDK's back).
+export function submitToolChoice<T extends string>(
+  modelId: string,
+  toolName: T,
+): { type: 'tool'; toolName: T } | 'auto' {
+  return reasoningEffortFor(modelId) === 'none' ? { type: 'tool', toolName } : 'auto'
+}
+
 // Plan and synthesis both run on IU_LEAD_MODEL but need very different output budgets — the
 // synthesis report is written entirely inside the `submit_report` tool call, plan's tool call
 // is a handful of sub-questions, and a worker step is a normal tool-use turn. So budget is

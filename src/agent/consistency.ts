@@ -1,6 +1,6 @@
 import { generateText, tool } from 'ai'
 import type { Tool } from 'ai'
-import { leadModel } from '../lib/llm.js'
+import { leadModel, leadSubmitChoice } from '../lib/llm.js'
 import { consistencyPrompt } from './prompt.js'
 // The schema (runtime validator) and its inferred shape (type) share a name, so the value
 // import carries an inline type-only rename rather than a second import statement.
@@ -77,7 +77,7 @@ export async function reviewConsistency(args: {
           instructions: consistencyPrompt(),
           prompt: report,
           tools: { submit_review: submitReviewTool },
-          toolChoice: { type: 'tool', toolName: 'submit_review' },
+          toolChoice: leadSubmitChoice('submit_review'),
           maxRetries: 2,
           abortSignal: idle.signal,
           onStepEnd: () => idle.arm(),

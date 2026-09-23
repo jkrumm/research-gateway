@@ -1,6 +1,6 @@
 import { generateText, tool } from 'ai'
 import type { Tool } from 'ai'
-import { planModel, leadModelWithDoubledBudget } from '../lib/llm.js'
+import { planModel, leadModelWithDoubledBudget, leadSubmitChoice } from '../lib/llm.js'
 import type { IuLanguageModel } from '../lib/llm.js'
 import { profiles } from './depth.js'
 import { planPrompt, backgroundSection } from './prompt.js'
@@ -57,7 +57,7 @@ export async function planResearch(args: {
       instructions: planPrompt(depth),
       prompt: query + backgroundSection(context),
       tools: { submit_plan: submitPlanTool },
-      toolChoice: { type: 'tool', toolName: 'submit_plan' },
+      toolChoice: leadSubmitChoice('submit_plan'),
       maxRetries: 2,
       abortSignal: idle.signal,
       onStepEnd: () => idle.arm(),

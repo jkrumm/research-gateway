@@ -5,6 +5,7 @@ import {
   effortProviderSettings,
   reasoningEffortFor,
   roleProviderSettings,
+  submitToolChoice,
 } from './llm-settings.js'
 
 // Pure module, no env.js import — asserts the exact request-body shape `llm.ts` merges into
@@ -62,5 +63,10 @@ describe('roleProviderSettings', () => {
       max_completion_tokens: ROLE_BUDGETS.synthesis,
     })
     expect(effortProviderSettings('gpt-6-luna')).toEqual({ providerOptions: { iu: { reasoningEffort: 'none' } } })
+  })
+
+  it('forces the submit tool only at effort none — DeepSeek thinking mode rejects a forced tool_choice', () => {
+    expect(submitToolChoice('gpt-6-luna', 'submit_report')).toEqual({ type: 'tool', toolName: 'submit_report' })
+    expect(submitToolChoice('deepseek-v4.1-flash', 'submit_report')).toBe('auto')
   })
 })

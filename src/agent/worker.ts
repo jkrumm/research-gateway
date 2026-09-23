@@ -1,6 +1,6 @@
 import { generateText, tool, hasToolCall } from 'ai'
 import type { Tool, StopCondition, ToolSet } from 'ai'
-import { workerModel } from '../lib/llm.js'
+import { workerModel, workerSubmitChoice } from '../lib/llm.js'
 import { buildTools } from './tools.js'
 import { profiles } from './depth.js'
 import { workerPrompt, backgroundSection } from './prompt.js'
@@ -101,7 +101,7 @@ export async function runWorker(args: {
             const nearContext = (last?.usage?.inputTokens ?? 0) > profile.maxContextTokens * 0.8
             if (nearContext) {
               forcedReason ??= 'context_cap'
-              return { activeTools: ['submit_digest'], toolChoice: { type: 'tool', toolName: 'submit_digest' } }
+              return { activeTools: ['submit_digest'], toolChoice: workerSubmitChoice('submit_digest') }
             }
             return {}
           },
