@@ -68,12 +68,37 @@ install_bin lightpanda 0.3.6 \
   33568934d374daf9012b9be0847fd82a99dd9f1cb2f2f93bb783cc78a96c99ac \
   "version" || exit_status=1
 
-# Same pin as ../Dockerfile's YTDLP_VERSION. The Dockerfile uses the musllinux
-# asset (alpine/musl container); this is the plain macOS asset for the native
-# LaunchAgent.
-install_bin yt-dlp 2026.07.04 \
-  "https://github.com/yt-dlp/yt-dlp/releases/download/2026.07.04/yt-dlp_macos" \
-  498bd0dae17855c599d371d68ec5bafc439a9d8640e838be25c765a9792f261b \
-  "--version" || exit_status=1
+# Same pin as ../Dockerfile's YTDLP_VERSION, but the ONEDIR macOS build, not the onefile
+# `yt-dlp_macos`: measured 2026-09-23, the onefile build unpacks into a fresh temp dir on every
+# run and Gatekeeper re-scans the unpacked dylibs each time — 8.5s per call, every call, which
+# timed out /health/ytdlp and would eat most of a transcript fetch. The onedir build pays that
+# scan once (first run ~8s) and then starts in ~0.3s.
+install_ytdlp() {
+  local version=2026.07.04 sha=b0724470a0cf6dae5175a87eee05d6e75c5a0c10d2c3015166bd4d34e92b1b7b
+  local dist="$BIN_DIR/yt-dlp-dist" stamp="$BIN_DIR/yt-dlp-dist/.sha256"
+  if [[ -x "$dist/yt-dlp_macos" && "$(cat "$stamp" 2>/dev/null)" == "$sha" ]]; then
+    print "OK  yt-dlp $version already installed, checksum matches pin — skipping download"
+  else
+    local tmp
+    tmp=$(mktemp -d "$BIN_DIR/yt-dlp.XXXXXX")
+    print -- "->  downloading yt-dlp $version (onedir)"
+    if ! curl -fsSL -o "$tmp/y.zip" "https://github.com/yt-dlp/yt-dlp/releases/download/$version/yt-dlp_macos.zip"; then
+      print -u2 "FAIL  yt-dlp: download failed"; rm -rf "$tmp"; return 1
+    fi
+    if ! echo "${sha}  $tmp/y.zip" | shasum -a 256 -c - >/dev/null 2>&1; then
+      print -u2 "FAIL  yt-dlp: sha256 mismatch against the pinned checksum — refusing to install"; rm -rf "$tmp"; return 1
+    fi
+    mkdir "$tmp/dist" && unzip -q "$tmp/y.zip" -d "$tmp/dist" || { print -u2 "FAIL  yt-dlp: unzip failed"; rm -rf "$tmp"; return 1; }
+    print -r -- "$sha" > "$tmp/dist/.sha256"
+    xattr -dr com.apple.quarantine "$tmp/dist" 2>/dev/null || true
+    rm -rf "$dist" && mv "$tmp/dist" "$dist" && rm -rf "$tmp"
+  fi
+  # YTDLP_PATH points at this stable name; replaces the onefile binary an earlier install left.
+  ln -sfn "$dist/yt-dlp_macos" "$BIN_DIR/yt-dlp"
+  print -- "->  smoke test: $BIN_DIR/yt-dlp --version (first run after install pays the one-time scan)"
+  "$BIN_DIR/yt-dlp" --version >/dev/null || { print -u2 "FAIL  yt-dlp: smoke test failed"; return 1; }
+  print "OK  yt-dlp $version ready at $BIN_DIR/yt-dlp"
+}
+install_ytdlp || exit_status=1
 
 exit $exit_status

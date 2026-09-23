@@ -33,6 +33,9 @@ mini-setup: ## Clone/update the deploy clone, install deps + pinned binaries, in
 	@chmod +x "$(APP_DIR)"/scripts/*.sh
 	"$(APP_DIR)/scripts/install-bins.sh"
 	$(MAKE) launchd-install
+	@# What setup just started IS the deployed build — without the marker the poller's first tick
+	@# would diff from the empty tree and restart a freshly started, idle gateway for nothing.
+	@git -C "$(APP_DIR)" rev-parse HEAD > "$(DATA_DIR)/deployed-sha"
 
 .PHONY: launchd-install
 launchd-install: ## Render the plist templates (__HOME__ substituted) and (re)load all three LaunchAgents (FORCE=1 skips the busy-job guard)
