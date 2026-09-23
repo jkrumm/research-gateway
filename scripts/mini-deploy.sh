@@ -167,7 +167,7 @@ main() {
     return 1
   fi
 
-  local deps_changed=0 restart_needed=0 lightpanda_changed=0 launchd_changed=0
+  local deps_changed=0 restart_needed=0 lightpanda_changed=0 launchd_changed=0 install_bins_changed=0
   local f
   for f in "${changed_arr[@]}"; do
     case "$f" in
@@ -175,6 +175,7 @@ main() {
       *.md|docs/*) ;;  # docs-only changes never restart anything
       lightpanda/*) lightpanda_changed=1; restart_needed=1 ;;
       launchd/*) launchd_changed=1 ;;
+      scripts/install-bins.sh) install_bins_changed=1; restart_needed=1 ;;
       *) restart_needed=1 ;;
     esac
   done
@@ -183,6 +184,19 @@ main() {
     log "package.json/bun.lock changed — bun install --frozen-lockfile --production"
     if ! (cd "$APP_DIR" && bun install --frozen-lockfile --production); then
       log "ERROR: bun install failed — leaving the gateway on its current running build"
+      return 1
+    fi
+  fi
+
+  # scripts/install-bins.sh pins lightpanda/yt-dlp into ~/.research-gateway/bin — a change to
+  # it (a version bump, a checksum rotation) must be applied to those pinned binaries BEFORE the
+  # gateway restarts onto whatever code now expects them, same reasoning as deps_changed above.
+  # A non-zero exit here fails the whole deploy: no deployed-sha is written (below), so the next
+  # tick retries from the same starting point rather than restarting onto mismatched binaries.
+  if [[ "$install_bins_changed" -eq 1 ]]; then
+    log "scripts/install-bins.sh changed — running it before restart"
+    if ! (cd "$APP_DIR" && ./scripts/install-bins.sh); then
+      log "ERROR: install-bins.sh failed — leaving the gateway on its current running build"
       return 1
     fi
   fi

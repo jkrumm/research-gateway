@@ -23,15 +23,23 @@ const STOPWORDS = new Set([
   'you', 'your', 'our', 'its', 'his', 'her', 'their', 'not', 'but', 'from',
 ])
 
+/** Lowercase, split on non-alphanumerics, drop terms under MIN_TERM_LENGTH, drop STOPWORDS,
+ * dedupe. The one tokenizer shared by parseQueryTerms (a query) and buildCorpusStats (every
+ * note in the vault) — a term that could never survive as a QUERY term must never occur in the
+ * corpus's df table either (nothing would ever look it up), and vice versa. */
+function tokenizeTerms(text: string): Set<string> {
+  const seen = new Set<string>()
+  for (const raw of text.toLowerCase().split(/[^a-z0-9]+/)) {
+    if (raw.length >= MIN_TERM_LENGTH && !STOPWORDS.has(raw)) seen.add(raw)
+  }
+  return seen
+}
+
 /** Split a free-text query into lowercase terms of at least 3 chars — shorter terms ("a", "in",
  * "of") are too common to be a useful ripgrep pattern or ranking signal — and drop STOPWORDS.
  * Deduplicated. */
 export function parseQueryTerms(query: string): string[] {
-  const seen = new Set<string>()
-  for (const raw of query.toLowerCase().split(/[^a-z0-9]+/)) {
-    if (raw.length >= MIN_TERM_LENGTH && !STOPWORDS.has(raw)) seen.add(raw)
-  }
-  return [...seen]
+  return [...tokenizeTerms(query)]
 }
 
 /** True when `a` and `b` are the same failed brainNotes lookup rephrased rather than a genuinely
@@ -50,6 +58,53 @@ export function isNearDuplicateQuery(a: readonly string[], b: readonly string[])
   if (overlap === smaller.size) return true
   const union = setA.size + setB.size - overlap
   return union > 0 && overlap / union >= 0.6
+}
+
+// A worker that keeps missing on brainNotes gets cut off rather than burning its whole context
+// budget on ripgrep + file reads that will fail the same way again — the incident this exists
+// for: 16 calls, 0 strong matches, context blown before searchWeb/fetchPage ever ran.
+const MAX_BRAIN_CALLS = 3
+
+export type BrainCallGate =
+  | { blocked: false }
+  | { blocked: true; reason: 'budget' | 'duplicate' }
+
+export interface BrainCallGuard {
+  /** Records this call attempt and reports whether it should be blocked — either the worker's
+   * call budget (MAX_BRAIN_CALLS) is spent, or `terms` is a near-duplicate rephrase of an
+   * earlier call that already came back with no strong match (isNearDuplicateQuery). Budget is
+   * checked first: once it's spent every further call is blocked for that reason regardless of
+   * whether the terms happen to be new, since the point is stopping the burn, not just the
+   * repetition. */
+  check(terms: readonly string[]): BrainCallGate
+  /** Records that `terms` came back with no strong match, so a later near-duplicate rephrase of
+   * the same question is recognised and blocked instead of re-searched. Callers must only call
+   * this after a call that was NOT blocked by check() — a blocked call never reached the vault. */
+  recordMiss(terms: readonly string[]): void
+}
+
+/** Pure call-budget + near-duplicate policy for the brainNotes tool — factored out of
+ * buildBrainNotesTool (tools.ts) so it's unit-testable without booting a tool, an env, or a
+ * ledger. One guard per worker (tools.ts's buildTools is called once per worker, same scoping
+ * as searchWeb's `searched` / fetchPage's `fetched`). */
+export function createBrainCallGuard(maxCalls = MAX_BRAIN_CALLS): BrainCallGuard {
+  let calls = 0
+  const missedTermSets: string[][] = []
+
+  return {
+    check(terms) {
+      calls++
+      if (calls > maxCalls) return { blocked: true, reason: 'budget' }
+      const termsArr = [...terms]
+      if (missedTermSets.some((missed) => isNearDuplicateQuery(termsArr, missed))) {
+        return { blocked: true, reason: 'duplicate' }
+      }
+      return { blocked: false }
+    },
+    recordMiss(terms) {
+      missedTermSets.push([...terms])
+    },
+  }
 }
 
 export interface BrainCandidate {
@@ -126,25 +181,54 @@ export function countTermMatches(text: string, terms: string[]): number {
 const TITLE_BOOST = 5
 const FRONTMATTER_BOOST = 2
 
-/** Inverse document frequency over the candidate set actually searched (NOT the whole vault) —
- * `N` = candidates.length, `df(term)` = how many of them contain it at least once. A term in
- * every candidate scores exactly 0 and stops contributing to ranking entirely; this is what lets
- * "research"/"gateway"/"model" — real, on-topic words that are simply this corpus's own
- * vocabulary — fall out of the score the same way a stopword does, without having to hardcode
- * them (the incident this exists to fix: those four terms alone matched 120-200 of 203 notes).
- * `df` is floored at 1 so a term absent from every candidate (shouldn't happen — terms come from
- * a ripgrep match that already found at least one) never produces Infinity/NaN. */
-export function computeIdf(args: { candidates: BrainCandidate[]; terms: string[] }): Map<string, number> {
-  const { candidates, terms } = args
-  const n = candidates.length
+export interface CorpusStats {
+  /** Number of in-scope wiki .md notes the df table below was computed over — the WHOLE vault,
+   * not the candidate set a single query happened to match. */
+  size: number
+  /** Lowercase term -> number of corpus notes whose own tokenizeTerms() set contains it. A term
+   * absent from the map has df=0 — genuinely never seen in this corpus snapshot, not "unknown":
+   * buildCorpusStats tokenizes every in-scope note, so the map is complete for its snapshot. */
+  df: ReadonlyMap<string, number>
+}
+
+/** Builds the whole-corpus document-frequency table computeIdf needs: one entry per distinct
+ * term across every note, counting how many DISTINCT notes contain it (a term repeated many
+ * times within one note still counts once for that note, via tokenizeTerms's per-note Set).
+ * Pure/fs-free — brain-search.ts reads the notes off disk, this only tokenizes and counts, so
+ * it's unit-testable without touching a filesystem or spawning ripgrep. */
+export function buildCorpusStats(notes: readonly { content: string }[]): CorpusStats {
+  const df = new Map<string, number>()
+  for (const note of notes) {
+    for (const term of tokenizeTerms(note.content)) {
+      df.set(term, (df.get(term) ?? 0) + 1)
+    }
+  }
+  return { size: notes.length, df }
+}
+
+// The bug this fixes: computeIdf used to take its N and df from the CANDIDATE set a single
+// ripgrep search happened to match, not the whole vault. Two ways that collapses every term's
+// IDF to 0 (informativeTerms then returns [], and the best note is dropped as "no match"):
+// (1) a single-candidate result — df=1, N=1, ratio 100% — regardless of how rare the term
+// actually is vault-wide; (2) ANY single-term query — ripgrep only returns candidates that
+// already contain the term, so df==N is guaranteed for a 1-term query no matter the candidate
+// count. Fix: compute df against the WHOLE wiki corpus (CorpusStats, built once per 5-minute
+// cache window by brain-search.ts — see its header comment for why exact-token df, not the
+// substring match countTermMatches/tf use, is the right tradeoff here) so N and df no longer
+// move with how many candidates one query happened to match.
+// `df` is floored at 1 so a term absent from the corpus map (shouldn't happen for a term that
+// came from an actual ripgrep hit, but a stale/failed corpus build could still miss it) never
+// produces Infinity/NaN.
+export function computeIdf(args: { corpus: CorpusStats; terms: string[] }): Map<string, number> {
+  const { corpus, terms } = args
   const idf = new Map<string, number>()
-  if (n === 0) {
+  if (corpus.size === 0) {
     for (const term of terms) idf.set(term, 0)
     return idf
   }
   for (const term of terms) {
-    const df = candidates.filter((c) => c.content.toLowerCase().includes(term)).length
-    idf.set(term, Math.log(n / Math.max(1, df)))
+    const df = corpus.df.get(term) ?? 0
+    idf.set(term, Math.log(corpus.size / Math.max(1, df)))
   }
   return idf
 }
@@ -301,11 +385,12 @@ export function rankAndBuildNotes(args: {
   candidates: BrainCandidate[]
   terms: string[]
   baseUrl: string | undefined
+  corpus: CorpusStats
   maxResults?: number
 }): BrainNoteResult[] {
-  const { candidates, terms, baseUrl, maxResults = DEFAULT_MAX_RESULTS } = args
+  const { candidates, terms, baseUrl, corpus, maxResults = DEFAULT_MAX_RESULTS } = args
 
-  const idf = computeIdf({ candidates, terms })
+  const idf = computeIdf({ corpus, terms })
   const informativeTerms = selectInformativeTerms(terms, idf)
   const excerptTerms = informativeTerms.length > 0 ? informativeTerms : terms
 

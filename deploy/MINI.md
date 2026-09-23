@@ -39,7 +39,9 @@ resets the clone, runs `bun install` only when `package.json`/`bun.lock` changed
 what the diff touched (markdown/docs: nothing; `lightpanda/`: the sidecar too), and writes the
 marker only after a healthy restart — a failed deploy is retried on the next tick. A busy gateway
 defers the deploy instead of draining it. `launchd/` template changes are **not** applied
-automatically: `make launchd-install` by hand.
+automatically: `make launchd-install` by hand. A `scripts/install-bins.sh` change re-runs it
+against the clone before the restart; a non-zero exit fails the deploy (no marker written, retried
+next tick) rather than restart onto mismatched pinned binaries.
 
 `ExitTimeOut` 1860s on the gateway plist is load-bearing: launchd's default is 20s, which would
 SIGKILL through the 1800s `SHUTDOWN_DRAIN_MS` drain on a reboot or manual restart.

@@ -13,7 +13,7 @@ import { sonarSearch, type SonarContextSize } from './sonar.js'
 import { runFetchChain, hostOf } from './fetch-chain.js'
 import { normalizeUrl, type RetrievalLedger } from './ledger.js'
 import { searchBrain } from './brain-search.js'
-import { parseQueryTerms, isNearDuplicateQuery } from './brain.js'
+import { parseQueryTerms, createBrainCallGuard } from './brain.js'
 
 const tvly = tavily({ apiKey: env.TAVILY_API_KEY })
 
@@ -633,30 +633,31 @@ function buildLibraryDocsTool(ledger: RetrievalLedger, jobId = '-'): AnyTool | n
   }) as AnyTool
 }
 
+// Steers the model away from the failure mode this tool existed to fix: rephrasing the same
+// question at brainNotes over and over (the incident createBrainCallGuard's budget is named
+// for — 16 calls, 0 strong matches, context blown before searchWeb/fetchPage ever ran).
+const BRAIN_NO_MATCH_NOTE =
+  "No note in the owner's brain covers this. Do not rephrase and retry brainNotes — use searchWeb / fetchPage / githubFile instead."
+
+// Distinct from BRAIN_NO_MATCH_NOTE: this fires once createBrainCallGuard's budget is spent,
+// which can follow one or more SUCCESSFUL lookups earlier in the same worker — "no note covers
+// this" would be flatly false in that case. Point the model at what it already has instead of
+// implying the vault has nothing on the topic.
+const BRAIN_BUDGET_SPENT_NOTE =
+  'brainNotes call budget for this worker is spent — use the notes already returned, or other tools.'
+
 // Mini-only: the owner's second brain (a git checkout of an Obsidian vault). Gated on BOTH
 // BRAIN_DIR (to read a note) and BRAIN_BASE_URL (to cite one) — a tool that could read a note
 // but never produce a citable URL for it is worse than absent, per the ledger lesson (every
 // finding needs a URL the ledger has actually seen). Unset either on the VPS/local dev/tests,
 // exactly like buildLibraryDocsTool above.
-// Steers the model away from the failure mode this tool existed to fix: rephrasing the same
-// question at brainNotes over and over (the incident this file's dedupe logic below is named
-// for — 16 calls, 0 strong matches, context blown before searchWeb/fetchPage ever ran).
-const BRAIN_NO_MATCH_NOTE =
-  "No note in the owner's brain covers this. Do not rephrase and retry brainNotes — use searchWeb / fetchPage / githubFile instead."
-
-// A worker that keeps missing on brainNotes gets cut off rather than burning its whole budget
-// on ripgrep + file reads that will fail the same way again — see the dedupe block below.
-const MAX_BRAIN_CALLS = 3
-
 function buildBrainNotesTool(ledger: RetrievalLedger, jobId = '-'): AnyTool | null {
   if (!env.BRAIN_DIR || !env.BRAIN_BASE_URL) return null
 
-  // Per-WORKER state, same scoping as searchWeb's `searched` / fetchPage's `fetched` above
-  // (`buildTools` is called once per worker). Each entry is the stopword-filtered term set of
-  // a call that came back with NO strong match — used to recognise a later call as the same
-  // failed question rephrased, not a genuinely new one.
-  let calls = 0
-  const missedTermSets: string[][] = []
+  // Per-WORKER guard, same scoping as searchWeb's `searched` / fetchPage's `fetched` above
+  // (`buildTools` is called once per worker) — call-budget + near-duplicate-rephrase policy
+  // lives in brain.ts's createBrainCallGuard so it's unit-testable without booting a tool.
+  const guard = createBrainCallGuard()
 
   return tool({
     description:
@@ -665,19 +666,18 @@ function buildBrainNotesTool(ledger: RetrievalLedger, jobId = '-'): AnyTool | nu
       query: z.string().describe('What to look up, e.g. "model routing deepseek" or "research gateway grounding"'),
     }),
     execute: async ({ query }) => {
-      calls++
       const terms = parseQueryTerms(query)
 
-      const deduped = calls > MAX_BRAIN_CALLS || missedTermSets.some((missed) => isNearDuplicateQuery(terms, missed))
-      if (deduped) {
-        log('tool.brainNotes', { jobId, query, strong: 0, deduped: true })
-        return { query, results: [], note: BRAIN_NO_MATCH_NOTE }
+      const gate = guard.check(terms)
+      if (gate.blocked) {
+        log('tool.brainNotes', { jobId, query, strong: 0, deduped: true, reason: gate.reason })
+        return { query, results: [], note: gate.reason === 'budget' ? BRAIN_BUDGET_SPENT_NOTE : BRAIN_NO_MATCH_NOTE }
       }
 
       const result = await searchBrain(query, jobId)
       if (!result.ok) return { error: result.error }
       if (result.notes.length === 0) {
-        missedTermSets.push(terms)
+        guard.recordMiss(terms)
         return { query, results: [], note: BRAIN_NO_MATCH_NOTE }
       }
       // The tool read the full note (not a snippet) — recordRetrieved, the "full text" tier,

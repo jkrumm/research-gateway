@@ -2,10 +2,12 @@ import { describe, it, expect } from 'bun:test'
 import {
   parseQueryTerms,
   isNearDuplicateQuery,
+  createBrainCallGuard,
   parseFrontmatter,
   resolveTitle,
   resolveUpdatedDate,
   countTermMatches,
+  buildCorpusStats,
   computeIdf,
   selectInformativeTerms,
   scoreNote,
@@ -14,7 +16,7 @@ import {
   buildNoteUrl,
   rankAndBuildNotes,
 } from './brain.js'
-import type { BrainCandidate } from './brain.js'
+import type { BrainCandidate, CorpusStats } from './brain.js'
 
 describe('parseQueryTerms', () => {
   it('lowercases, splits on non-alphanumerics, drops short terms, dedupes', () => {
@@ -60,6 +62,66 @@ describe('isNearDuplicateQuery', () => {
   it('is false when either side is empty', () => {
     expect(isNearDuplicateQuery([], ['deepseek'])).toBe(false)
     expect(isNearDuplicateQuery(['deepseek'], [])).toBe(false)
+  })
+})
+
+describe('createBrainCallGuard', () => {
+  it('allows a fresh query through', () => {
+    const guard = createBrainCallGuard()
+    expect(guard.check(['deepseek', 'pricing'])).toEqual({ blocked: false })
+  })
+
+  it('blocks a near-duplicate rephrase of an earlier miss with reason "duplicate"', () => {
+    const guard = createBrainCallGuard()
+    expect(guard.check(['gpt', 'luna', 'reverted'])).toEqual({ blocked: false })
+    guard.recordMiss(['gpt', 'luna', 'reverted'])
+    expect(guard.check(['gpt', 'luna'])).toEqual({ blocked: true, reason: 'duplicate' })
+  })
+
+  it('does not block a genuinely different query after an earlier miss', () => {
+    const guard = createBrainCallGuard()
+    guard.check(['gpt', 'luna', 'reverted'])
+    guard.recordMiss(['gpt', 'luna', 'reverted'])
+    expect(guard.check(['lightpanda', 'sidecar'])).toEqual({ blocked: false })
+  })
+
+  it('blocks once the call budget is spent — even for a genuinely new query — with reason "budget"', () => {
+    const guard = createBrainCallGuard(2)
+    guard.check(['a-term', 'another-term'])
+    guard.check(['b-term', 'yet-another'])
+    expect(guard.check(['c-term', 'brand-new'])).toEqual({ blocked: true, reason: 'budget' })
+  })
+
+  it('the 16-call incident: 16 rephrased misses of the same failed question reach at most 3 real searches', () => {
+    const guard = createBrainCallGuard()
+    const rephrasings = [
+      ['gpt', 'luna', 'reverted'],
+      ['luna', 'reverted', 'after'],
+      ['gpt', 'luna'],
+      ['reverted', 'luna', 'model'],
+      ['luna', 'model', 'reverted'],
+      ['gpt', 'six', 'luna'],
+      ['luna', 'reverted', 'today'],
+      ['gpt', 'luna', 'revert'],
+      ['luna', 'revert', 'model'],
+      ['gpt', 'model', 'luna'],
+      ['reverted', 'gpt', 'luna'],
+      ['luna', 'six', 'reverted'],
+      ['gpt', 'luna', 'today'],
+      ['luna', 'model', 'today'],
+      ['gpt', 'reverted', 'model'],
+      ['luna', 'gpt', 'reverted'],
+    ]
+    let realSearches = 0
+    for (const terms of rephrasings) {
+      const gate = guard.check(terms)
+      if (!gate.blocked) {
+        realSearches++
+        // Every one of these came back with no strong match, per the incident.
+        guard.recordMiss(terms)
+      }
+    }
+    expect(realSearches).toBeLessThanOrEqual(3)
   })
 })
 
@@ -121,31 +183,60 @@ describe('countTermMatches', () => {
   })
 })
 
-describe('computeIdf', () => {
-  function note(relPath: string, content: string): BrainCandidate {
-    return { relPath, content }
-  }
+describe('buildCorpusStats', () => {
+  it('counts corpus size and per-term document frequency across all notes', () => {
+    const stats = buildCorpusStats([
+      { content: 'warden decides' },
+      { content: 'warden is the control plane' },
+      { content: 'unrelated content' },
+    ])
+    expect(stats.size).toBe(3)
+    expect(stats.df.get('warden')).toBe(2)
+    expect(stats.df.get('unrelated')).toBe(1)
+  })
 
-  it('scores a term present in every candidate at exactly 0', () => {
-    const candidates = [note('a.md', 'research gateway'), note('b.md', 'research gateway model')]
-    const idf = computeIdf({ candidates, terms: ['research'] })
+  it('dedupes multiple occurrences within one note to a single df increment', () => {
+    const stats = buildCorpusStats([{ content: 'deepseek deepseek deepseek' }])
+    expect(stats.df.get('deepseek')).toBe(1)
+  })
+
+  it('drops stopwords and short terms the same way parseQueryTerms does', () => {
+    const stats = buildCorpusStats([{ content: 'the a of it' }])
+    expect(stats.df.size).toBe(0)
+  })
+})
+
+describe('computeIdf', () => {
+  it('scores a term present in every corpus note at exactly 0', () => {
+    const corpus: CorpusStats = { size: 2, df: new Map([['research', 2]]) }
+    const idf = computeIdf({ corpus, terms: ['research'] })
     expect(idf.get('research')).toBe(0)
   })
 
-  it('scores a term present in only one of many candidates well above 0', () => {
-    const candidates = [
-      note('a.md', 'deepseek pricing'),
-      note('b.md', 'unrelated one'),
-      note('c.md', 'unrelated two'),
-      note('d.md', 'unrelated three'),
-    ]
-    const idf = computeIdf({ candidates, terms: ['deepseek'] })
+  it('scores a term present in only a small minority of the whole corpus well above 0', () => {
+    const corpus: CorpusStats = { size: 200, df: new Map([['deepseek', 3]]) }
+    const idf = computeIdf({ corpus, terms: ['deepseek'] })
     expect(idf.get('deepseek')).toBeGreaterThan(1)
   })
 
-  it('never produces Infinity/NaN for an empty candidate set', () => {
-    const idf = computeIdf({ candidates: [], terms: ['deepseek'] })
+  it('never produces Infinity/NaN for an empty corpus', () => {
+    const idf = computeIdf({ corpus: { size: 0, df: new Map() }, terms: ['deepseek'] })
     expect(idf.get('deepseek')).toBe(0)
+  })
+
+  it('treats a term absent from the df map as df=0, not "unknown"', () => {
+    const idf = computeIdf({ corpus: { size: 200, df: new Map() }, terms: ['ghostword'] })
+    expect(idf.get('ghostword')).toBeGreaterThan(0)
+  })
+
+  it('is unaffected by how many candidates a single query happened to match — the bug this replaces', () => {
+    // Old (buggy) computeIdf derived N and df from the CANDIDATE set: for a 1-term query every
+    // candidate necessarily contains the term (ripgrep guarantees it), so df==N always, idf==0
+    // always, no matter the real whole-vault rarity. The fix takes N/df from CorpusStats
+    // instead, which does not move with the candidate count.
+    const corpus: CorpusStats = { size: 200, df: new Map([['warden', 2]]) }
+    const oneCandidateIdf = computeIdf({ corpus, terms: ['warden'] })
+    expect(oneCandidateIdf.get('warden')).toBeGreaterThan(0)
   })
 })
 
@@ -305,19 +396,27 @@ describe('rankAndBuildNotes', () => {
     return Array.from({ length: count }, (_, i) => note(`wiki/${prefix}-${i}.md`, `---\ntitle: Distractor ${i}\n---\n\nunrelated content here`))
   }
 
+  // Treats the candidate set itself as the whole corpus — reproduces the old (pre-fix) default
+  // for tests that are not specifically exercising the candidate-set-vs-whole-corpus distinction
+  // (see the three tests at the bottom of this describe for that). A real caller always passes
+  // the actual whole-vault CorpusStats computed by brain-search.ts.
+  function corpusFromCandidates(candidates: BrainCandidate[]): CorpusStats {
+    return buildCorpusStats(candidates)
+  }
+
   it('ranks a title match above a body-only match', () => {
     const candidates = [
       note('wiki/a.md', '---\ntitle: Unrelated\n---\n\nmentions model routing once in passing'),
       note('wiki/b.md', '---\ntitle: Model routing\n---\n\n# Model routing\n\nthe full story of model routing'),
       ...distractors(4),
     ]
-    const results = rankAndBuildNotes({ candidates, terms: ['model', 'routing'], baseUrl })
+    const results = rankAndBuildNotes({ candidates, terms: ['model', 'routing'], baseUrl, corpus: corpusFromCandidates(candidates) })
     expect(results[0]?.title).toBe('Model routing')
   })
 
   it('drops candidates that never clear the strong-match bar', () => {
     const candidates = [note('wiki/a.md', '---\ntitle: Nothing relevant\n---\n\nunrelated content'), ...distractors(3)]
-    const results = rankAndBuildNotes({ candidates, terms: ['deepseek'], baseUrl })
+    const results = rankAndBuildNotes({ candidates, terms: ['deepseek'], baseUrl, corpus: corpusFromCandidates(candidates) })
     expect(results).toEqual([])
   })
 
@@ -329,7 +428,7 @@ describe('rankAndBuildNotes', () => {
       note('wiki/b.md', '---\ntitle: gpt-6-luna reverted\n---\n\nthe model was reverted after one day'),
       ...distractors(4),
     ]
-    const results = rankAndBuildNotes({ candidates, terms: ['luna', 'reverted'], baseUrl })
+    const results = rankAndBuildNotes({ candidates, terms: ['luna', 'reverted'], baseUrl, corpus: corpusFromCandidates(candidates) })
     expect(results.map((r) => r.title)).toEqual(['gpt-6-luna reverted'])
   })
 
@@ -340,20 +439,20 @@ describe('rankAndBuildNotes', () => {
     ]
     // "gpt-6-luna reverted" — the exact query from the live incident this fixes, against a
     // vault that genuinely has no note about it.
-    const results = rankAndBuildNotes({ candidates, terms: ['gpt', 'luna', 'reverted'], baseUrl })
+    const results = rankAndBuildNotes({ candidates, terms: ['gpt', 'luna', 'reverted'], baseUrl, corpus: corpusFromCandidates(candidates) })
     expect(results).toEqual([])
   })
 
   it('caps results at maxResults', () => {
     const relevant = Array.from({ length: 10 }, (_, i) => note(`wiki/n${i}.md`, `---\ntitle: deepseek note ${i}\n---\n\ndeepseek deepseek`))
     const candidates = [...relevant, ...distractors(15)]
-    const results = rankAndBuildNotes({ candidates, terms: ['deepseek'], baseUrl, maxResults: 3 })
+    const results = rankAndBuildNotes({ candidates, terms: ['deepseek'], baseUrl, corpus: corpusFromCandidates(candidates), maxResults: 3 })
     expect(results.length).toBe(3)
   })
 
   it('produces no results (not a crash) when baseUrl is unset', () => {
     const candidates = [note('wiki/a.md', '---\ntitle: deepseek\n---\n\ndeepseek'), ...distractors(5)]
-    const results = rankAndBuildNotes({ candidates, terms: ['deepseek'], baseUrl: undefined })
+    const results = rankAndBuildNotes({ candidates, terms: ['deepseek'], baseUrl: undefined, corpus: corpusFromCandidates(candidates) })
     expect(results).toEqual([])
   })
 
@@ -361,14 +460,49 @@ describe('rankAndBuildNotes', () => {
     const long = Array.from({ length: 300 }, (_, i) => `paragraph ${i} deepseek content here.`).join(' ')
     const relevant = Array.from({ length: 5 }, (_, i) => note(`wiki/n${i}.md`, `---\ntitle: deepseek ${i}\n---\n\n${long}`))
     const candidates = [...relevant, ...distractors(6)]
-    const results = rankAndBuildNotes({ candidates, terms: ['deepseek'], baseUrl })
+    const results = rankAndBuildNotes({ candidates, terms: ['deepseek'], baseUrl, corpus: corpusFromCandidates(candidates) })
     const total = results.reduce((sum, r) => sum + r.excerpt.length, 0)
     expect(total).toBeLessThanOrEqual(6_000)
   })
 
   it('carries the resolved updated date through', () => {
     const candidates = [note('wiki/a.md', '---\ntitle: deepseek\ntimestamp: 2026-09-23\n---\n\ndeepseek'), ...distractors(5)]
-    const results = rankAndBuildNotes({ candidates, terms: ['deepseek'], baseUrl })
+    const results = rankAndBuildNotes({ candidates, terms: ['deepseek'], baseUrl, corpus: corpusFromCandidates(candidates) })
     expect(results[0]?.updated).toBe('2026-09-23')
+  })
+
+  // The IDF-baseline bug and its fix, exercised through the public ranking entry point rather
+  // than computeIdf directly — these are the exact shapes that used to drop a real note as
+  // "no match": a single ripgrep hit, and any single-term query (ripgrep guarantees every
+  // candidate contains the term, so a candidate-derived corpus always saw df==N==1 for it).
+  it('returns a strong match from a SINGLE candidate when it is corpus-wide rare (df=1 of N=1 candidate, but rare in the real vault)', () => {
+    const candidates = [note('wiki/engineering/warden-control-plane.md', '---\ntitle: Warden control plane\n---\n\n# Warden control plane\n\nwarden decides and dispatches.')]
+    // Whole-vault corpus: 200 notes, "warden" appears in only 2 of them — genuinely rare, which
+    // a candidate-derived corpus (N=1, df=1) could never represent.
+    const corpus: CorpusStats = { size: 200, df: new Map([['warden', 2], ['control', 40], ['plane', 3]]) }
+    const results = rankAndBuildNotes({ candidates, terms: ['warden'], baseUrl, corpus })
+    expect(results.map((r) => r.title)).toEqual(['Warden control plane'])
+  })
+
+  it('returns a strong match for a single-term query even though every candidate necessarily contains that term', () => {
+    const candidates = [
+      note('wiki/engineering/warden-control-plane.md', '---\ntitle: Warden control plane\n---\n\nwarden owns the ledger.'),
+      note('wiki/other-mention.md', '---\ntitle: Unrelated aside\n---\n\nwarden is mentioned here once too.'),
+    ]
+    const corpus: CorpusStats = { size: 200, df: new Map([['warden', 2]]) }
+    const results = rankAndBuildNotes({ candidates, terms: ['warden'], baseUrl, corpus })
+    expect(results.map((r) => r.title)).toContain('Warden control plane')
+  })
+
+  it('still down-weights a term that recurs across most of the whole corpus, even when only a couple of candidates were searched', () => {
+    const candidates = [
+      note('wiki/a.md', '---\ntitle: A note about deepseek pricing\n---\n\nresearch gateway research'),
+      note('wiki/b.md', '---\ntitle: Unrelated\n---\n\nresearch gateway also mentions research'),
+    ]
+    // "research"/"gateway" recur across most of the 200-note whole vault — corpus noise, not
+    // signal — even though both of THESE candidates happen to contain them.
+    const corpus: CorpusStats = { size: 200, df: new Map([['research', 180], ['gateway', 150], ['deepseek', 3], ['pricing', 4]]) }
+    const results = rankAndBuildNotes({ candidates, terms: ['research', 'gateway'], baseUrl, corpus })
+    expect(results).toEqual([])
   })
 })

@@ -82,8 +82,6 @@ if overlay_args otel "$DIR/.env.mini.otel.tpl" "op://vps/argo/HYPERDX_API_KEY_PR
 GITHUB_ARGS=()
 if overlay_args github "$DIR/.env.mini.github.tpl" "op://vps/research-gateway/GITHUB_TOKEN"; then GITHUB_ARGS=("$REPLY"); fi
 
-export RESEARCH_GATEWAY_DEGRADED="${(j:,:)DEGRADED}"
-
 # Templates can't expand $HOME (secrets-run/op inject render literal text) —
 # compute the mini's absolute data paths here and export them so bun/zod see
 # them via process.env directly. Both live under the dedicated deploy layout
@@ -93,11 +91,18 @@ export JOB_DB_PATH="$HOME/.research-gateway/data/jobs.sqlite"
 export YTDLP_PATH="$HOME/.research-gateway/bin/yt-dlp"
 
 # brainNotes tool (agent/brain-search.ts) — only when the owner's second-brain checkout is
-# actually present. Unset (not DEGRADED) when it's not: this is a mini-only capability, not a
-# thing every deploy of this repo is expected to have, so its absence is not a failure to
-# report — see buildBrainNotesTool's BRAIN_DIR/BRAIN_BASE_URL gate in tools.ts.
+# actually present. `.env.mini.tpl` sets BRAIN_BASE_URL unconditionally, which means this mini
+# instance IS expected to have the vault checked out — a missing `wiki/` here is therefore a
+# real degradation (added to DEGRADED, same as the otel/github overlays above, BEFORE
+# RESEARCH_GATEWAY_DEGRADED is exported below), not a silent "this capability was never
+# configured" absence. See buildBrainNotesTool's BRAIN_DIR/BRAIN_BASE_URL gate in tools.ts.
 if [[ -d "$HOME/SourceRoot/brain/wiki" ]]; then
   export BRAIN_DIR="$HOME/SourceRoot/brain"
+elif /usr/bin/grep -q '^BRAIN_BASE_URL=' "$TPL_MINI" 2>/dev/null; then
+  print -u2 "research-gateway: ERROR BRAIN_BASE_URL is configured but $HOME/SourceRoot/brain/wiki is missing. Starting DEGRADED without brainNotes."
+  DEGRADED+=("brain")
 fi
+
+export RESEARCH_GATEWAY_DEGRADED="${(j:,:)DEGRADED}"
 
 exec "$SECRETS_RUN" run --env-file="$TPL_BASE" --env-file="$TPL_MINI" "${OTEL_ARGS[@]}" "${GITHUB_ARGS[@]}" -- bun run src/index.ts

@@ -75,7 +75,23 @@ install_bin lightpanda 0.3.6 \
 # scan once (first run ~8s) and then starts in ~0.3s.
 install_ytdlp() {
   local version=2026.07.04 sha=b0724470a0cf6dae5175a87eee05d6e75c5a0c10d2c3015166bd4d34e92b1b7b
-  local dist="$BIN_DIR/yt-dlp-dist" stamp="$BIN_DIR/yt-dlp-dist/.sha256"
+  # Versioned dist dir, not a fixed "yt-dlp-dist" name — a version bump then installs into a
+  # BRAND NEW directory that coexists with the currently-live one, so the repoint below (ln -sfn)
+  # is the only moment `bin/yt-dlp` ever changes, and it changes atomically (rename(2) under the
+  # hood). The old fixed-name scheme instead did `rm -rf "$dist" && mv ... "$dist"` on the SAME
+  # path `bin/yt-dlp` was already symlinked into — a reader hitting that path mid-swap could see
+  # ENOENT.
+  local dist="$BIN_DIR/yt-dlp-dist-$version"
+  local stamp="$dist/.sha256"
+
+  # Sweep scratch dirs (`mktemp -d "$BIN_DIR/yt-dlp.XXXXXX"` below) left behind by a run that
+  # crashed or was killed between mktemp and the final `mv` — nothing else ever removes them.
+  local leftover
+  for leftover in "$BIN_DIR"/yt-dlp.*(N); do
+    print -- "->  removing stale scratch dir $leftover"
+    rm -rf "$leftover"
+  done
+
   if [[ -x "$dist/yt-dlp_macos" && "$(cat "$stamp" 2>/dev/null)" == "$sha" ]]; then
     print "OK  yt-dlp $version already installed, checksum matches pin — skipping download"
   else
@@ -91,13 +107,29 @@ install_ytdlp() {
     mkdir "$tmp/dist" && unzip -q "$tmp/y.zip" -d "$tmp/dist" || { print -u2 "FAIL  yt-dlp: unzip failed"; rm -rf "$tmp"; return 1; }
     print -r -- "$sha" > "$tmp/dist/.sha256"
     xattr -dr com.apple.quarantine "$tmp/dist" 2>/dev/null || true
+    # `$dist` is a fresh versioned path that should not already exist (the `-x` check above
+    # would have skipped this branch if it did) — the `rm -rf` here only clears a partial dir
+    # left by an earlier FAILED attempt at this same version, never the live one.
     rm -rf "$dist" && mv "$tmp/dist" "$dist" && rm -rf "$tmp"
   fi
-  # YTDLP_PATH points at this stable name; replaces the onefile binary an earlier install left.
+
+  # Atomic repoint: `ln -sfn` replaces the symlink target in one syscall — bin/yt-dlp (what
+  # YTDLP_PATH points at) is never observed missing or half-written, on a fresh install or a
+  # version bump alike.
   ln -sfn "$dist/yt-dlp_macos" "$BIN_DIR/yt-dlp"
   print -- "->  smoke test: $BIN_DIR/yt-dlp --version (first run after install pays the one-time scan)"
   "$BIN_DIR/yt-dlp" --version >/dev/null || { print -u2 "FAIL  yt-dlp: smoke test failed"; return 1; }
   print "OK  yt-dlp $version ready at $BIN_DIR/yt-dlp"
+
+  # Only now that bin/yt-dlp is confirmed live and working: sweep every OTHER dist dir, versioned
+  # or not — this is what carries an existing install across the migration, cleaning up the
+  # pre-migration fixed-name `yt-dlp-dist` left by an earlier version of this script.
+  local old
+  for old in "$BIN_DIR"/yt-dlp-dist*(N); do
+    [[ "$old" == "$dist" ]] && continue
+    print -- "->  removing stale dist dir $old"
+    rm -rf "$old"
+  done
 }
 install_ytdlp || exit_status=1
 
