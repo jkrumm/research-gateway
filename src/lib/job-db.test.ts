@@ -226,6 +226,50 @@ describe('openJobDb — releaseLease', () => {
   })
 })
 
+describe('openJobDb — ownsLease', () => {
+  it('is true for the current owner and false for anyone else', () => {
+    const db = openJobDb(':memory:')
+    const id = crypto.randomUUID()
+    db.put(job({ jobId: id, status: 'running', owner: 'owner-a' }))
+
+    expect(db.ownsLease(id, 'owner-a')).toBe(true)
+    expect(db.ownsLease(id, 'owner-b')).toBe(false)
+    db.close()
+  })
+
+  it('is false for a job id that does not exist', () => {
+    const db = openJobDb(':memory:')
+    expect(db.ownsLease(crypto.randomUUID(), 'owner-a')).toBe(false)
+    db.close()
+  })
+
+  it('flips to the adopter once claimStale reassigns the lease', () => {
+    const db = openJobDb(':memory:')
+    const id = crypto.randomUUID()
+    db.put(job({ jobId: id, status: 'running', owner: 'owner-a' }))
+    db.renewLease(id, 'owner-a', Date.now() - HEARTBEAT_STALE_MS - 1_000)
+
+    db.claimStale('owner-b', Date.now(), Date.now() - HEARTBEAT_STALE_MS)
+
+    expect(db.ownsLease(id, 'owner-a')).toBe(false)
+    expect(db.ownsLease(id, 'owner-b')).toBe(true)
+    db.close()
+  })
+
+  it('never writes — a read-only check', () => {
+    const db = openJobDb(':memory:')
+    const id = crypto.randomUUID()
+    db.put(job({ jobId: id, status: 'running', owner: 'owner-a' }))
+    const before = db.get(id)
+
+    db.ownsLease(id, 'owner-a')
+    db.ownsLease(id, 'someone-else')
+
+    expect(db.get(id)).toEqual(before)
+    db.close()
+  })
+})
+
 // ── claimStale — the compare-and-set that replaces reapInterrupted ──────────────────────────
 describe('openJobDb — claimStale', () => {
   it('never re-claims a job the caller itself still owns, however stale its heartbeat', () => {

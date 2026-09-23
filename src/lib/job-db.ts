@@ -122,6 +122,16 @@ export interface JobDb {
    * lost the lease is silently ignored rather than racing the adopter's own checkpoint writes.
    */
   saveCheckpoint(jobId: string, owner: string, json: string | null): void
+  /**
+   * True only if `jobId` exists AND its CURRENT `owner` column is exactly `owner` — a plain
+   * primary-key read, no write. This is the cheap "have I been fenced?" check a long-running
+   * job can afford to make at every round/retry/synthesis boundary (agent/rounds.ts's
+   * `runRounds`): if another process's `claimStale` reassigned the lease since this process
+   * last checked, this returns false and the caller stops rather than keep paying for LLM
+   * calls / spawning pdftotext for a run whose result will be discarded by the owner fence
+   * anyway (`put`'s `WHERE job.owner IS excluded.owner`).
+   */
+  ownsLease(jobId: string, owner: string): boolean
   close(): void
 }
 
@@ -245,6 +255,11 @@ export function openJobDb(dbPath: string): JobDb {
   // saw once (at boot) while the owner keeps writing to it. See job-store.ts's `getJob`.
   const getStmt = db.prepare('SELECT * FROM job WHERE job_id = ?')
 
+  // A one-column existence check, not a full row read — `ownsLease` is called at every round
+  // boundary of a potentially long-running job, so this stays as cheap as the write-path's own
+  // owner fence.
+  const ownsLeaseStmt = db.prepare('SELECT 1 FROM job WHERE job_id = $jobId AND owner = $owner')
+
   // One UPDATE, one statement, one implicit SQLite transaction — see the JobDb.claimStale
   // doc comment for why that alone is the compare-and-set two replicas racing this file need.
   const claimStaleStmt = db.prepare(`
@@ -316,6 +331,10 @@ export function openJobDb(dbPath: string): JobDb {
 
     saveCheckpoint(jobId: string, owner: string, json: string | null): void {
       saveCheckpointStmt.run({ $jobId: jobId, $owner: owner, $json: json })
+    },
+
+    ownsLease(jobId: string, owner: string): boolean {
+      return ownsLeaseStmt.get({ $jobId: jobId, $owner: owner }) !== null
     },
 
     close(): void {

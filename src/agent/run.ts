@@ -15,14 +15,9 @@ import { readSearchSpend, readRenderStats } from './tools.js'
 import type { UsageStats } from '../lib/usage.js'
 import { env } from '../env.js'
 import { traceIdFromJobId, withRootSpan, withSpan } from '../lib/otel.js'
-import {
-  shouldRetryRound,
-  describeFailures,
-  collectRoundOutcome,
-  ROUND_RETRY_BACKOFF_MS,
-  type RoundResult,
-  type WorkerOutcome,
-} from './round.js'
+import { describeFailures, collectRoundOutcome, type RoundResult, type WorkerOutcome } from './round.js'
+import { runRounds } from './rounds.js'
+import { FencedError } from './fenced-error.js'
 
 // Re-exported for compatibility and direct unit-testing — the implementation lives in
 // `assemble.ts` because it has no `env.js` import chain (schema.js only), so it can be
@@ -120,12 +115,25 @@ function tracedRound(args: {
 export async function runResearch(
   input: { query: string; context?: string | undefined; depth?: Depth; jobId?: string },
   onUsage?: (stats: JobUsage) => void,
-  opts?: { checkpoint?: ResearchCheckpoint | null; onCheckpoint?: (checkpoint: ResearchCheckpoint) => void },
+  opts?: {
+    checkpoint?: ResearchCheckpoint | null
+    onCheckpoint?: (checkpoint: ResearchCheckpoint) => void
+    /**
+     * True once this process no longer owns the job's lease (job-store.ts's `ownsLease`) —
+     * checked at every round/retry/synthesis boundary (rounds.ts's `runRounds`, plus once more
+     * here before synthesis), and a positive check aborts the run with `FencedError` rather
+     * than continuing to spend LLM/pdftotext work a fenced-off adopter will discard anyway.
+     * Defaults to "never fenced", which is what every caller outside run-job.ts's live lease
+     * machinery (tests, scripts/smoke.ts) wants.
+     */
+    isFenced?: () => boolean
+  },
 ): Promise<ResearchReport> {
   const depth = input.depth ?? 'standard'
   const jobId = input.jobId ?? '-'
   const checkpoint = opts?.checkpoint ?? null
-  const onCheckpoint = opts?.onCheckpoint
+  const persistCheckpoint = opts?.onCheckpoint
+  const isFenced = opts?.isFenced ?? ((): boolean => false)
 
   // The whole job is one trace, and its id is derived from the jobId — so a job id from the
   // REST/MCP surface is enough to find the trace, with no lookup table in between.
@@ -147,30 +155,30 @@ export async function runResearch(
       // search cost covers only the post-resume portion. LLM usage below has no such gap — it
       // travels inside the checkpoint and is correct across a resume.
       let leadUsage = checkpoint?.leadUsage ?? emptyUsage()
-      let workerUsage = checkpoint?.workerUsage ?? emptyUsage()
-      const allDigests: WorkerDigest[] = checkpoint ? [...checkpoint.digests] : []
-      const askedLower = new Set<string>(checkpoint?.askedLower ?? [])
-      const allLedgers: LedgerSnapshot[] = checkpoint ? [...checkpoint.ledgers] : []
-      let workersDispatchedTotal = checkpoint?.workersDispatchedTotal ?? 0
-      // Job-level failure causes, across every round and the one retry — feeds both the
-      // zero-evidence throw's message and `shouldRetryRound`'s decision. A job-level latch:
-      // one retry per JOB, not per round, so a job with two zero-digest rounds doesn't
-      // silently double its worker spend chasing the same upstream outage.
-      const allFailures: string[] = checkpoint ? [...checkpoint.failures] : []
-      let alreadyRetried = checkpoint?.alreadyRetried ?? false
+      // Everything else the round loop needs is either FRESH or restored straight from the
+      // checkpoint — these are the INITIAL values only, handed to `runRounds` as `restore`;
+      // the loop itself (rounds.ts) owns mutating them from here on, and returns the
+      // accumulated state once it finishes or throws.
+      const initialWorkerUsage = checkpoint?.workerUsage ?? emptyUsage()
+      const initialDigests: WorkerDigest[] = checkpoint ? [...checkpoint.digests] : []
+      const initialAskedLower = checkpoint?.askedLower ?? []
+      const initialLedgers: LedgerSnapshot[] = checkpoint ? [...checkpoint.ledgers] : []
+      const initialWorkersDispatchedTotal = checkpoint?.workersDispatchedTotal ?? 0
+      const initialFailures: string[] = checkpoint ? [...checkpoint.failures] : []
+      const initialAlreadyRetried = checkpoint?.alreadyRetried ?? false
 
       const buildCheckpoint = (subQuestions: SubQuestion[], round: number): ResearchCheckpoint => ({
         version: CHECKPOINT_VERSION,
         subQuestions,
         round,
-        digests: allDigests,
-        ledgers: allLedgers,
-        askedLower: [...askedLower],
-        failures: allFailures,
-        alreadyRetried,
+        digests: initialDigests,
+        ledgers: initialLedgers,
+        askedLower: [...initialAskedLower],
+        failures: initialFailures,
+        alreadyRetried: initialAlreadyRetried,
         leadUsage,
-        workerUsage,
-        workersDispatchedTotal,
+        workerUsage: initialWorkerUsage,
+        workersDispatchedTotal: initialWorkersDispatchedTotal,
       })
 
       let currentQuestions: SubQuestion[]
@@ -178,7 +186,7 @@ export async function runResearch(
       if (checkpoint) {
         currentQuestions = checkpoint.subQuestions
         round = checkpoint.round
-        log('research.resumed', { jobId, round, digests: allDigests.length })
+        log('research.resumed', { jobId, round, digests: initialDigests.length })
       } else {
         // No span wrapper here — planResearch opens `research.plan` itself, so the
         // quick-depth path (which makes no LLM call at all) produces no zero-duration span.
@@ -188,100 +196,79 @@ export async function runResearch(
         log('research.plan', { jobId, subQuestions: plan.subQuestions.length })
         currentQuestions = plan.subQuestions
         round = 1
-        onCheckpoint?.(buildCheckpoint(currentQuestions, round))
+        persistCheckpoint?.(buildCheckpoint(currentQuestions, round))
       }
 
-      while (currentQuestions.length > 0) {
-        for (const sq of currentQuestions) askedLower.add(sq.question.trim().toLowerCase())
-
-        // What this round has to show — the first pass alone, unless the retry below runs, in
-        // which case it also carries that pass's digests. Used for the gap-question decision
-        // after this block, so a retry that DID recover evidence still informs what the next
-        // round asks.
-        const roundDigests: WorkerDigest[] = []
-        const absorb = (result: RoundResult): void => {
-          workerUsage = addUsage(workerUsage, result.usage)
-          allDigests.push(...result.digests)
-          roundDigests.push(...result.digests)
-          workersDispatchedTotal += currentQuestions.length
-          allLedgers.push(...result.ledgers)
-          allFailures.push(...result.failures)
-        }
-
-        const first = await tracedRound({
-          subQuestions: currentQuestions,
-          depth,
-          jobId,
-          round,
-          retry: false,
-          context: input.context,
-        })
-        absorb(first)
-
-        // One retry per JOB, not per round (see `alreadyRetried` above): a round that lost
-        // EVERY worker to a fast upstream failure is nearly free to retry once — there is no
-        // research budget left to protect (settled 2026-09-12). See round.ts's header for the
-        // evidence and the exact rule.
-        if (
-          shouldRetryRound({
-            digests: first.digests.length,
-            failures: first.failures.length,
-            alreadyRetried,
+      // The round loop itself — dispatch, the one-retry-per-job rule, gap-round advancement,
+      // and the fenced-lease check at every boundary — lives in rounds.ts's `runRounds`, pure
+      // and env-free so it is unit-testable without this module's LLM/env import chain. Every
+      // side effect it needs (dispatching a round, computing the next round's questions,
+      // persisting a checkpoint, deciding whether this process is still fenced) is injected
+      // below; `leadUsage` stays here since the loop itself never touches it (only
+      // plan/synthesis do).
+      const rounds = await runRounds({
+        profile,
+        initialQuestions: currentQuestions,
+        initialRound: round,
+        restore: checkpoint
+          ? {
+              digests: initialDigests,
+              ledgers: initialLedgers,
+              failures: initialFailures,
+              askedLower: initialAskedLower,
+              workerUsage: initialWorkerUsage,
+              workersDispatchedTotal: initialWorkersDispatchedTotal,
+              alreadyRetried: initialAlreadyRetried,
+            }
+          : null,
+        isFenced,
+        dispatchRound: (subQuestions, r, retry) => tracedRound({ subQuestions, depth, jobId, round: r, retry, context: input.context }),
+        nextRoundQuestions,
+        onRetry: ({ round: r, failures }) => {
+          log('round.retry', { jobId, round: r, failures: failures.length, reason: describeFailures(failures) })
+        },
+        onRoundComplete: ({ round: r, state, roundDigests, workersDispatched }) => {
+          // Emit a cumulative snapshot per round, not just once at the end (this also covers
+          // the retry, if one ran — `state.workerUsage` already includes it by this point).
+          // argo upserts on (source, source_id, machine), so each snapshot overwrites the last
+          // rather than double-counting — and a job that dies mid-flight still leaves the
+          // tokens it had already burned behind instead of reporting nothing at all.
+          if (onUsage) {
+            onUsage({
+              ...addUsage(leadUsage, state.workerUsage),
+              durationMs: Date.now() - start,
+              lead: leadUsage,
+              worker: state.workerUsage,
+            })
+          }
+          log('research.round', { jobId, round: r, workersDispatched, digestsReturned: roundDigests.length })
+        },
+        onCheckpoint: (state, nextQuestions, nextRound) => {
+          // Checkpoint after this completed round — including its retry, if one ran — with the
+          // NEXT round's questions (empty once there is nothing left to run, which resumes
+          // straight into synthesis below rather than re-entering the loop for nothing).
+          persistCheckpoint?.({
+            version: CHECKPOINT_VERSION,
+            subQuestions: nextQuestions,
+            round: nextRound,
+            digests: state.allDigests,
+            ledgers: state.allLedgers,
+            askedLower: [...state.askedLower],
+            failures: state.allFailures,
+            alreadyRetried: state.alreadyRetried,
+            leadUsage,
+            workerUsage: state.workerUsage,
+            workersDispatchedTotal: state.workersDispatchedTotal,
           })
-        ) {
-          log('round.retry', {
-            jobId,
-            round,
-            failures: first.failures.length,
-            reason: describeFailures(first.failures),
-          })
-          await new Promise((resolve) => setTimeout(resolve, ROUND_RETRY_BACKOFF_MS))
-          alreadyRetried = true
-          absorb(
-            await tracedRound({
-              subQuestions: currentQuestions,
-              depth,
-              jobId,
-              round,
-              retry: true,
-              context: input.context,
-            }),
-          )
-        }
+        },
+      })
 
-        // Emit a cumulative snapshot per round, not just once at the end (this also covers
-        // the retry above, if one ran — workerUsage already includes it by this point). argo
-        // upserts on (source, source_id, machine), so each snapshot overwrites the last rather
-        // than double-counting — and a job that dies mid-flight still leaves the tokens
-        // it had already burned behind instead of reporting nothing at all.
-        if (onUsage) {
-          onUsage({
-            ...addUsage(leadUsage, workerUsage),
-            durationMs: Date.now() - start,
-            lead: leadUsage,
-            worker: workerUsage,
-          })
-        }
-
-        log('research.round', {
-          jobId,
-          round,
-          workersDispatched: currentQuestions.length,
-          digestsReturned: roundDigests.length,
-        })
-
-        // Checkpoint after this completed round — including its retry, if one ran — with the
-        // NEXT round's questions (empty once there is nothing left to run, which resumes
-        // straight into synthesis below rather than re-entering this loop for nothing).
-        const gapQuestions = round < profile.rounds ? nextRoundQuestions(roundDigests, askedLower, profile.gapWorkers) : []
-        const nextRound = gapQuestions.length > 0 ? round + 1 : round
-        onCheckpoint?.(buildCheckpoint(gapQuestions, nextRound))
-
-        if (gapQuestions.length === 0) break
-
-        currentQuestions = gapQuestions
-        round = nextRound
-      }
+      const allDigests = rounds.allDigests
+      const allFailures = rounds.allFailures
+      const allLedgers = rounds.allLedgers
+      const workerUsage = rounds.workerUsage
+      const workersDispatchedTotal = rounds.workersDispatchedTotal
+      round = rounds.round
 
       // Guard clause: no digest was ever produced — every worker failed or timed out on every
       // round, plus the one retry above. This used to fall through to a hardcoded stub
@@ -323,6 +310,11 @@ export async function runResearch(
 
         throw new Error(`Research produced no evidence: ${describeFailures(allFailures)}`)
       }
+
+      // The last checkpoint boundary before the (uncheckpointed) work that follows — synthesis,
+      // the consistency gate, and grounding all run to completion once started, so this is the
+      // last chance to stop before spending that work on a run the owner fence will discard.
+      if (isFenced()) throw new FencedError('research job fenced before synthesis')
 
       const { report: synthesized, usage: synthesisUsage } = await synthesize({
         query: input.query,

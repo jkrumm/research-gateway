@@ -9,10 +9,12 @@ import {
   notifyJobFailedAfterRestarts,
   MAX_JOB_ATTEMPTS,
   HandedOffError,
+  ownsLease,
   type Job,
 } from './job-store.js'
 import { runResearch, type JobUsage } from '../agent/run.js'
 import { parseCheckpoint, serializeCheckpoint, type ResearchCheckpoint } from '../agent/checkpoint.js'
+import { FencedError } from '../agent/fenced-error.js'
 import { reportUsage } from './usage.js'
 import { env } from '../env.js'
 import { log } from './log.js'
@@ -77,11 +79,25 @@ export function startResearchJob(job: Job, opts?: { checkpoint?: ResearchCheckpo
         {
           checkpoint: opts?.checkpoint ?? null,
           onCheckpoint: (cp) => saveJobCheckpoint(job.jobId, serializeCheckpoint(cp)),
+          // Checked at every round/retry/synthesis boundary (rounds.ts's `runRounds`, run.ts
+          // itself before synthesis) — `!ownsLease` is true once `claimStaleJobs` has handed
+          // this job's lease to another replica, which is already resuming it from the
+          // checkpoint this process last wrote.
+          isFenced: () => !ownsLease(job.jobId),
         },
       )
       updateJob(job.jobId, { status: 'done', result, finishedAt: Date.now() })
       saveJobCheckpoint(job.jobId, null) // done — nothing left to resume
     } catch (err) {
+      if (err instanceof FencedError) {
+        // Another replica already claimed this job's lease and is resuming it from the
+        // checkpoint this process itself last wrote — not a failure. `updateJob`'s owner fence
+        // would refuse a status write from this process anyway, but skipping it here also
+        // avoids a misleading `job.error` log line, and the checkpoint is left alone (it is the
+        // adopter's to clear once ITS run finishes).
+        log('job.fenced_stopped', { jobId: job.jobId })
+        return
+      }
       if (lastStats) emit(lastStats, 'error')
       markFailed(job.jobId, err)
       saveJobCheckpoint(job.jobId, null) // terminal error — a checkpoint here would never be read again

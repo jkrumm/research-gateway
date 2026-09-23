@@ -181,6 +181,17 @@ export function updateJob(jobId: string, patch: Partial<Job>): void {
   // heartbeat tick will independently notice and log `job.lease_lost` on its own next tick.
 }
 
+/**
+ * True only if THIS process still holds `jobId`'s lease right now — a plain read, straight
+ * from sqlite rather than the in-memory cache (which stays frozen for a job once heartbeating
+ * starts, exactly the case this exists to catch: `claimStale` can reassign the lease to a
+ * sibling replica while this process is mid-round and has not yet had a heartbeat tick fail).
+ * Wraps `db.ownsLease` with this process's own instance id — see job-db.ts's doc comment.
+ */
+export function ownsLease(jobId: string): boolean {
+  return db.ownsLease(jobId, INSTANCE_ID)
+}
+
 /** Wraps `db.saveCheckpoint` with this process's own instance id — see job-db.ts's doc comment for the owner fence. */
 export function saveJobCheckpoint(jobId: string, json: string | null): void {
   // Best-effort: a checkpoint that fails to save only costs a resumed job some re-done work,
