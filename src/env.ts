@@ -81,7 +81,10 @@ const Env = z.object({
   ARGO_API_SECRET: z.string().optional(),
   RESEARCH_MAX_CONCURRENCY: z.coerce.number().default(3),
   RESEARCH_MAX_QUEUE: z.coerce.number().default(50),
-  JOB_TTL_MINUTES: z.coerce.number().default(30),
+  // How long a FINISHED job's result stays readable (sqlite, so it survives restarts). 240, not
+  // the old 30: a fan-out caller submits many jobs and reads them one by one, and its reader is
+  // slower than the writers — at 30 minutes finished reports expired before they were read.
+  JOB_TTL_MINUTES: z.coerce.number().default(240),
   // How long index.ts's shutdown path waits for RUNNING jobs to finish before force-exiting
   // (see `drainThenExit`, `waitForDrain`).
   //

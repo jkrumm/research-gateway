@@ -79,6 +79,8 @@ export interface JobDb {
    */
   put(job: JobRecord): boolean
   delete(jobId: string): void
+  /** Deletes every terminal row that finished before `cutoff`; returns how many. Queued/running rows are never touched. */
+  deleteFinishedBefore(cutoff: number): number
   all(): JobRecord[]
   /**
    * One job by id, read fresh from the file. The in-memory cache in job-store.ts is hydrated
@@ -280,6 +282,13 @@ export function openJobDb(dbPath: string): JobDb {
 
     delete(jobId: string): void {
       db.run('DELETE FROM job WHERE job_id = ?', [jobId])
+    },
+
+    deleteFinishedBefore(cutoff: number): number {
+      return db.run(
+        "DELETE FROM job WHERE status IN ('done', 'error') AND COALESCE(finished_at, created_at) < ?",
+        [cutoff],
+      ).changes
     },
 
     all(): JobRecord[] {

@@ -78,6 +78,35 @@ describe('openJobDb — durability', () => {
     second.close()
   })
 
+  it('a done result is readable by id after a restart — the read path getJob uses', () => {
+    const dbPath = tmpDbPath()
+    const first = openJobDb(dbPath)
+    const done = job({ status: 'done', finishedAt: Date.now(), result: report() })
+    first.put(done)
+    first.close()
+
+    const second = openJobDb(dbPath)
+    expect(second.get(done.jobId)?.result).toEqual(report())
+    second.close()
+  })
+
+  it('deleteFinishedBefore expires only terminal rows past the cutoff, never live ones', () => {
+    const db = openJobDb(':memory:')
+    const now = Date.now()
+    const old = job({ status: 'done', finishedAt: now - 5 * 3_600_000, result: report() })
+    const oldError = job({ status: 'error', error: 'x', finishedAt: now - 5 * 3_600_000 })
+    const recent = job({ status: 'done', finishedAt: now - 60_000, result: report() })
+    const ancientButRunning = job({ status: 'running', createdAt: now - 10 * 3_600_000 })
+    for (const j of [old, oldError, recent, ancientButRunning]) db.put(j)
+
+    expect(db.deleteFinishedBefore(now - 4 * 3_600_000)).toBe(2)
+    expect(db.get(old.jobId)).toBeUndefined()
+    expect(db.get(oldError.jobId)).toBeUndefined()
+    expect(db.get(recent.jobId)?.result).toEqual(report())
+    expect(db.get(ancientButRunning.jobId)?.status).toBe('running')
+    db.close()
+  })
+
   it('put upserts: a second put with the same jobId and the same owner overwrites rather than duplicating', () => {
     const db = openJobDb(':memory:')
     const id = crypto.randomUUID()

@@ -181,6 +181,7 @@ do not mock env. `scripts/smoke.ts` runs one `runResearch()` end to end without 
 | `RESEARCH_MAX_CONCURRENCY` / `RESEARCH_MAX_QUEUE` | no (3 / 50) | concurrent *jobs* / accepted backlog |
 | `WORKER_MAX_CONCURRENCY` | no (8) | concurrent *workers within one job* |
 | `JOB_DB_PATH` | no (`./data/jobs.sqlite`) | `/app/data` in the container, a named volume |
+| `JOB_TTL_MINUTES` | no (240) | how long a finished job's result stays readable after it completes. Stored in sqlite, so it survives restarts and is readable through either replica. Raised from 30: a fan-out caller reads its jobs one at a time, more slowly than the workers finish them |
 | `SHUTDOWN_DRAIN_MS` | no (1 800 000) | how long SIGTERM waits for RUNNING jobs before force-exiting. **Must stay below the compose `stop_grace_period` (1860s)** or SIGKILL wins and the drain buys nothing. Sized off the 30-day span record, not a guess — see Restarts |
 | `YTDLP_PATH` / `YTDLP_MAX_CONCURRENCY` / `YTDLP_TIMEOUT_MS` | no | bundled binary; concurrency 2 because YouTube rate-limits the datacenter IP under burst |
 | `PDFTOTEXT_PATH` | no (`pdftotext`) | poppler-utils, an apk package in the image (Dockerfile) rather than a pinned binary download — PATH lookup by default |

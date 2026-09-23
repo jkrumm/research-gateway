@@ -81,14 +81,13 @@ const owned = new Set<string>()
 // normally (the job reached a terminal status) or via a hand-off.
 const heartbeatStoppers = new Map<string, () => void>()
 
-// ── Boot: hydrate the in-memory cache from the durable store ────────────────
-// No reap at boot any more: a job whose heartbeat is stale is CLAIMED (see `claimStaleJobs`,
-// driven by run-job.ts's adoption loop) and resumed from its checkpoint, never written over
-// with a terminal error on sight. `startAdoptionLoop` (run-job.ts) is what actually calls
-// `claimStaleJobs` at boot and every 30s after — this module only owns the store itself.
-for (const job of db.all()) {
-  jobs.set(job.jobId, job)
-}
+// ── No boot hydration ───────────────────────────────────────────────────────
+// `jobs` holds only what this process is running; every other read — a sibling's job, a
+// finished result, anything from before this boot — comes straight from sqlite (`getJob`).
+// Hydrating every row at boot bought nothing once foreign jobs were always re-read, and at a
+// 240-minute TTL it would keep hours of full reports resident against the 2 GiB limit. A job
+// whose heartbeat is stale is CLAIMED and resumed (`claimStaleJobs`, run-job.ts's adoption
+// loop), never written over with a terminal error on sight.
 
 // Surfaced on GET /health so a keyword monitor can see restart/resume activity without log
 // access. `resumed` and `failedAfterRestarts` replace the old `reaped`/`interrupted` counters
@@ -115,17 +114,16 @@ const JOB_TTL_MS = env.JOB_TTL_MINUTES * 60_000
 
 function sweep(): void {
   const now = Date.now()
+  // Terminal jobs leave the working set at once — their result is in sqlite, which is where
+  // getJob reads it from — and leave sqlite once past the retention window. The delete runs
+  // against the whole table, not just this process's jobs: a row a sibling replica finished
+  // and then exited on has no other process left to expire it.
   for (const [id, job] of jobs) {
-    // Only evict terminal jobs — never reap one that is still queued or running
-    // (a queued job under sustained backlog could otherwise be deleted before it runs).
     if (job.status !== 'done' && job.status !== 'error') continue
-    const age = now - (job.finishedAt ?? job.createdAt)
-    if (age > JOB_TTL_MS) {
-      jobs.delete(id)
-      owned.delete(id)
-      db.delete(id)
-    }
+    jobs.delete(id)
+    owned.delete(id)
   }
+  db.deleteFinishedBefore(now - JOB_TTL_MS)
 }
 
 // Run sweep on an interval so the map doesn't grow unboundedly.
@@ -160,13 +158,10 @@ export function createJob(input: { query: string; depth: Depth; context?: string
 // from a dead owner, and it runs on its own schedule, not on a caller's poll.
 export function getJob(jobId: string): Job | undefined {
   const cached = jobs.get(jobId)
-  if (cached && owned.has(jobId)) return cached
-  const fresh = db.get(jobId)
-  if (fresh) {
-    jobs.set(jobId, fresh)
-    return fresh
-  }
-  return cached
+  if (cached && owned.has(jobId) && cached.status !== 'done' && cached.status !== 'error') return cached
+  // Not cached on the way back: `jobs` is this process's working set, not a read-through cache
+  // (see "No boot hydration" above). One primary-key read per poll.
+  return db.get(jobId) ?? cached
 }
 
 export function updateJob(jobId: string, patch: Partial<Job>): void {
