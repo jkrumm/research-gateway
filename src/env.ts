@@ -5,19 +5,19 @@ const Env = z.object({
   API_SECRET: z.string().min(1),
   IU_BASE_URL: z.url(),
   IU_API_KEY: z.string().min(1),
-  // Both roles run DeepSeek. These two defaults are the real configuration — production sets
+  // Both roles run Luna. These two defaults are the real configuration — production sets
   // neither, so what is written here is what runs. (A dead IU_MODEL var used to sit here
   // and was still set to DeepSeek-V4-Pro in the deployed .env, which read as if the lead
   // were Pro long after it was not. Nothing consumed it; removed rather than corrected.)
   //
-  // 2026-09-13: `deepseek-v4.1-flash` for both roles, `reasoning_effort: "high"` (lib/llm.ts
-  // owns the effort + per-call-role output budget, applied via `wrapLanguageModel` — see the
-  // comment there). Supersedes the 2026-08-20 move to `gpt-5.6-luna` recorded in
-  // docs/decisions.md: Luna was faster to first token but this is an estate-wide model
-  // decision, not a per-service latency tiebreak. DeepSeek has no prompt-cache discount here
-  // (measured elsewhere in the estate), which is an accepted cost, not a bug to chase.
-  IU_LEAD_MODEL: z.string().default('deepseek-v4.1-flash'),
-  IU_WORKER_MODEL: z.string().default('deepseek-v4.1-flash'),
+  // 2026-09-23: `gpt-6-luna` for both roles — owner decision moving every `gpt-5.6-luna` use
+  // to its successor (probed ~4x faster decode, similar TTFT), superseding the 2026-09-13
+  // `deepseek-v4.1-flash` rollout, which never reached prod. Luna runs at
+  // `reasoning_effort: "none"`: the only value it accepts with function tools on
+  // /chat/completions, and every call here is a tool call (lib/llm-settings.ts owns the rule).
+  // OpenAI leg only — gpt-6-luna 404s on the Anthropic leg.
+  IU_LEAD_MODEL: z.string().default('gpt-6-luna'),
+  IU_WORKER_MODEL: z.string().default('gpt-6-luna'),
   WORKER_MAX_CONCURRENCY: z.coerce.number().default(8),
   // Idle watchdog for every LLM call in the agent loop (plan, worker, synthesis): aborted
   // when no step/tool activity has been observed for this long. Replaces the old per-phase

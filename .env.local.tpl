@@ -11,7 +11,7 @@ API_SECRET=op://vps/research-gateway/API_SECRET
 # IU unified endpoint (same item argo uses)
 IU_BASE_URL=op://common/anthropic/OPENAI_BASE_URL
 IU_API_KEY=op://common/anthropic/API_KEY
-# Lead and worker models come from the defaults in src/env.ts (deepseek-v4.1-flash for both),
+# Lead and worker models come from the defaults in src/env.ts (gpt-6-luna for both),
 # the same as prod, which sets neither. Override here only to test a deliberate exception:
 # IU_LEAD_MODEL=
 # IU_WORKER_MODEL=

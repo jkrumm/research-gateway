@@ -132,6 +132,12 @@ describe('computeCost', () => {
     })
     expect(output.costUsd).toBeCloseTo(0.5, 6)
   })
+
+  it('bills gpt-6-luna at the 2026-09-23 OpenAI rate (0.10/0.01/0.50 per 1M) and keeps gpt-5.6-luna priced', () => {
+    const tokens = { inputTokens: 1_000_000, cachedInputTokens: 400_000, outputTokens: 1_000_000 }
+    expect(computeCost('gpt-6-luna', tokens).costUsd).toBeCloseTo(0.6 * 0.1 + 0.4 * 0.01 + 0.5, 6)
+    expect(computeCost('gpt-5.6-luna', tokens).costUsd).toBeCloseTo(0.6 * 0.2 + 0.4 * 0.02 + 1.2, 6)
+  })
 })
 
 describe('buildLlmUsageRecord', () => {

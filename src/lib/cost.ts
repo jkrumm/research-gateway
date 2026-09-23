@@ -16,7 +16,7 @@ const RATES: Record<string, { input: number; cachedInput: number; output: number
   // computed cost_usd at report time, it does not re-price from this table later).
   'deepseek-v4-flash': { input: 0.14, cachedInput: 0.0028, output: 0.28 },
   'deepseek-v4-pro': { input: 0.435, cachedInput: 0.0145, output: 0.87 },
-  // 2026-09-13 estate-wide model rollout: this repo's lead + worker model. Rates measured
+  // 2026-09-13 estate-wide model rollout (superseded by gpt-6-luna below before deploy). Rates measured
   // 2026-09-13 against the IU unified endpoint's own `usage.cost` (USD per 1M tokens) —
   // supersedes the earlier $0.30/$0.30/$1.20 placeholder, which had no cache discount.
   // Prompt caching is confirmed live on this route (`prompt_tokens_details.cached_tokens`).
@@ -33,6 +33,11 @@ const RATES: Record<string, { input: number; cachedInput: number; output: number
   // $0.10/$0.60 is the *batch* tier (50% off), not a later cut — do not "correct" these down
   // to it. Still not confirmed as IU's billed rate — IU returns no `cost` field on any route.
   'gpt-5.6-luna': { input: 0.2, cachedInput: 0.02, output: 1.2 },
+  // 2026-09-23: this repo's lead + worker model. OpenAI's standard short-context rate from
+  // developers.openai.com/api/docs/pricing (researched 2026-09-23, not batch/flex/fast). Past
+  // 272K input tokens OpenAI bills input x2 / output x1.5 — unreachable under this repo's
+  // context guards, so not modelled. IU returns no `cost` field to confirm it against.
+  'gpt-6-luna': { input: 0.1, cachedInput: 0.01, output: 0.5 },
 }
 
 export function computeCost(

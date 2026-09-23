@@ -8,7 +8,7 @@ import {
 } from './sonar-parse.js'
 
 // Perplexity Sonar as a pure SEARCH backend, called over the same IU unified endpoint the
-// `deepseek-v4.1-flash` lead/workers run on — so web search is billed to the work key rather
+// `gpt-6-luna` lead/workers run on — so web search is billed to the work key rather
 // than the personal Tavily plan.
 //
 // Two facts about this endpoint are load-bearing and were established by probing it live

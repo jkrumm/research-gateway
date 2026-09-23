@@ -1,7 +1,7 @@
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible'
 import { wrapLanguageModel, defaultSettingsMiddleware } from 'ai'
 import { env } from '../env.js'
-import { ROLE_BUDGETS, roleProviderSettings } from './llm-settings.js'
+import { ROLE_BUDGETS, effortProviderSettings, roleProviderSettings } from './llm-settings.js'
 import type { LlmRole } from './llm-settings.js'
 
 export { ROLE_BUDGETS, REASONING_EFFORT } from './llm-settings.js'
@@ -23,15 +23,20 @@ export type IuLanguageModel = ReturnType<typeof iu>
 function withRoleSettings(model: IuLanguageModel, role: LlmRole, maxCompletionTokens?: number): IuLanguageModel {
   return wrapLanguageModel({
     model,
-    middleware: defaultSettingsMiddleware({ settings: roleProviderSettings(role, maxCompletionTokens) }),
+    middleware: defaultSettingsMiddleware({
+      settings: roleProviderSettings({ role, modelId: model.modelId, maxCompletionTokens }),
+    }),
   })
 }
 
 const rawLeadModel = iu(env.IU_LEAD_MODEL)
 const rawWorkerModel = iu(env.IU_WORKER_MODEL)
 
-// Unwrapped lead model for callers with no role budget yet (consistency review).
-export const leadModel = rawLeadModel
+// Lead model for callers with no role budget yet (consistency review) — effort only.
+export const leadModel = wrapLanguageModel({
+  model: rawLeadModel,
+  middleware: defaultSettingsMiddleware({ settings: effortProviderSettings(rawLeadModel.modelId) }),
+})
 export const planModel = withRoleSettings(rawLeadModel, 'plan')
 export const synthesisModel = withRoleSettings(rawLeadModel, 'synthesis')
 export const workerModel = withRoleSettings(rawWorkerModel, 'workerStep')

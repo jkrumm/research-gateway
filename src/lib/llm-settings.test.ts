@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'bun:test'
-import { ROLE_BUDGETS, REASONING_EFFORT, roleProviderSettings } from './llm-settings.js'
+import {
+  ROLE_BUDGETS,
+  REASONING_EFFORT,
+  effortProviderSettings,
+  reasoningEffortFor,
+  roleProviderSettings,
+} from './llm-settings.js'
 
 // Pure module, no env.js import — asserts the exact request-body shape `llm.ts` merges into
 // every call via `wrapLanguageModel` + `defaultSettingsMiddleware`. `@ai-sdk/openai-compatible@3`
@@ -9,7 +15,7 @@ import { ROLE_BUDGETS, REASONING_EFFORT, roleProviderSettings } from './llm-sett
 // never `temperature`.
 describe('roleProviderSettings', () => {
   it('sends reasoningEffort high and the role budget under the iu provider key', () => {
-    const settings = roleProviderSettings('plan')
+    const settings = roleProviderSettings({ role: 'plan', modelId: 'deepseek-v4.1-flash' })
     expect(settings).toEqual({
       providerOptions: {
         iu: {
@@ -30,16 +36,31 @@ describe('roleProviderSettings', () => {
   })
 
   it('accepts an override budget for the length-retry path without changing effort', () => {
-    const doubled = roleProviderSettings('synthesis', ROLE_BUDGETS.synthesis * 2)
+    const doubled = roleProviderSettings({
+      role: 'synthesis',
+      modelId: 'deepseek-v4.1-flash',
+      maxCompletionTokens: ROLE_BUDGETS.synthesis * 2,
+    })
     expect(doubled.providerOptions.iu.max_completion_tokens).toBe(64_000)
     expect(doubled.providerOptions.iu.reasoningEffort).toBe(REASONING_EFFORT)
   })
 
   it('never carries maxOutputTokens/max_tokens or temperature keys', () => {
-    const settings = roleProviderSettings('workerStep')
+    const settings = roleProviderSettings({ role: 'workerStep', modelId: 'gpt-6-luna' })
     const keys = Object.keys(settings.providerOptions.iu)
     expect(keys).not.toContain('maxOutputTokens')
     expect(keys).not.toContain('max_tokens')
     expect(keys).not.toContain('temperature')
+  })
+
+  it('sends reasoning_effort none for the Luna family — the only value it accepts with tools', () => {
+    expect(reasoningEffortFor('gpt-6-luna')).toBe('none')
+    expect(reasoningEffortFor('gpt-5.6-luna')).toBe('none')
+    expect(reasoningEffortFor('deepseek-v4.1-flash')).toBe(REASONING_EFFORT)
+    expect(roleProviderSettings({ role: 'synthesis', modelId: 'gpt-6-luna' }).providerOptions.iu).toEqual({
+      reasoningEffort: 'none',
+      max_completion_tokens: ROLE_BUDGETS.synthesis,
+    })
+    expect(effortProviderSettings('gpt-6-luna')).toEqual({ providerOptions: { iu: { reasoningEffort: 'none' } } })
   })
 })
