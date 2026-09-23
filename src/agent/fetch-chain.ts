@@ -8,7 +8,8 @@ import { resolveSite } from './site-adapters.js'
 import { extractText, readabilityText } from './html-parse.js'
 import { isRawContentType, isDefinitivelyMissing, isPdf, isPdfContentType, looksBinary } from './response-kind.js'
 import { extractPdfText } from './pdf.js'
-import { readBoundedBytes, MAX_PDF_BYTES } from './pdf-extract.js'
+import { MAX_PDF_BYTES } from './pdf-extract.js'
+import { readBoundedBytes, readBoundedText, MAX_BODY_BYTES } from './bounded-read.js'
 import { parseRenderResponse, renderUrl } from './lightpanda.js'
 import { fetchYoutubeTranscript } from './ytdlp.js'
 import { waybackLookupUrl, isArchiveUrl, parseSnapshotDate, archiveBanner, snapshotAgeDays } from './archive.js'
@@ -301,7 +302,7 @@ export async function runFetchChain(url: string, opts: FetchChainOptions): Promi
   // entry — `attempts` stays an honest record of what actually happened, and a caller reading
   // it back (fetch-bench.ts, `tool.fetchPage` logs) sees exactly one `tavily-extract` entry for
   // these URLs, not two dishonest failures in front of it.
-  let rdReason: 'thin' | 'threw' = 'thin'
+  let rdReason: 'thin' | 'threw' | 'oversized' = 'thin'
   let rdChars = 0
 
   if (site.skipToExtract) {
@@ -366,37 +367,50 @@ export async function runFetchChain(url: string, opts: FetchChainOptions): Promi
         // decoding. This is what closes the bug this whole change fixes: the VPS fetched
         // arxiv.org/pdf/1706.03762, `res.text()` decoded 1,984,323 bytes of PDF binary as
         // UTF-8 "text", and Readability/normalizeText handed that back as a `retrieved`
-        // success. Bounded by MAX_PDF_BYTES so a pathological body is never downloaded in
-        // full before a decision can be made — a truncated read is treated as a miss, same as
-        // any other step-1 failure, and falls through to rendering/Tavily.
+        // success. Bounded by the content-type-specific cap below so a pathological body is
+        // never downloaded in full before a decision can be made — a truncated read is treated
+        // as a miss, same as any other step-1 failure, and falls through to rendering/Tavily.
         const contentType = res.headers.get('content-type')
-        const { bytes, truncated } = await readBoundedBytes(res.body, MAX_PDF_BYTES)
+        // A PDF is the one body read at MAX_PDF_BYTES (poppler needs the whole document); every
+        // non-PDF body is bounded at MAX_BODY_BYTES. The cap is chosen from the DECLARED type
+        // before a single byte is pulled, and isPdf below still runs its magic-byte check on the
+        // read bytes to catch a PDF served under a wrong or absent Content-Type.
+        const capBytes = isPdfContentType(contentType) ? MAX_PDF_BYTES : MAX_BODY_BYTES
+        const { bytes, truncated } = await readBoundedBytes(res.body, capBytes)
 
-        if (truncated) {
-          // An oversized PDF still IS a PDF — the renderer (step 2) has nothing to add to a
-          // document with no DOM, so skip it here exactly like the identified-PDF branch below,
-          // even though pdftotext never runs against these truncated bytes.
-          if (isPdfContentType(contentType)) isPdfBody = true
-          attempt(attempts, step1, t1, { ok: false, error: `body exceeds ${MAX_PDF_BYTES} byte cap` })
-        } else if (isPdf(contentType, bytes)) {
+        if (isPdf(contentType, bytes)) {
           isPdfBody = true
-          const pdf = await extractPdfText(bytes, { jobId })
-          if (pdf.ok) {
-            attempt(attempts, 'pdf', t1, { ok: true, chars: pdf.text.length })
-            log('tool.fetchPage', { jobId, url, via: 'pdf', chars: pdf.text.length })
-            return done('pdf', pdf.text)
+          if (truncated) {
+            // A cut PDF is still a PDF — the renderer has nothing to add to a document with
+            // no DOM, so skip it here exactly like the identified-PDF branch below, even though
+            // pdftotext never runs against these truncated bytes.
+            attempt(attempts, step1, t1, { ok: false, error: `body exceeds ${capBytes} byte cap` })
+          } else {
+            const pdf = await extractPdfText(bytes, { jobId })
+            if (pdf.ok) {
+              attempt(attempts, 'pdf', t1, { ok: true, chars: pdf.text.length })
+              log('tool.fetchPage', { jobId, url, via: 'pdf', chars: pdf.text.length })
+              return done('pdf', pdf.text)
+            }
+            // pdftotext missing, failed, or below the text floor (a scanned PDF with no text
+            // layer) — falls through to Tavily Extract, which OCRs PDFs server-side. Never a
+            // reason to pass the bytes through as text.
+            attempt(attempts, 'pdf', t1, { ok: false, error: pdf.error })
+            log('tool.fetchPage', { jobId, url, via: 'pdf', error: pdf.error })
           }
-          // pdftotext missing, failed, or below the text floor (a scanned PDF with no text
-          // layer) — falls through to Tavily Extract, which OCRs PDFs server-side. Never a
-          // reason to pass the bytes through as text.
-          attempt(attempts, 'pdf', t1, { ok: false, error: pdf.error })
-          log('tool.fetchPage', { jobId, url, via: 'pdf', error: pdf.error })
         } else {
           const body = new TextDecoder().decode(bytes)
 
-          // A non-HTML body IS the answer — hand it back verbatim rather than asking an HTML
-          // parser to find an article in it.
-          if (isRawContentType(contentType)) {
+          // A cut body has no complete document to hand ANY reader — a miss like any other, and
+          // it falls through to the renderer, which is the right reader for a page too heavy to
+          // parse here (or a JSON/CSV endpoint that serves a full answer to a browser but a cut
+          // one to this crawler). Never a reason to hand a parser or a citation a truncated body.
+          if (truncated) {
+            rdReason = 'oversized'
+            attempt(attempts, step1, t1, { ok: false, error: `body exceeds ${capBytes} byte cap` })
+          } else if (isRawContentType(contentType)) {
+            // A non-HTML body IS the answer — hand it back verbatim rather than asking an HTML
+            // parser to find an article in it.
             const raw = normalizeText(body)
             if (raw.length > 0 && !looksBinary(raw)) {
               attempt(attempts, 'raw', t1, { ok: true, chars: raw.length })
@@ -493,10 +507,21 @@ export async function runFetchChain(url: string, opts: FetchChainOptions): Promi
         onArchive?.({ ok: false, ms, snapshotAgeDays: null })
         return fail(originalReason)
       }
-      const body = await res.text()
+      // The same bound as every other network body in this service (bounded-read.ts): an
+      // archived copy of a huge page stalls the loop just as hard as the live one, and a body
+      // cut at MAX_BODY_BYTES is not a document Readability can read — a miss like any other,
+      // never an error out of the chain.
+      const bounded = await readBoundedText(res, MAX_BODY_BYTES, (info) =>
+        log('tool.fetchPage', { jobId, url, via: 'oversized', step: 'wayback', ...info }),
+      )
+      if (bounded.truncated) {
+        const ms = attempt(attempts, 'wayback', tW, { ok: false, error: `body exceeds ${MAX_BODY_BYTES} byte cap` })
+        onArchive?.({ ok: false, ms, snapshotAgeDays: null })
+        return fail(originalReason)
+      }
       // Parsing runs in the same worker pool as step 1 (html-parse.ts) — Readability only, no
       // site adapter, matching what the inline wayback step always did.
-      const { text } = await readabilityText(body, budget)
+      const { text } = await readabilityText(bounded.text, budget)
       if (!text || text.length < MIN_USABLE_CHARS) {
         const ms = attempt(attempts, 'wayback', tW, { ok: false, chars: text?.length ?? 0, error: `thin (${text?.length ?? 0} chars)` })
         onArchive?.({ ok: false, ms, snapshotAgeDays: null })

@@ -1,5 +1,6 @@
 import { env } from '../env.js'
 import { log } from '../lib/log.js'
+import { readBoundedText, MAX_BODY_BYTES } from './bounded-read.js'
 import {
   ANSWER_TOKEN_FLOOR,
   parseSonarResponse,
@@ -89,10 +90,17 @@ export async function sonarSearch(args: {
 
   // Read as text first: IU does not return clean JSON on upstream errors — it prefixes the
   // provider's body, e.g. `[Perplexity direct StatusCode: BadRequest] {"error":{...}}`.
-  // JSON.parse on that throws a decoder error that says nothing about what went wrong.
-  const body = await res.text()
+  // JSON.parse on that throws a decoder error that says nothing about what went wrong. Bounded
+  // like every other network body; a cut response is a throw so the caller's Tavily fallback
+  // engages, same as a non-JSON body.
+  const { text: body, truncated } = await readBoundedText(res, MAX_BODY_BYTES, (info) =>
+    log('tool.sonar', { query: args.query, via: 'oversized', ...info }),
+  )
   if (!res.ok) {
     throw new Error(`sonar HTTP ${res.status}: ${body.slice(0, 300)}`)
+  }
+  if (truncated) {
+    throw new Error(`sonar response exceeds ${MAX_BODY_BYTES} byte cap`)
   }
 
   let json: unknown
