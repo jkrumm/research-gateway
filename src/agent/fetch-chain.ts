@@ -6,7 +6,9 @@ import { getActiveSpan } from '../lib/otel.js'
 import { normalizeText, capText, TEXT_CAP } from './extract.js'
 import { resolveSite } from './site-adapters.js'
 import { extractText, readabilityText } from './html-parse.js'
-import { isRawContentType, isDefinitivelyMissing } from './response-kind.js'
+import { isRawContentType, isDefinitivelyMissing, isPdf, isPdfContentType, looksBinary } from './response-kind.js'
+import { extractPdfText } from './pdf.js'
+import { readBoundedBytes, MAX_PDF_BYTES } from './pdf-extract.js'
 import { parseRenderResponse, renderUrl } from './lightpanda.js'
 import { fetchYoutubeTranscript } from './ytdlp.js'
 import { waybackLookupUrl, isArchiveUrl, parseSnapshotDate, archiveBanner, snapshotAgeDays } from './archive.js'
@@ -65,7 +67,7 @@ import type { RetrievalLedger } from './ledger.js'
 //   - The ledger always hears about the ORIGINAL url, never the rewritten one, because the
 //     original is what a citation will name (site-adapters.test.ts guards this).
 
-export type FetchStep = 'raw' | 'site-adapter' | 'readability' | 'lightpanda' | 'yt-dlp' | 'tavily-extract' | 'wayback'
+export type FetchStep = 'raw' | 'pdf' | 'site-adapter' | 'readability' | 'lightpanda' | 'yt-dlp' | 'tavily-extract' | 'wayback'
 
 export interface FetchAttempt {
   step: FetchStep
@@ -332,6 +334,10 @@ export async function runFetchChain(url: string, opts: FetchChainOptions): Promi
     // ── Step 1: plain fetch + linkedom + Readability (or a site adapter's own reader) ──
     const t1 = performance.now()
     let step1: FetchStep = 'readability'
+    // Set once a PDF is identified (success or failure of the pdf step alike) — a JS renderer
+    // (step 2) cannot do anything useful with a document that has no DOM, so it is skipped for
+    // a PDF exactly like it is for a `skipToExtract` URL.
+    let isPdfBody = false
     try {
       // A definitively-absent resource stops here. Every remaining step would ask the same
       // origin the same question and be told the same thing, and the last of them bills for it.
@@ -355,36 +361,69 @@ export async function runFetchChain(url: string, opts: FetchChainOptions): Promi
       if (!res.ok) {
         attempt(attempts, step1, t1, { ok: false, error: `HTTP ${res.status}` })
       } else {
-        // Read the body ONCE — a Response body is a stream and cannot be consumed twice, so
-        // the content-type branch and the HTML branch have to share this.
-        const body = await res.text()
+        // Read the body ONCE, as BYTES — a Response body is a stream and cannot be consumed
+        // twice, and PDF detection needs the raw bytes (the `%PDF-` magic) before any text
+        // decoding. This is what closes the bug this whole change fixes: the VPS fetched
+        // arxiv.org/pdf/1706.03762, `res.text()` decoded 1,984,323 bytes of PDF binary as
+        // UTF-8 "text", and Readability/normalizeText handed that back as a `retrieved`
+        // success. Bounded by MAX_PDF_BYTES so a pathological body is never downloaded in
+        // full before a decision can be made — a truncated read is treated as a miss, same as
+        // any other step-1 failure, and falls through to rendering/Tavily.
         const contentType = res.headers.get('content-type')
+        const { bytes, truncated } = await readBoundedBytes(res.body, MAX_PDF_BYTES)
 
-        // A non-HTML body IS the answer — hand it back verbatim rather than asking an HTML
-        // parser to find an article in it.
-        if (isRawContentType(contentType)) {
-          const raw = normalizeText(body)
-          if (raw.length > 0) {
-            attempt(attempts, 'raw', t1, { ok: true, chars: raw.length })
-            log('tool.fetchPage', { jobId, url, via: 'raw', chars: raw.length, contentType })
-            return done('raw', raw)
+        if (truncated) {
+          // An oversized PDF still IS a PDF — the renderer (step 2) has nothing to add to a
+          // document with no DOM, so skip it here exactly like the identified-PDF branch below,
+          // even though pdftotext never runs against these truncated bytes.
+          if (isPdfContentType(contentType)) isPdfBody = true
+          attempt(attempts, step1, t1, { ok: false, error: `body exceeds ${MAX_PDF_BYTES} byte cap` })
+        } else if (isPdf(contentType, bytes)) {
+          isPdfBody = true
+          const pdf = await extractPdfText(bytes, { jobId })
+          if (pdf.ok) {
+            attempt(attempts, 'pdf', t1, { ok: true, chars: pdf.text.length })
+            log('tool.fetchPage', { jobId, url, via: 'pdf', chars: pdf.text.length })
+            return done('pdf', pdf.text)
           }
-          // An empty body is a miss like any other — fall through to the rendering steps, which
-          // is the right answer for a URL that serves an empty JSON body to a bot and a real
-          // page to a browser.
-          attempt(attempts, 'raw', t1, { ok: false, chars: 0, error: 'empty body' })
+          // pdftotext missing, failed, or below the text floor (a scanned PDF with no text
+          // layer) — falls through to Tavily Extract, which OCRs PDFs server-side. Never a
+          // reason to pass the bytes through as text.
+          attempt(attempts, 'pdf', t1, { ok: false, error: pdf.error })
+          log('tool.fetchPage', { jobId, url, via: 'pdf', error: pdf.error })
         } else {
-          // Parsing runs in a worker pool (html-parse.ts), off the event loop — linkedom +
-          // Readability are synchronous CPU work that would otherwise block /health (issue #21).
-          const { via, text } = await extractText(url, body, budget)
-          step1 = via
-          rdChars = text?.length ?? 0
-          if (text && text.length >= MIN_USABLE_CHARS) {
-            attempt(attempts, step1, t1, { ok: true, chars: text.length })
-            log('tool.fetchPage', { jobId, url, via: step1, chars: text.length })
-            return done(step1, text)
+          const body = new TextDecoder().decode(bytes)
+
+          // A non-HTML body IS the answer — hand it back verbatim rather than asking an HTML
+          // parser to find an article in it.
+          if (isRawContentType(contentType)) {
+            const raw = normalizeText(body)
+            if (raw.length > 0 && !looksBinary(raw)) {
+              attempt(attempts, 'raw', t1, { ok: true, chars: raw.length })
+              log('tool.fetchPage', { jobId, url, via: 'raw', chars: raw.length, contentType })
+              return done('raw', raw)
+            }
+            // An empty or binary body is a miss like any other — fall through to the
+            // rendering steps, which is the right answer for a URL that serves an empty JSON
+            // body to a bot and a real page to a browser. `looksBinary` catches a binary
+            // response (image/zip/octet-stream) served under a Content-Type this chain
+            // otherwise treats as raw text, and that isPdf's magic-byte check didn't own.
+            const error = raw.length === 0 ? 'empty body' : 'binary content'
+            attempt(attempts, 'raw', t1, { ok: false, chars: raw.length, error })
+          } else {
+            // Parsing runs in a worker pool (html-parse.ts), off the event loop — linkedom +
+            // Readability are synchronous CPU work that would otherwise block /health (issue #21).
+            const { via, text } = await extractText(url, body, budget)
+            step1 = via
+            rdChars = text?.length ?? 0
+            if (text && text.length >= MIN_USABLE_CHARS && !looksBinary(text)) {
+              attempt(attempts, step1, t1, { ok: true, chars: text.length })
+              log('tool.fetchPage', { jobId, url, via: step1, chars: text.length })
+              return done(step1, text)
+            }
+            const error = text && looksBinary(text) ? 'binary content' : `thin (${rdChars} chars)`
+            attempt(attempts, step1, t1, { ok: false, chars: rdChars, error })
           }
-          attempt(attempts, step1, t1, { ok: false, chars: rdChars, error: `thin (${rdChars} chars)` })
         }
       }
     } catch (err) {
@@ -397,7 +436,9 @@ export async function runFetchChain(url: string, opts: FetchChainOptions): Promi
     // Sits between Readability and Tavily Extract because it handles the one failure Tavily
     // cannot — a page whose text simply is not in the HTML — while Tavily remains the better
     // fallback for a page that IS static but whose structure Readability could not parse.
-    if (renderBaseUrl) {
+    // Skipped for a PDF (isPdfBody) exactly like it is skipped for a `skipToExtract` URL — a
+    // JS renderer has nothing to add to a document that has no DOM.
+    if (renderBaseUrl && !isPdfBody) {
       const t2 = performance.now()
       try {
         const res = await fetch(renderUrl(renderBaseUrl), {

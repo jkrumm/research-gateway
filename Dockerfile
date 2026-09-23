@@ -14,7 +14,10 @@ COPY src ./src
 FROM oven/bun:1.4-alpine AS runner
 WORKDIR /app
 
-RUN apk add --no-cache curl ca-certificates \
+# poppler-utils — provides pdftotext at /usr/bin/pdftotext (verified against the Alpine
+# package index, edge/main/x86_64: pkgs.alpinelinux.org/contents?name=poppler-utils). Used by
+# agent/pdf.ts to extract text from PDF responses instead of decoding the raw bytes as text.
+RUN apk add --no-cache curl ca-certificates poppler-utils \
   && addgroup -S app && adduser -S app -G app \
   && mkdir -p /app/data && chown app:app /app/data
 

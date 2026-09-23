@@ -63,3 +63,70 @@ const DEFINITIVE_MISSING = new Set([404, 410])
 export function isDefinitivelyMissing(status: number): boolean {
   return DEFINITIVE_MISSING.has(status)
 }
+
+// A PDF must never reach Readability/normalizeText as text — MEASURED against the deployed
+// chain on arxiv.org/pdf/1706.03762: it fetched fine, Readability had no document to parse
+// (there is no HTML), the raw bytes fell through as "text", and the ledger recorded 1,984,323
+// chars of `retrieved` success that was in fact PDF binary decoded as UTF-8 garbage. Detected
+// two ways because neither signal alone is trustworthy: a server can mislabel (or omit) the
+// Content-Type, and arXiv's own header is correct but that is not something to depend on.
+const PDF_MAGIC = new TextEncoder().encode('%PDF-')
+
+// Exported separately from isPdf() below: the fetch chain's truncated-body branch has a
+// Content-Type but no complete bytes to run the magic-byte check against.
+export function isPdfContentType(contentType: string | null | undefined): boolean {
+  if (!contentType) return false
+  return contentType.toLowerCase().includes('application/pdf')
+}
+
+function startsWithPdfMagic(bytes: Uint8Array | null | undefined): boolean {
+  if (!bytes || bytes.length < PDF_MAGIC.length) return false
+  for (let i = 0; i < PDF_MAGIC.length; i++) {
+    if (bytes[i] !== PDF_MAGIC[i]) return false
+  }
+  return true
+}
+
+/**
+ * True when a response body is a PDF — by declared Content-Type (tolerant of parameters and
+ * casing) OR by the `%PDF-` magic bytes at the start of the body, whichever fires first.
+ */
+export function isPdf(contentType: string | null | undefined, firstBytes: Uint8Array | null | undefined): boolean {
+  return isPdfContentType(contentType) || startsWithPdfMagic(firstBytes)
+}
+
+// How much of a decoded text body this checks — the first ~4KB is plenty to tell prose from
+// binary, and scanning the whole (possibly 80k-char) body would cost real time on every fetch
+// for no better an answer.
+const BINARY_SAMPLE_CHARS = 4096
+
+// Above this ratio of "not text" characters in the sample, the body is binary rather than
+// prose. \t \n \r are excluded from the control-byte count deliberately — legitimate prose is
+// full of them; U+FFFD (what TextDecoder emits for a byte sequence that is not valid UTF-8)
+// and every other C0 control byte are not something real prose produces in bulk.
+const BINARY_RATIO_THRESHOLD = 0.1
+
+function isBinaryChar(ch: string): boolean {
+  if (ch === '�') return true
+  const code = ch.charCodeAt(0)
+  return code < 0x20 && ch !== '\t' && ch !== '\n' && ch !== '\r'
+}
+
+/**
+ * True when a decoded text body reads as binary data rather than prose — defense in depth for
+ * a mislabeled or magic-byte-missed binary response (an image/zip/octet-stream body served
+ * under a Content-Type this chain treats as text). Ratio-based over a fixed sample so
+ * legitimate non-Latin text (CJK, Cyrillic, emoji — all valid UTF-8 TextDecoder decodes
+ * cleanly with zero replacement characters) never trips it.
+ */
+export function looksBinary(text: string): boolean {
+  if (text.length === 0) return false
+  const sample = text.slice(0, BINARY_SAMPLE_CHARS)
+  let bad = 0
+  let total = 0
+  for (const ch of sample) {
+    total++
+    if (isBinaryChar(ch)) bad++
+  }
+  return total > 0 && bad / total > BINARY_RATIO_THRESHOLD
+}
