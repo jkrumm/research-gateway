@@ -223,3 +223,52 @@ describe('the PDF step', () => {
     expect(ledger.tierOf(PAGE)).not.toBe('missing')
   })
 })
+
+describe('safeFetch — the body-read timer', () => {
+  it('clears the 120s body-read timer on every redirect hop, not just the terminal one', async () => {
+    // Regression guard: this timer used to be armed once per hop and never cleared at all —
+    // a redirect chain leaked one per hop. Spy on setTimeout/clearTimeout globally (safeFetch
+    // is private to fetch-chain.ts) and count only the 120_000ms (BODY_READ_MS) timers.
+    const originalSetTimeout = globalThis.setTimeout
+    const originalClearTimeout = globalThis.clearTimeout
+    let armed = 0
+    let cleared = 0
+    const armedHandles = new Set<ReturnType<typeof setTimeout>>()
+
+    // @ts-expect-error — reassigning the global for the duration of this one test.
+    globalThis.setTimeout = (fn: (...args: unknown[]) => void, ms?: number, ...args: unknown[]) => {
+      const handle = originalSetTimeout(fn, ms, ...args)
+      if (ms === 120_000) {
+        armed++
+        armedHandles.add(handle)
+      }
+      return handle
+    }
+    // @ts-expect-error — same, for clearTimeout.
+    globalThis.clearTimeout = (handle: ReturnType<typeof setTimeout>) => {
+      if (armedHandles.has(handle)) {
+        cleared++
+        armedHandles.delete(handle)
+      }
+      return originalClearTimeout(handle)
+    }
+
+    try {
+      // Hop 1 redirects; hop 2 is a definitive 404, which stops the chain immediately without
+      // needing lightpanda/tavily stubs — exercising exactly the "redirect then terminate"
+      // shape the leak lived in.
+      stubFetch((url) =>
+        url === PAGE
+          ? new Response(null, { status: 302, headers: { location: 'https://203.0.113.20/target' } })
+          : new Response('gone', { status: 404 }),
+      )
+      await runFetchChain(PAGE, { ledger: createLedger() })
+    } finally {
+      globalThis.setTimeout = originalSetTimeout
+      globalThis.clearTimeout = originalClearTimeout
+    }
+
+    expect(armed).toBe(2) // one per hop
+    expect(cleared).toBe(2) // every one of them cleared — none left ticking for 120s
+  })
+})

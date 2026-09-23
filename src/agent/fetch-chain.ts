@@ -267,7 +267,22 @@ function concatChunks(chunks: Uint8Array[], totalBytes: number): Uint8Array {
 // cancelled here rather than left to whatever the runtime does with a dangling stream.
 const BODY_READ_MS = 120_000
 
-async function safeFetch(startUrl: string, jobId = '-', maxHops = 3): Promise<{ res: Response; finalUrl: string }> {
+/**
+ * `safeFetch`'s result, plus `clearBodyTimer` — the caller MUST call this exactly once, in a
+ * `finally`, after it is done with `res` (whether that means reading the body to completion,
+ * cancelling it, or letting a thrown error skip both). Every call site got a fresh
+ * `BODY_READ_MS` (120s) timer per hop that was previously never cleared — on a redirect chain
+ * each hop leaked its own timer, and even the terminal hop's timer outlived the response by
+ * however long the caller took to consume it, letting it fire and abort a controller nothing
+ * downstream even holds a reference to any more.
+ */
+interface SafeFetchResult {
+  res: Response
+  finalUrl: string
+  clearBodyTimer: () => void
+}
+
+async function safeFetch(startUrl: string, jobId = '-', maxHops = 3): Promise<SafeFetchResult> {
   let current = startUrl
   for (let hop = 0; ; hop++) {
     await assertPublicHttpUrl(current) // re-validate EVERY hop (initial + each redirect target)
@@ -290,19 +305,26 @@ async function safeFetch(startUrl: string, jobId = '-', maxHops = 3): Promise<{ 
     }
     const bodyTimer = setTimeout(() => controller.abort(new Error(`body read timed out after ${BODY_READ_MS}ms`)), BODY_READ_MS)
     bodyTimer.unref?.()
+    const clearBodyTimer = (): void => clearTimeout(bodyTimer)
     if (res.status >= 300 && res.status < 400) {
       const loc = res.headers.get('location')
-      if (!loc) return { res, finalUrl: current }
-      if (hop >= maxHops) throw new Error('too many redirects')
+      if (!loc) return { res, finalUrl: current, clearBodyTimer }
+      if (hop >= maxHops) {
+        clearBodyTimer() // this hop's response is discarded — nothing will ever call the returned clearer
+        throw new Error('too many redirects')
+      }
       // This hop's body is never read by anything — release the connection now rather than
-      // leaving it open until GC gets to it.
+      // leaving it open until GC gets to it. Its OWN bodyTimer is cleared here too: it guards
+      // this hop's response only, and that response is now fully disposed of, not handed back
+      // to a caller who could clear it via the returned `clearBodyTimer`.
+      clearBodyTimer()
       await res.body?.cancel().catch(() => {})
       const next = new URL(loc, current).toString() // resolve relative redirects
       log('tool.redirect', { jobId, from: current, to: next, status: res.status, hop: hop + 1 })
       current = next
       continue
     }
-    return { res, finalUrl: current }
+    return { res, finalUrl: current, clearBodyTimer }
   }
 }
 
@@ -463,6 +485,13 @@ export async function runFetchChain(url: string, opts: FetchChainOptions): Promi
     let currentFetchUrl = fetchUrl
     let triedFallback = false
     for (;;) {
+      // Assigned once `safeFetch` resolves, cleared in THIS iteration's `finally` below — on
+      // the fallback-retry `continue` path that runs before the next iteration's own safeFetch
+      // call, on every other path once the body this hop's response carries has been consumed
+      // or cancelled. Previously never cleared at all: a redirect chain leaked one BODY_READ_MS
+      // (120s) timer per hop, and even the terminal hop's own timer outlived the response by
+      // however long the rest of this function took to consume it.
+      let clearBodyTimer: (() => void) | undefined
       try {
         // A definitively-absent resource stops here. Every remaining step would ask the same
         // origin the same question and be told the same thing, and the last of them bills for it.
@@ -474,7 +503,9 @@ export async function runFetchChain(url: string, opts: FetchChainOptions): Promi
         // followed by hand, `res` is the redirect target's response, and a redirect to a 404
         // says the TARGET does not exist — the requested URL's fate is unknown, and a
         // fabricated missing record there would wrongly demote or drop claims about it.
-        const { res, finalUrl } = await safeFetch(currentFetchUrl, jobId)
+        const safe = await safeFetch(currentFetchUrl, jobId)
+        const { res, finalUrl } = safe
+        clearBodyTimer = safe.clearBodyTimer
         if (isDefinitivelyMissing(res.status)) {
           const reason = `HTTP ${res.status} — the resource does not exist at this URL`
           await res.body?.cancel().catch(() => {})
@@ -644,6 +675,8 @@ export async function runFetchChain(url: string, opts: FetchChainOptions): Promi
         // fetch or linkedom failed — fall through to the rendering steps.
         rdReason = 'threw'
         attempt(attempts, step1, t1, { ok: false, error: String(err) })
+      } finally {
+        clearBodyTimer?.()
       }
       break
     }
@@ -694,6 +727,10 @@ export async function runFetchChain(url: string, opts: FetchChainOptions): Promi
     if (site.skipToExtract || isArchiveUrl(fetchUrl)) return fail(originalReason)
 
     const tW = performance.now()
+    // Assigned once `safeFetch` resolves, cleared in this whole attempt's `finally` below —
+    // every return path here (fail or done) consumes or cancels the body first, so the timer
+    // guarding it is only ever released once that is settled, never left ticking past this call.
+    let clearBodyTimer: (() => void) | undefined
     try {
       // A wayback lookup needs a bigger redirect budget than a live fetch, because the archive
       // REPLAYS the origin's own canonicalisation redirects on top of its own snapshot-resolution
@@ -702,7 +739,9 @@ export async function runFetchChain(url: string, opts: FetchChainOptions): Promi
       // — five hops, where the chain's default of 3 failed the whole rescue with "too many
       // redirects". Every hop is still re-validated against the SSRF guard inside safeFetch, so
       // this widens the budget, not the trust.
-      const { res } = await safeFetch(waybackLookupUrl(fetchUrl), jobId, 8)
+      const safe = await safeFetch(waybackLookupUrl(fetchUrl), jobId, 8)
+      const res = safe.res
+      clearBodyTimer = safe.clearBodyTimer
       if (!res.ok) {
         // Nothing downstream reads a non-ok wayback response either.
         await res.body?.cancel().catch(() => {})
@@ -748,6 +787,8 @@ export async function runFetchChain(url: string, opts: FetchChainOptions): Promi
       const ms = attempt(attempts, 'wayback', tW, { ok: false, error: String(err) })
       onArchive?.({ ok: false, ms, snapshotAgeDays: null })
       return fail(originalReason)
+    } finally {
+      clearBodyTimer?.()
     }
   }
 

@@ -156,8 +156,12 @@ function runAdoptionPass(): void {
     // A poison job: something about it (not the process) keeps taking down whatever runs it.
     // Re-adopting it forever would just move the crash from replica to replica — give up
     // instead, the same one-retry-then-stop posture `round.ts`'s `shouldRetryRound` uses at
-    // the round level, applied here at the whole-job level.
-    if (job.attempts > MAX_JOB_ATTEMPTS) {
+    // the round level, applied here at the whole-job level. `>=`, not `>`: `attempts` already
+    // counts THIS claim, so `>` let a 4th process pick the job up before giving up (3 claims
+    // passed the check and ran; only the 4th claim was refused) — one more crashed process
+    // than README's "a poison job that crashes MAX_JOB_ATTEMPTS (3) processes in a row" ever
+    // promised. `>=` ends it on the 3rd claim instead, matching that line for real.
+    if (job.attempts >= MAX_JOB_ATTEMPTS) {
       const message = crashLoopMessage(job.attempts)
       updateJob(job.jobId, { status: 'error', error: message, finishedAt: Date.now() })
       notifyJobFailedAfterRestarts()
