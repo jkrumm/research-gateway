@@ -5,6 +5,7 @@ import { describe, it, expect } from 'bun:test'
 // env vars. `usage.ts` re-exports the same `computeCost` binding for compatibility.
 import {
   computeCost,
+  buildLlmUsageRecord,
   buildTavilyCreditRecord,
   buildSonarSearchRecord,
   buildRenderRecord,
@@ -84,6 +85,92 @@ describe('computeCost', () => {
     })
     expect(prefixed.costUsd).toBeCloseTo(bare.costUsd as number, 9)
     expect(dated.costUsd).toBeCloseTo(bare.costUsd as number, 9)
+  })
+
+  it('bills deepseek-v4.1-flash at the 2026-09-13 measured rate (0.50/0.05/1.50 per 1M)', () => {
+    const uncached = computeCost('deepseek-v4.1-flash', {
+      inputTokens: 1_000_000,
+      cachedInputTokens: 0,
+      outputTokens: 0,
+    })
+    expect(uncached.costUsd).toBeCloseTo(0.5, 6)
+
+    const cached = computeCost('deepseek-v4.1-flash', {
+      inputTokens: 1_000_000,
+      cachedInputTokens: 1_000_000,
+      outputTokens: 0,
+    })
+    expect(cached.costUsd).toBeCloseTo(0.05, 6)
+
+    const output = computeCost('deepseek-v4.1-flash', {
+      inputTokens: 0,
+      cachedInputTokens: 0,
+      outputTokens: 1_000_000,
+    })
+    expect(output.costUsd).toBeCloseTo(1.5, 6)
+  })
+
+  it('bills glm-5.3-flash at the 2026-09-13 measured rate (0.15/0.03/0.50 per 1M)', () => {
+    const uncached = computeCost('glm-5.3-flash', {
+      inputTokens: 1_000_000,
+      cachedInputTokens: 0,
+      outputTokens: 0,
+    })
+    expect(uncached.costUsd).toBeCloseTo(0.15, 6)
+
+    const cached = computeCost('glm-5.3-flash', {
+      inputTokens: 1_000_000,
+      cachedInputTokens: 1_000_000,
+      outputTokens: 0,
+    })
+    expect(cached.costUsd).toBeCloseTo(0.03, 6)
+
+    const output = computeCost('glm-5.3-flash', {
+      inputTokens: 0,
+      cachedInputTokens: 0,
+      outputTokens: 1_000_000,
+    })
+    expect(output.costUsd).toBeCloseTo(0.5, 6)
+  })
+})
+
+describe('buildLlmUsageRecord', () => {
+  const args = {
+    jobId: 'job-123',
+    model: 'deepseek-v4.1-flash',
+    subTool: 'worker' as const,
+    inputTokens: 1_000, // AI SDK total prompt_tokens, INCLUDES the cached subset below
+    outputTokens: 200,
+    reasoningTokens: 50,
+    cachedInputTokens: 400,
+    durationMs: 1234,
+  }
+
+  it('reports input_tokens as the uncached remainder, not the AI SDK total', () => {
+    const record = buildLlmUsageRecord(args)
+    expect(record.input_tokens).toBe(600)
+    expect(record.cache_read_tokens).toBe(400)
+    // The two together reconstruct the true total without double-counting either.
+    expect(record.input_tokens + record.cache_read_tokens).toBe(args.inputTokens)
+  })
+
+  it('clamps input_tokens at 0 rather than going negative when cached exceeds the total', () => {
+    const record = buildLlmUsageRecord({ ...args, inputTokens: 100, cachedInputTokens: 500 })
+    expect(record.input_tokens).toBe(0)
+    expect(record.cache_read_tokens).toBe(500)
+  })
+
+  it('scopes source_id as `${jobId}:${subTool}` and prices the row via computeCost', () => {
+    const record = buildLlmUsageRecord(args)
+    expect(record.source_id).toBe('job-123:worker')
+    expect(record.sub_tool).toBe('worker')
+    expect(record.cost_source).toBe('computed')
+    expect(record.cost_usd).toBeGreaterThan(0)
+  })
+
+  it('defaults outcome to "ok" and honors an explicit "error"', () => {
+    expect(buildLlmUsageRecord(args).outcome).toBe('ok')
+    expect(buildLlmUsageRecord({ ...args, outcome: 'error' }).outcome).toBe('error')
   })
 })
 

@@ -1,6 +1,7 @@
 import { generateText, tool } from 'ai'
 import type { Tool } from 'ai'
-import { leadModel } from '../lib/llm.js'
+import { synthesisModel, leadModelWithDoubledBudget, ROLE_BUDGETS } from '../lib/llm.js'
+import type { IuLanguageModel } from '../lib/llm.js'
 import { synthesisPrompt, backgroundSection } from './prompt.js'
 import { resolveSynthesisReport } from './extract.js'
 import { SubmittedReport, WorkerDigest } from './schema.js'
@@ -8,9 +9,10 @@ import type { Depth } from './schema.js'
 import { log } from '../lib/log.js'
 import { withSpan } from '../lib/otel.js'
 import { env } from '../env.js'
-import { emptyUsage, toUsageStats } from '../lib/usage.js'
+import { addUsage, emptyUsage, toUsageStats } from '../lib/usage.js'
 import type { UsageStats } from '../lib/usage.js'
 import { createIdleWatchdog } from '../lib/idle-watchdog.js'
+import type { IdleWatchdog } from '../lib/idle-watchdog.js'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyTool = Tool<any, any>
@@ -50,6 +52,20 @@ export async function synthesize(args: {
     inputSchema: SubmittedReport,
   }) as AnyTool
 
+  const callSynthesis = (model: IuLanguageModel, idle: IdleWatchdog) =>
+    generateText({
+      model,
+      instructions: synthesisPrompt(depth),
+      prompt: renderDigests(query, context, digests),
+      tools: { submit_report: submitReportTool },
+      toolChoice: { type: 'tool', toolName: 'submit_report' },
+      maxRetries: 2,
+      abortSignal: idle.signal,
+      onStepEnd: () => idle.arm(),
+      onToolExecutionStart: () => idle.arm(),
+      onToolExecutionEnd: () => idle.arm(),
+    })
+
   return withSpan(
     'research.synthesis',
     { 'llm.model': env.IU_LEAD_MODEL, 'synthesis.digests': digests.length },
@@ -61,21 +77,24 @@ export async function synthesize(args: {
       const idle = createIdleWatchdog(env.RESEARCH_IDLE_TIMEOUT_MS)
       idle.arm()
       try {
-        const result = await generateText({
-          model: leadModel,
-          instructions: synthesisPrompt(depth),
-          prompt: renderDigests(query, context, digests),
-          tools: { submit_report: submitReportTool },
-          toolChoice: { type: 'tool', toolName: 'submit_report' },
-          maxRetries: 2,
-          abortSignal: idle.signal,
-          onStepEnd: () => idle.arm(),
-          onToolExecutionStart: () => idle.arm(),
-          onToolExecutionEnd: () => idle.arm(),
-        })
+        let result = await callSynthesis(synthesisModel, idle)
+        let usage = toUsageStats(result.usage, 0)
 
-        const usage = toUsageStats(result.usage, Date.now() - start)
-        span.setAttributes({ 'llm.output_tokens': usage.outputTokens })
+        // The report is written entirely inside the tool call's arguments, so a starved call
+        // (finishReason: 'length') looks exactly like "no valid submit_report call" unless
+        // checked explicitly — log it distinctly and give the budget one more shot doubled
+        // before falling through to the digest-assembled fallback in run.ts.
+        if (result.finishReason === 'length') {
+          log('synthesis.length', { jobId, outputTokens: usage.outputTokens, budget: ROLE_BUDGETS.synthesis })
+          result = await callSynthesis(leadModelWithDoubledBudget('synthesis'), idle)
+          usage = addUsage(usage, toUsageStats(result.usage, 0))
+          if (result.finishReason === 'length') {
+            log('synthesis.length', { jobId, outputTokens: usage.outputTokens, retried: true })
+          }
+        }
+        usage = { ...usage, durationMs: Date.now() - start }
+
+        span.setAttributes({ 'llm.output_tokens': usage.outputTokens, 'llm.finish_reason': result.finishReason })
         log('synthesis.done', {
           jobId,
           ms: Date.now() - start,
@@ -85,7 +104,10 @@ export async function synthesize(args: {
         const report = extractReport(result.toolCalls)
         if (!report) {
           span.setAttributes({ 'synthesis.outcome': 'rejected_no_call' })
-          log('synthesis.rejected', { jobId, reason: 'no valid submit_report call' })
+          log('synthesis.rejected', {
+            jobId,
+            reason: result.finishReason === 'length' ? 'starved: finishReason=length' : 'no valid submit_report call',
+          })
           return { report: null, usage }
         }
 

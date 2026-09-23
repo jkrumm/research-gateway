@@ -1,8 +1,7 @@
 import type { LanguageModelUsage } from 'ai'
 import { env } from '../env.js'
 import {
-  computeCost,
-  normalizeModel,
+  buildLlmUsageRecord,
   buildTavilyCreditRecord,
   buildSonarSearchRecord,
   buildRenderRecord,
@@ -109,46 +108,8 @@ export async function reportUsage(args: {
    */
   outcome?: 'ok' | 'error'
 }): Promise<void> {
-  const modelNorm = normalizeModel(args.model)
-  const { costUsd, costSource } = computeCost(args.model, {
-    inputTokens: args.inputTokens,
-    cachedInputTokens: args.cachedInputTokens,
-    outputTokens: args.outputTokens,
-  })
   const now = new Date().toISOString()
-
-  const record = {
-    source: 'research-gateway',
-    // argo upserts on (source, source_id, machine). A job emits one record per model
-    // bucket, so source_id must be scoped or the second would overwrite the first.
-    source_id: `${args.jobId}:${args.subTool}`,
-    grain: 'session',
-    ts: now,
-    ingested_at: now,
-    model: args.model,
-    model_norm: modelNorm,
-    // argo derives `workspace` from `project` only for path-driven sources
-    // (claude-code, litellm) and leaves it NULL otherwise — and its dashboard
-    // filters workspace with an `IN (...)` list, which never matches NULL. Left
-    // unset, this service vanished from every chart the moment the Private/Work
-    // filter was touched, despite being the second-largest cost source.
-    project: 'research-gateway',
-    workspace: 'private',
-    sub_tool: args.subTool,
-    machine: 'vps',
-    billing: 'iu',
-    outcome: args.outcome ?? 'ok',
-    input_tokens: args.inputTokens,
-    output_tokens: args.outputTokens,
-    cache_read_tokens: args.cachedInputTokens,
-    cache_write_tokens: 0,
-    reasoning_tokens: args.reasoningTokens ?? 0,
-    duration_ms: args.durationMs,
-    cost_usd: costUsd,
-    cost_source: costSource,
-    raw: null,
-  }
-
+  const record = { ...buildLlmUsageRecord(args), ts: now, ingested_at: now }
   await postUsageRecord(record)
 }
 

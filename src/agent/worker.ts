@@ -110,7 +110,14 @@ export async function runWorker(args: {
           onStepEnd: (step) => {
             stepCount++
             idle.arm()
-            log('worker.step', { jobId, round, tools: step.toolCalls.map((c) => c.toolName) })
+            log('worker.step', { jobId, round, tools: step.toolCalls.map((c) => c.toolName), finishReason: step.finishReason })
+            // A starved step (empty/truncated output) reads exactly like a step that simply
+            // chose not to call a tool unless finishReason is checked — this is the one signal
+            // that tells the two apart. No retry here (unlike plan/synthesis): the loop keeps
+            // stepping under its own stopWhen/prepareStep ceiling regardless.
+            if (step.finishReason === 'length') {
+              log('worker.length', { jobId, round, stepNumber: step.stepNumber })
+            }
           },
           onToolExecutionStart: () => idle.arm(),
           onToolExecutionEnd: () => idle.arm(),
@@ -140,6 +147,7 @@ export async function runWorker(args: {
           'worker.findings_stripped': stripped,
           'llm.input_tokens': usage.inputTokens,
           'llm.output_tokens': usage.outputTokens,
+          'llm.finish_reason': result.finishReason,
           'ledger.retrieved': snapshot.retrieved.length,
           'ledger.missing': snapshot.missing.length,
           'ledger.failed': snapshot.failed.length,

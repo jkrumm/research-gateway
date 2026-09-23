@@ -29,7 +29,7 @@ VPN/localhost-bound, the whole LLM-path decision reopens — verify before anyth
 ssh vps
 curl -sS -X POST "$IU_BASE_URL/chat/completions" \
   -H "Authorization: Bearer $IU_API_KEY" -H "Content-Type: application/json" \
-  -d '{"model":"gpt-5.6-luna","messages":[{"role":"user","content":"ping"}],"max_tokens":5}'
+  -d '{"model":"deepseek-v4.1-flash","messages":[{"role":"user","content":"ping"}],"max_completion_tokens":2000}'
 ```
 
 ## 1. 1Password items (account `tkrumm`)
@@ -126,5 +126,7 @@ For the renderer, the check that matters is a page whose text is not in its HTML
   on the same sqlite file and the old one may still be genuinely working.
 - **The SSRF guard (`src/lib/ssrf.ts`) is load-bearing** — the gateway fetches pages itself.
   A DNS-rebinding TOCTOU gap remains and is documented inline.
-- **Budget ceilings are the cost backstop.** Anything holding the bearer can trigger a loop;
-  `src/agent/depth.ts` caps steps, context and wall-clock per depth.
+- **Breadth and the idle watchdog are the cost backstop.** Anything holding the bearer can
+  trigger a loop; `src/agent/depth.ts` caps workers/sources/rounds/context per depth (breadth,
+  not wall-clock — that ceiling was removed 2026-09-12), and `RESEARCH_IDLE_TIMEOUT_MS`
+  (`src/env.ts`, 30 min) kills a single LLM call gone silent, not the job.

@@ -5,22 +5,19 @@ const Env = z.object({
   API_SECRET: z.string().min(1),
   IU_BASE_URL: z.url(),
   IU_API_KEY: z.string().min(1),
-  // Both roles run Flash. These two defaults are the real configuration — production sets
+  // Both roles run DeepSeek. These two defaults are the real configuration — production sets
   // neither, so what is written here is what runs. (A dead IU_MODEL var used to sit here
   // and was still set to DeepSeek-V4-Pro in the deployed .env, which read as if the lead
   // were Pro long after it was not. Nothing consumed it; removed rather than corrected.)
   //
-  // Luna leads as well as works. Measured live against the IU endpoint (5 throughput runs,
-  // 4 tool-calling runs), gpt-5.6-luna is 3-8x faster to first token than DeepSeek-V4-Flash
-  // (TTFT 779-954ms vs 2.4-5.4s, the latter also producing a reasoning-token-inflation
-  // outlier that spiked to 11.5s) and more stable, with both models 100% reliable on
-  // tool-calling and comparable report quality — modelpick's bake-off (docs/decisions/
-  // hermes-brain.md there). The lead's two jobs, planning and synthesis, are both
-  // tool-calls, and synthesis is the wall-clock long pole of every job — so the faster,
-  // more stable model cuts both latency and cost where it matters most. Revert to
-  // DeepSeek-V4-Flash here if report quality regresses; nothing else depends on it.
-  IU_LEAD_MODEL: z.string().default('gpt-5.6-luna'),
-  IU_WORKER_MODEL: z.string().default('gpt-5.6-luna'),
+  // 2026-09-13: `deepseek-v4.1-flash` for both roles, `reasoning_effort: "high"` (lib/llm.ts
+  // owns the effort + per-call-role output budget, applied via `wrapLanguageModel` — see the
+  // comment there). Supersedes the 2026-08-20 move to `gpt-5.6-luna` recorded in
+  // docs/decisions.md: Luna was faster to first token but this is an estate-wide model
+  // decision, not a per-service latency tiebreak. DeepSeek has no prompt-cache discount here
+  // (measured elsewhere in the estate), which is an accepted cost, not a bug to chase.
+  IU_LEAD_MODEL: z.string().default('deepseek-v4.1-flash'),
+  IU_WORKER_MODEL: z.string().default('deepseek-v4.1-flash'),
   WORKER_MAX_CONCURRENCY: z.coerce.number().default(8),
   // Idle watchdog for every LLM call in the agent loop (plan, worker, synthesis): aborted
   // when no step/tool activity has been observed for this long. Replaces the old per-phase
@@ -28,7 +25,14 @@ const Env = z.object({
   // for a run, only a liveness check that a call is still doing something. `generateText` is
   // non-streaming here, so "activity" is step/tool-execution boundaries, not token chunks —
   // see worker.ts/plan.ts/synthesize.ts and `lib/idle-watchdog.ts`.
-  RESEARCH_IDLE_TIMEOUT_MS: z.coerce.number().default(300_000),
+  //
+  // 1_800_000 (30 min), not 300_000: `arm()` only fires from step/tool-execution callbacks, so
+  // there is no in-request heartbeat while a single non-streaming call is still thinking — a
+  // 300s budget read a `deepseek-v4.1-flash` call at `reasoning_effort: "high"` still generating
+  // its 32k-token synthesis output as "gone silent" and killed it mid-flight. rules/
+  // agent-limits.md sets 30 minutes as the hang-guard floor for exactly this shape (a single
+  // non-streaming request with no token-level signal to arm against).
+  RESEARCH_IDLE_TIMEOUT_MS: z.coerce.number().default(1_800_000),
   // Which backend `searchWeb` uses. Sonar is the default: it runs over IU_BASE_URL on the
   // work key, costs about the same per call as a Tavily basic search, and returns ~20 dated
   // sources instead of 5 (measured 2026-08-02). Tavily is kept as a one-shot per-call
@@ -94,9 +98,10 @@ const Env = z.object({
   //
   // **Size it off docs/measurements.md § Job duration, never off one run.** The first value
   // here was 600s, taken from a single fast deep run, and the span record says that would have
-  // missed 39% of deep jobs. 1800s clears the measured maximum and stays under the ~34-minute
-  // structural ceiling a deep job already has from its own summed phase timeouts (depth.ts),
-  // so the bound is the job rather than this number.
+  // missed 39% of deep jobs. 1800s clears the measured maximum. There is no summed per-phase
+  // wall-clock ceiling to bound it against any more (settled 2026-09-12, see depth.ts) — only
+  // the per-call idle watchdog (`RESEARCH_IDLE_TIMEOUT_MS`) — so 1800s is itself the job's
+  // outer bound, sized off measured history rather than derived from a structural cap.
   //
   // MUST stay strictly below the compose `stop_grace_period` (1860s, vps repo) or SIGKILL wins
   // first and the drain buys nothing. `process.boot` logs this value so the drift is visible.

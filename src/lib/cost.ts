@@ -10,8 +10,20 @@ export function normalizeModel(raw: string): string {
 // DeepSeek rates USD per 1M tokens — matches argo's ai-usage.ts DEEPSEEK_RATES.
 // cachedInput is the cache-read rate; the endpoint bills a cache hit far below a miss.
 const RATES: Record<string, { input: number; cachedInput: number; output: number }> = {
+  // Retired ids. Kept for history only — 'deepseek-v4-flash'/'deepseek-v4-pro' predate the
+  // 2026-09-13 rollout to deepseek-v4.1-flash below and are not billed on any live route in
+  // this repo; nothing here re-derives cost for old usage_record rows (argo stores the
+  // computed cost_usd at report time, it does not re-price from this table later).
   'deepseek-v4-flash': { input: 0.14, cachedInput: 0.0028, output: 0.28 },
   'deepseek-v4-pro': { input: 0.435, cachedInput: 0.0145, output: 0.87 },
+  // 2026-09-13 estate-wide model rollout: this repo's lead + worker model. Rates measured
+  // 2026-09-13 against the IU unified endpoint's own `usage.cost` (USD per 1M tokens) —
+  // supersedes the earlier $0.30/$0.30/$1.20 placeholder, which had no cache discount.
+  // Prompt caching is confirmed live on this route (`prompt_tokens_details.cached_tokens`).
+  'deepseek-v4.1-flash': { input: 0.5, cachedInput: 0.05, output: 1.5 },
+  // Measured 2026-09-13 against the IU unified endpoint's own `usage.cost`, same method as
+  // deepseek-v4.1-flash above.
+  'glm-5.3-flash': { input: 0.15, cachedInput: 0.03, output: 0.5 },
   // OpenAI list price, short context (<=272k); Azure OpenAI matches exactly. Corrected
   // 2026-08-20: the OpenRouter reference figure this originally carried ($0.10/$0.60) was
   // wrong — OpenAI cut the model 80% on 2026-07-30 and $0.20/$1.20 is the post-cut rate.
@@ -67,6 +79,78 @@ interface SearchUsageRecordBase {
   duration_ms: number | null
   cost_usd: number | null
   cost_source: 'computed' | 'reported' | 'none'
+}
+
+export interface LlmUsageRecord extends SearchUsageRecordBase {
+  raw: null
+}
+
+// First per-job record, alongside `tavily`/`sonar`/`render`/`ytdlp`/`archive` below — built
+// here rather than inline in usage.ts's reportUsage for the same reason as every other
+// builder in this file: no env.js import, so the token-accounting math is unit-testable
+// with zero env vars.
+//
+// `args.inputTokens` is the AI SDK's `usage.inputTokens` — the OpenAI-compatible route's
+// full prompt_tokens, which already INCLUDES cached_tokens as a subset, not a delta on top
+// of it. argo's `input_tokens` column follows the opposite, uncached-only convention (its
+// usage.ts metricExpr excludes cache_read_tokens from the token-sum, and its cache-ratio
+// query uses `cache_read_tokens / (cache_read_tokens + input_tokens)` — both assume
+// input_tokens holds only the cache miss). Sending the full total here inflated the
+// cache-ratio denominator and double-reported the cached share. `uncachedInputTokens` below
+// undoes that before the record leaves this process.
+export function buildLlmUsageRecord(args: {
+  jobId: string
+  model: string
+  subTool: 'lead' | 'worker'
+  inputTokens: number
+  outputTokens: number
+  reasoningTokens: number
+  cachedInputTokens: number
+  durationMs: number
+  /**
+   * Defaults to 'ok'. Reporting only successes leaves `outcome` permanently 'ok',
+   * which reads as a service that has never failed rather than one that isn't
+   * measured. A failed job re-reports its last snapshot as 'error' — same
+   * source_id, so argo's upsert flips the existing row instead of adding one.
+   */
+  outcome?: 'ok' | 'error'
+}): LlmUsageRecord {
+  const { costUsd, costSource } = computeCost(args.model, {
+    inputTokens: args.inputTokens,
+    cachedInputTokens: args.cachedInputTokens,
+    outputTokens: args.outputTokens,
+  })
+  const uncachedInputTokens = Math.max(0, args.inputTokens - args.cachedInputTokens)
+
+  return {
+    source: 'research-gateway',
+    // argo upserts on (source, source_id, machine). A job emits one record per model
+    // bucket, so source_id must be scoped or the second would overwrite the first.
+    source_id: `${args.jobId}:${args.subTool}`,
+    grain: 'session',
+    model: args.model,
+    model_norm: normalizeModel(args.model),
+    // argo derives `workspace` from `project` only for path-driven sources
+    // (claude-code, litellm) and leaves it NULL otherwise — and its dashboard
+    // filters workspace with an `IN (...)` list, which never matches NULL. Left
+    // unset, this service vanished from every chart the moment the Private/Work
+    // filter was touched, despite being the second-largest cost source.
+    project: 'research-gateway',
+    workspace: 'private',
+    sub_tool: args.subTool,
+    machine: 'vps',
+    billing: 'iu',
+    outcome: args.outcome ?? 'ok',
+    input_tokens: uncachedInputTokens,
+    output_tokens: args.outputTokens,
+    cache_read_tokens: args.cachedInputTokens,
+    cache_write_tokens: 0,
+    reasoning_tokens: args.reasoningTokens ?? 0,
+    duration_ms: args.durationMs,
+    cost_usd: costUsd,
+    cost_source: costSource,
+    raw: null,
+  }
 }
 
 export interface TavilyCreditUsageRecord extends SearchUsageRecordBase {

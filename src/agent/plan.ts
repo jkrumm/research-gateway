@@ -1,6 +1,7 @@
 import { generateText, tool } from 'ai'
 import type { Tool } from 'ai'
-import { leadModel } from '../lib/llm.js'
+import { planModel, leadModelWithDoubledBudget } from '../lib/llm.js'
+import type { IuLanguageModel } from '../lib/llm.js'
 import { profiles } from './depth.js'
 import { planPrompt, backgroundSection } from './prompt.js'
 import { ResearchPlan } from './schema.js'
@@ -8,9 +9,11 @@ import type { Depth } from './schema.js'
 import { log } from '../lib/log.js'
 import { withSpan } from '../lib/otel.js'
 import { env } from '../env.js'
-import { emptyUsage, toUsageStats } from '../lib/usage.js'
+import { addUsage, emptyUsage, toUsageStats } from '../lib/usage.js'
 import type { UsageStats } from '../lib/usage.js'
 import { createIdleWatchdog } from '../lib/idle-watchdog.js'
+import type { IdleWatchdog } from '../lib/idle-watchdog.js'
+import { ROLE_BUDGETS } from '../lib/llm.js'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyTool = Tool<any, any>
@@ -48,6 +51,20 @@ export async function planResearch(args: {
     inputSchema: ResearchPlan,
   }) as AnyTool
 
+  const callPlan = (model: IuLanguageModel, idle: IdleWatchdog) =>
+    generateText({
+      model,
+      instructions: planPrompt(depth),
+      prompt: query + backgroundSection(context),
+      tools: { submit_plan: submitPlanTool },
+      toolChoice: { type: 'tool', toolName: 'submit_plan' },
+      maxRetries: 2,
+      abortSignal: idle.signal,
+      onStepEnd: () => idle.arm(),
+      onToolExecutionStart: () => idle.arm(),
+      onToolExecutionEnd: () => idle.arm(),
+    })
+
   // Wrapped from the generateText call onward, not from the top of the function: the
   // quick-depth early return above makes no LLM call, and a zero-duration span there would
   // drag the plan-latency tile toward nothing.
@@ -60,20 +77,23 @@ export async function planResearch(args: {
       const idle = createIdleWatchdog(env.RESEARCH_IDLE_TIMEOUT_MS)
       idle.arm()
       try {
-        const result = await generateText({
-          model: leadModel,
-          instructions: planPrompt(depth),
-          prompt: query + backgroundSection(context),
-          tools: { submit_plan: submitPlanTool },
-          toolChoice: { type: 'tool', toolName: 'submit_plan' },
-          maxRetries: 2,
-          abortSignal: idle.signal,
-          onStepEnd: () => idle.arm(),
-          onToolExecutionStart: () => idle.arm(),
-          onToolExecutionEnd: () => idle.arm(),
-        })
+        let result = await callPlan(planModel, idle)
+        let usage = toUsageStats(result.usage, 0)
 
-        const usage = toUsageStats(result.usage, Date.now() - start)
+        // A starved call (empty/truncated tool args) reads identically to "the model chose
+        // not to call the tool" unless finishReason is checked — log it distinctly so the two
+        // don't get confused on the fallback tile, and give the budget one more shot before
+        // accepting the fallback plan.
+        if (result.finishReason === 'length') {
+          log('plan.length', { jobId, outputTokens: usage.outputTokens, budget: ROLE_BUDGETS.plan })
+          result = await callPlan(leadModelWithDoubledBudget('plan'), idle)
+          usage = addUsage(usage, toUsageStats(result.usage, 0))
+          if (result.finishReason === 'length') {
+            log('plan.length', { jobId, outputTokens: usage.outputTokens, retried: true })
+          }
+        }
+        usage = { ...usage, durationMs: Date.now() - start }
+
         const plan = extractPlan(result.toolCalls)
         if (!plan) {
           // Counted off the plan actually RETURNED, not hardcoded: the fallback has one
@@ -82,14 +102,20 @@ export async function planResearch(args: {
           const fallback = fallbackPlan(query)
           span.setAttributes({
             'llm.output_tokens': usage.outputTokens,
+            'llm.finish_reason': result.finishReason,
             'plan.sub_questions': fallback.subQuestions.length,
             'plan.fallback': true,
           })
-          log('plan.fallback', { jobId, reason: 'no valid submit_plan call' })
+          log('plan.fallback', {
+            jobId,
+            reason: result.finishReason === 'length' ? 'starved: finishReason=length' : 'no valid submit_plan call',
+            finishReason: result.finishReason,
+          })
           return { plan: fallback, usage }
         }
         span.setAttributes({
           'llm.output_tokens': usage.outputTokens,
+          'llm.finish_reason': result.finishReason,
           'plan.sub_questions': plan.subQuestions.length,
           'plan.fallback': false,
         })
