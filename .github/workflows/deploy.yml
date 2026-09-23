@@ -27,6 +27,13 @@ permissions:
   id-token: write
   contents: read
 
+concurrency:
+  # A burst of pushes (an agent landing a backlog) used to roll the gateway once per commit —
+  # three full rollouts in 28s on 2026-09-23. Same group as argo/audio-gateway: one deploy runs,
+  # only the newest pending one waits, the rest are superseded.
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   # Gate the deploy on the checks that catch the failures worth catching here: a type
   # error, and a regression in the grounding invariants that decide whether a citation
