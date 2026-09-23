@@ -243,6 +243,7 @@ export const app = new Elysia()
           'GET /health/render',
           'GET /health/tavily',
           'GET /health/ytdlp',
+          'GET /health/pdf',
           'GET /openapi',
           'GET /openapi/json',
         ],

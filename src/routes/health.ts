@@ -20,6 +20,23 @@ async function readYtdlpVersion(): Promise<string> {
   return stdout.trim()
 }
 
+// `pdftotext -v` prints its version to STDERR, not stdout (measured — poppler's own
+// convention, same as several other poppler-utils binaries) — the one difference from
+// `readYtdlpVersion` above, which this otherwise mirrors exactly.
+async function readPdftotextVersion(): Promise<string> {
+  const proc = Bun.spawn([env.PDFTOTEXT_PATH, '-v'], {
+    stdout: 'pipe',
+    stderr: 'pipe',
+    timeout: 5_000,
+    killSignal: 'SIGKILL',
+  })
+  const stderr = await new Response(proc.stderr).text()
+  const code = await proc.exited
+  if (proc.signalCode) throw new Error('pdftotext -v timed out')
+  if (code !== 0) throw new Error(`pdftotext -v exited ${code}`)
+  return stderr.split('\n')[0]?.trim() ?? stderr.trim()
+}
+
 export const healthRoute = new Elysia()
   // `status` stays the only field anything GATES on (Docker healthcheck, rollhook, Traefik).
   // The restart fields are visibility for a keyword monitor: `resumed` > 0 means this process
@@ -241,6 +258,33 @@ export const healthRoute = new Elysia()
         summary: 'yt-dlp binary probe',
         description:
           'Runs `yt-dlp --version` inside the container and reports the result. No auth required. NOTHING gates on this — yt-dlp failing degrades video transcripts/search to the Tavily Extract fallback, not the service.',
+      },
+    },
+  )
+  // Same posture as `/health/ytdlp`: a runtime regression here (a base image swap, poppler-utils
+  // missing from the apk layer) would otherwise only surface as every PDF fetch silently falling
+  // back to Tavily Extract, which cannot read PDFs either (agent/pdf.ts).
+  .get(
+    '/health/pdf',
+    async () => {
+      try {
+        const version = await readPdftotextVersion()
+        return { pdftotext: 'ok' as const, version, error: null }
+      } catch (err) {
+        return { pdftotext: 'down' as const, version: null, error: String(err) }
+      }
+    },
+    {
+      response: z.object({
+        pdftotext: z.enum(['ok', 'down']),
+        version: z.string().nullable(),
+        error: z.string().nullable(),
+      }),
+      detail: {
+        tags: ['System'],
+        summary: 'pdftotext binary probe',
+        description:
+          'Runs `pdftotext -v` inside the container and reports the result. No auth required. NOTHING gates on this — pdftotext failing degrades PDF fetches to the Tavily Extract fallback (which cannot read PDFs either), not the service.',
       },
     },
   )

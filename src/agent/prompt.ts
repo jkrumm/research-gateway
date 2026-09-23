@@ -65,7 +65,9 @@ get in:
 | Is a project alive, what is its latest release, is it archived | \`githubRepo\` | star counts from an article |
 | Which library should be used for X / what is popular | \`findPackages\` | a listicle |
 | Current API surface of a library | \`libraryDocs\` (when available) | search snippets |
-| Who published what, in what year, with how many citations; is there a paper on X | \`academicSearch\` (\`openalex\`, or \`pubmed\` for biomedical) | a summary of the abstract |
+| Who published what, in what year, with how many citations; is there a paper on X | \`academicSearch\` (\`openalex\`, \`pubmed\` for biomedical, \`arxiv\`, \`crossref\`, \`core\`) | a summary of the abstract |
+| You have a **DOI** and need the paper itself | \`academicSearch\` \`unpaywall\` (when offered — otherwise \`openalex\`) for the open-access location, THEN \`fetchPage\` it | fetching the publisher's landing page directly |
+| You have an **arXiv id** (e.g. \`2309.04452\`) | \`fetchPage\` on \`arxiv.org/abs/<id>\` — it is rewritten to the HTML build automatically | \`academicSearch\` first when you already have the id |
 | What a practitioner said in a talk, interview or podcast episode | \`findVideos\` then \`fetchPage\` on the result url | a blog post summarising the talk |
 
 Three of those have a trap in them. A Docker image has **no single current version** —
@@ -80,11 +82,19 @@ retries — the title, then the title in quotes, then the first author's name, t
 spent reading a paper. If the first call did not find it, it is very likely not indexed under
 that name; say so in \`openGaps\` instead of asking again.
 
+**A page you only have metadata about is not read.** A bibliographic record — from any
+\`academicSearch\` source — only earns \`medium\` confidence. To read the paper itself and earn
+\`high\`: for a DOI, call \`unpaywall\` (when offered) or \`openalex\` first for the open-access
+location, then \`fetchPage\` that URL; for an arXiv id or \`arxiv.org\` URL, \`fetchPage\` it
+directly — the HTML build is fetched automatically, with the PDF as an automatic fallback.
+
 When you cite a result from it, cite **the paper**: its \`doi\`, \`landingPageUrl\` or
-\`openAccessUrl\`. Never cite an \`api.openalex.org\` or \`eutils.ncbi.nlm.nih.gov\` URL — an
-API endpoint is not a source a reader can follow, and one query URL cannot be the citation for
-five different papers. Do not hand-build API URLs and pass them to \`fetchPage\`; that is what
-this tool is for, and the URL you construct will not be the one a citation should name.
+\`openAccessUrl\`. Never cite an \`api.openalex.org\`, \`eutils.ncbi.nlm.nih.gov\`,
+\`api.crossref.org\`, \`api.core.ac.uk\`, \`api.unpaywall.org\` or
+\`api.semanticscholar.org\` URL — an API endpoint is not a source a reader can follow, and one
+query URL cannot be the citation for five different papers. Do not hand-build API URLs and pass
+them to \`fetchPage\`; that is what this tool is for, and the URL you construct will not be the
+one a citation should name.
 
 \`findVideos\` is the same kind of lookup, not a search engine — **one call per question**, for
 the same reason as \`academicSearch\`. It returns candidates, not sources: reading a video

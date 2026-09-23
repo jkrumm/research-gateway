@@ -26,6 +26,17 @@ const { runFetchChain } = await import('./fetch-chain.js')
 const { createLedger } = await import('./ledger.js')
 const { PARSE_INPUT_CAP, MAX_BODY_BYTES } = await import('./response-kind.js')
 
+// PDF fixtures — read with Bun.file rather than node:fs, matching pdf.test.ts's convention
+// (importing a `node:*` module pulls in @types/node's own ReadableStream declarations, which
+// conflict with bun-types' and break `tsc --noEmit` the moment this file names that type).
+const PDFTOTEXT_PATH = Bun.which('pdftotext')
+const PDF_FIXTURES = `${import.meta.dir}/__fixtures__`
+// `paper.pdf` carries real prose clearing MIN_USABLE_CHARS (200); `valid.pdf`/`thin.pdf`
+// (pdf.test.ts's fixtures) are deliberately tiny and would read as "thin" at THIS layer even
+// on a clean extraction — that distinction is the point of the "thin" test below.
+const PAPER_PDF = new Uint8Array(await Bun.file(`${PDF_FIXTURES}/paper.pdf`).arrayBuffer())
+const THIN_PDF = new Uint8Array(await Bun.file(`${PDF_FIXTURES}/thin.pdf`).arrayBuffer())
+
 const realFetch = globalThis.fetch
 afterAll(() => {
   globalThis.fetch = realFetch
@@ -126,5 +137,73 @@ describe('the fetch chain never downloads an unbounded body', () => {
     // Capped for the worker at TEXT_CAP, with the notice that says the tail is missing — the
     // reader must not have swallowed that by cutting the body before capText could see it.
     expect(result.text).toContain('[truncated: showing the first 80000 of 2000001 characters')
+  })
+})
+
+describe('the PDF step', () => {
+  it.skipIf(!PDFTOTEXT_PATH)('reads a PDF served with an honest content-type and grounds it as retrieved', async () => {
+    stubFetch(() => new Response(PAPER_PDF, { status: 200, headers: { 'content-type': 'application/pdf' } }))
+    const ledger = createLedger()
+
+    const result = await runFetchChain(PAGE, { ledger })
+
+    expect(result.via).toBe('pdf')
+    expect(result.text).toContain('EMOS and quantile regression forests are mentioned here.')
+    expect(ledger.tierOf(PAGE)).toBe('retrieved')
+  })
+
+  it.skipIf(!PDFTOTEXT_PATH)('detects a PDF mislabelled as application/octet-stream via the magic bytes', async () => {
+    stubFetch(() => new Response(PAPER_PDF, { status: 200, headers: { 'content-type': 'application/octet-stream' } }))
+
+    const result = await runFetchChain(PAGE, { ledger: createLedger() })
+
+    expect(result.via).toBe('pdf')
+    expect(result.text).toContain('EMOS and quantile regression forests are mentioned here.')
+  })
+
+  it.skipIf(!PDFTOTEXT_PATH)('never mistakes an ordinary HTML page for a PDF', async () => {
+    stubFetch((url) =>
+      url.includes(RENDER_HOST)
+        ? renderOk()
+        : new Response('<html><body>' + 'not a pdf. '.repeat(50) + '</body></html>', {
+            status: 200,
+            headers: { 'content-type': 'text/html' },
+          }),
+    )
+
+    const result = await runFetchChain(PAGE, { ledger: createLedger(), renderBaseUrl: RENDER_BASE })
+
+    expect(result.attempts.some((a) => a.step === 'pdf')).toBe(false)
+  })
+
+  it.skipIf(!PDFTOTEXT_PATH)('skips lightpanda for a thin/scanned PDF — a browser cannot read one any better', async () => {
+    // The chain still falls through to Tavily Extract after this (step 3 always runs), which
+    // is a REAL network call this test does not control the outcome of — the assertion here is
+    // deliberately scoped to what step 1 decided: lightpanda must never be asked.
+    stubFetch((url) => {
+      if (url.includes(RENDER_HOST)) throw new Error('lightpanda must never be asked to read a PDF')
+      return new Response(THIN_PDF, { status: 200, headers: { 'content-type': 'application/pdf' } })
+    })
+
+    const result = await runFetchChain(PAGE, { ledger: createLedger(), renderBaseUrl: RENDER_BASE })
+
+    expect(result.attempts[0]).toMatchObject({ step: 'pdf', ok: false })
+    expect(result.attempts.some((a) => a.step === 'lightpanda')).toBe(false)
+  })
+
+  it('records a failure, never a negative claim, when the PDF is declared over the 25 MB cap', async () => {
+    stubFetch(() => new Response(PAPER_PDF, {
+      status: 200,
+      headers: { 'content-type': 'application/pdf', 'content-length': String(30 * 1024 * 1024) },
+    }))
+    const ledger = createLedger()
+
+    const result = await runFetchChain(PAGE, { ledger })
+
+    expect(result.error).toContain('over')
+    expect(ledger.tierOf(PAGE)).toBe('failed')
+    // Never `missing` — that tier backs a HIGH-confidence absence claim, and a paper that is
+    // merely too big to fetch is not evidence the paper does not exist (ground.ts's rule).
+    expect(ledger.tierOf(PAGE)).not.toBe('missing')
   })
 })

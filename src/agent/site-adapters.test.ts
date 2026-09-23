@@ -147,6 +147,69 @@ describe('resolveSite', () => {
     )
     expect(site.extract).toBeNull()
   })
+
+  describe('arXiv', () => {
+    it('rewrites /abs/<id> to the HTML build, carrying the PDF as a fallback', () => {
+      const site = resolveSite('https://arxiv.org/abs/2309.04452')
+      expect(site.fetchUrl).toBe('https://arxiv.org/html/2309.04452')
+      expect(site.fallbackUrl).toBe('https://arxiv.org/pdf/2309.04452')
+      expect(site.skipToExtract).toBe(false)
+      expect(site.extract).not.toBeNull()
+    })
+
+    it('rewrites /pdf/<id> and /pdf/<id>.pdf the same way, keeping the version suffix', () => {
+      for (const url of ['https://arxiv.org/pdf/2309.04452v2', 'https://arxiv.org/pdf/2309.04452v2.pdf']) {
+        const site = resolveSite(url)
+        expect(site.fetchUrl).toBe('https://arxiv.org/html/2309.04452v2')
+        expect(site.fallbackUrl).toBe('https://arxiv.org/pdf/2309.04452v2')
+      }
+    })
+
+    it('handles the old-style archive/id form', () => {
+      const site = resolveSite('https://arxiv.org/abs/physics/0601001')
+      expect(site.fetchUrl).toBe('https://arxiv.org/html/physics/0601001')
+      expect(site.fallbackUrl).toBe('https://arxiv.org/pdf/physics/0601001')
+    })
+
+    it('tolerates a trailing slash', () => {
+      const site = resolveSite('https://arxiv.org/abs/2309.04452/')
+      expect(site.fetchUrl).toBe('https://arxiv.org/html/2309.04452')
+    })
+
+    it('leaves an already-HTML url unrewritten but keeps the LaTeXML extractor attached', () => {
+      const site = resolveSite('https://arxiv.org/html/2309.04452')
+      expect(site.fetchUrl).toBe('https://arxiv.org/html/2309.04452')
+      expect(site.fallbackUrl).toBeUndefined()
+      expect(site.extract).not.toBeNull()
+    })
+
+    it("declines arxiv.org's homepage — no id to rewrite", () => {
+      const site = resolveSite('https://arxiv.org/')
+      expect(site.fetchUrl).toBe('https://arxiv.org/')
+      expect(site.fallbackUrl).toBeUndefined()
+    })
+
+    it('extracts prose, substitutes math alttext, and renders a table as pipe-joined rows', () => {
+      const site = resolveSite('https://arxiv.org/html/2309.04452')
+      const document = doc(`<article class="ltx_document">
+        <p class="ltx_p">We assume <math alttext="Y\\mid X\\sim\\mathcal{F}_{\\bm{\\theta}}"><mrow>ignored mathml</mrow></math> throughout.</p>
+        <table class="ltx_tabular">
+          <tr><td>Model</td><td>CRPS</td></tr>
+          <tr><td>EMOS</td><td>0.42</td></tr>
+        </table>
+      </article>`)
+      const out = site.extract!(document)
+      expect(out).toContain('$Y\\mid X\\sim\\mathcal{F}_{\\bm{\\theta}}$')
+      expect(out).toContain('Model | CRPS')
+      expect(out).toContain('EMOS | 0.42')
+    })
+
+    it('returns null on a page that is not LaTeXML, falling through to Readability', () => {
+      const site = resolveSite('https://arxiv.org/html/9999.99999')
+      const document = doc('<div class="not-latexml"><p>a 404 page, or something else entirely</p></div>')
+      expect(site.extract!(document)).toBeNull()
+    })
+  })
 })
 
 // ── Dual-backend merge ─────────────────────────────────────────────────────────────────

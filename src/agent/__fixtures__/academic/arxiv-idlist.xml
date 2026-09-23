@@ -1,0 +1,31 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<feed xmlns:opensearch="http://a9.com/-/spec/opensearch/1.1/" xmlns:arxiv="http://arxiv.org/schemas/atom" xmlns="http://www.w3.org/2005/Atom">
+  <id>https://arxiv.org/api/ouZno5B2kfBOZfmZFDdZmGCDdFc</id>
+  <title>arXiv Query: search_query=&amp;id_list=1511.02001&amp;start=0&amp;max_results=10</title>
+  <updated>2026-09-23T07:45:15Z</updated>
+  <link href="https://arxiv.org/api/query?search_query=&amp;start=0&amp;max_results=10&amp;id_list=1511.02001" type="application/atom+xml"/>
+  <opensearch:itemsPerPage>10</opensearch:itemsPerPage>
+  <opensearch:totalResults>1</opensearch:totalResults>
+  <opensearch:startIndex>0</opensearch:startIndex>
+  <entry>
+    <id>http://arxiv.org/abs/1511.02001v1</id>
+    <title>Probabilistic wind speed forecasting on a grid based on ensemble model output statistics</title>
+    <updated>2015-11-06T08:11:04Z</updated>
+    <link href="https://arxiv.org/abs/1511.02001v1" rel="alternate" type="text/html"/>
+    <link href="https://arxiv.org/pdf/1511.02001v1" rel="related" type="application/pdf" title="pdf"/>
+    <summary>Probabilistic forecasts of wind speed are important for a wide range of applications, ranging from operational decision making in connection with wind power generation to storm warnings, ship routing and aviation. We present a statistical method that provides locally calibrated, probabilistic wind speed forecasts at any desired place within the forecast domain based on the output of a numerical weather prediction (NWP) model. Three approaches for wind speed post-processing are proposed, which use either truncated normal, gamma or truncated logistic distributions to make probabilistic predictions about future observations conditional on the forecasts of an ensemble prediction system (EPS). In order to provide probabilistic forecasts on a grid, predictive distributions that were calibrated with local wind speed observations need to be interpolated. We study several interpolation schemes that combine geostatistical methods with local information on annual mean wind speeds, and evaluate the proposed methodology with surface wind speed forecasts over Germany from the COSMO-DE (Consortium for Small-scale Modelling) ensemble prediction system.</summary>
+    <category term="stat.AP" scheme="http://arxiv.org/schemas/atom"/>
+    <published>2015-11-06T08:11:04Z</published>
+    <arxiv:comment>Published at http://dx.doi.org/10.1214/15-AOAS843 in the Annals of Applied Statistics (http://www.imstat.org/aoas/) by the Institute of Mathematical Statistics (http://www.imstat.org)</arxiv:comment>
+    <arxiv:primary_category term="stat.AP"/>
+    <arxiv:journal_ref>Annals of Applied Statistics 2015, Vol. 9, No. 3, 1328-1349</arxiv:journal_ref>
+    <author>
+      <name>Michael Scheuerer</name>
+    </author>
+    <author>
+      <name>David Möller</name>
+    </author>
+    <arxiv:doi>10.1214/15-AOAS843</arxiv:doi>
+    <link rel="related" href="https://doi.org/10.1214/15-AOAS843" title="doi"/>
+  </entry>
+</feed>

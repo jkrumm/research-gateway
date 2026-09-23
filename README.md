@@ -60,6 +60,7 @@ talk to — and plain bearer HTTP for everything else (Hermes, scripts, curl).
 | `GET /health/render` | public | — | `{ renderer, active, queued, error }` — the sidecar. **Deliberately not part of `/health`**: the renderer is optional, and a broken one must not block deploys of a gateway that is otherwise fine |
 | `GET /health/tavily` | public | — | live account state from `api.tavily.com/usage` incl. `overPlan` — crossing into pay-as-you-go was otherwise silent |
 | `GET /health/ytdlp` | public | — | `{ ytdlp, version, error }` — `yt-dlp --version` inside the container |
+| `GET /health/pdf` | public | — | `{ pdftotext, version, error }` — `pdftotext -v` inside the container |
 | `GET /openapi`, `/openapi/json` | public | — | Scalar UI, raw spec |
 | `POST /research` | bearer | `{ query, depth?, context? }` (`quick \| standard \| deep`; `context` = free-text background treated as given — not re-searched, never cited) | `{ jobId, status }` (async) |
 | `GET /research/:jobId` | bearer | — | `{ status, result?, error? }` — a **poll**: returns current state at once, never blocks |
@@ -182,9 +183,16 @@ do not mock env. `scripts/smoke.ts` runs one `runResearch()` end to end without 
 | `JOB_DB_PATH` | no (`./data/jobs.sqlite`) | `/app/data` in the container, a named volume |
 | `SHUTDOWN_DRAIN_MS` | no (1 800 000) | how long SIGTERM waits for RUNNING jobs before force-exiting. **Must stay below the compose `stop_grace_period` (1860s)** or SIGKILL wins and the drain buys nothing. Sized off the 30-day span record, not a guess — see Restarts |
 | `YTDLP_PATH` / `YTDLP_MAX_CONCURRENCY` / `YTDLP_TIMEOUT_MS` | no | bundled binary; concurrency 2 because YouTube rate-limits the datacenter IP under burst |
+| `PDFTOTEXT_PATH` | no (`pdftotext`) | poppler-utils, an apk package in the image (Dockerfile) rather than a pinned binary download — PATH lookup by default |
+| `ACADEMIC_CONTACT_EMAIL` | no | enables `academicSearch`'s `unpaywall` source — unpaywall requires a real contact address on every request and blocklists `@example.com`; also sent to Crossref's "polite pool" `mailto` param when set |
+| `CORE_API_KEY` | no | raises `academicSearch`'s `core` source above the keyless 100 tokens/day, 10/min |
+| `S2_API_KEY` | no | enables `academicSearch`'s `semanticscholar` source — unauthenticated Semantic Scholar 429s on the very first call (measured), so the source is not offered at all without a key |
 
 Production values come from `vps/apps/research-gateway/.env.tpl` via `op inject`, which
-**resolves `op://` refs inside comments too** — never park an unused ref behind a `#`.
+**resolves `op://` refs inside comments too** — never park an unused ref behind a `#`. The vps
+repo's `.env.tpl` needs `ACADEMIC_CONTACT_EMAIL` / `CORE_API_KEY` / `S2_API_KEY` added
+alongside the existing keys for those sources to be offered in prod — not done here, since this
+repo has no copy of that file.
 
 ## Web search backend
 
@@ -213,7 +221,8 @@ as it decides to (there is no step cap since 2026-09-12), not as much as it is g
 | a repo file, verbatim | `githubFile` | api.github.com |
 | is a project alive, latest release, archived | `githubRepo` | api.github.com |
 | which library for X | `findPackages` | npm search · GitHub search |
-| who published what, what year, how many citations | `academicSearch` + `openalex` / `pubmed` | api.openalex.org · eutils.ncbi.nlm.nih.gov (Semantic Scholar 429s unauthenticated) |
+| who published what, what year, how many citations, is there a paper on X | `academicSearch` + `openalex` / `pubmed` / `arxiv` / `crossref` / `core` (`unpaywall` when `ACADEMIC_CONTACT_EMAIL` is set, `semanticscholar` when `S2_API_KEY` is set) | api.openalex.org · eutils.ncbi.nlm.nih.gov · export.arxiv.org · api.crossref.org · api.core.ac.uk · api.unpaywall.org · api.semanticscholar.org (429s unauthenticated) |
+| best open-access location for a DOI | `academicSearch` + `unpaywall` | api.unpaywall.org — read it, then `fetchPage` the OA URL to earn a `high`-confidence citation |
 | what a practitioner said, at length, out loud | `findVideos` | `yt-dlp` search, keyless; `fetchPage` on a watch URL returns the transcript |
 | current API surface of a library | `libraryDocs` | Context7 |
 
@@ -221,6 +230,9 @@ as it decides to (there is no step cap since 2026-09-12), not as much as it is g
 new *ecosystems* go on existing tools (`packageInfo`,
 `academicSearch`) rather than becoming new definitions. Adding a source is cheap; adding a
 tool is not. Podcasts needed no code: episode pages are ordinary web pages Readability reads.
+`academicSearch`'s `source` enum is itself built from what is configured (`unpaywall` /
+`semanticscholar` only appear when their env var is set), so a worker is never offered a source
+that would fail on every call.
 
 ## Fetching pages
 
@@ -229,8 +241,9 @@ tool is not. Podcasts needed no code: episode pages are ordinary web pages Reada
 | Step | Handles | Notes |
 |-|-|-|
 | 1. `@mozilla/readability` | ordinary article pages | serves the large majority; 404/410 short-circuit here (`response-kind.ts`) |
-| 2. site adapter | pages the generic path structurally cannot read | `site-adapters.ts`: Reddit (`old.reddit.com`), dpreview forum threads, YouTube (yt-dlp transcript) |
-| 3. lightpanda sidecar | pages whose text is not in the HTML at all | self-hosted browser, own container and memory budget; on when `LIGHTPANDA_URL` is set |
+| 1b. PDF | `application/pdf` (by content-type or `%PDF-` magic bytes) | `agent/pdf.ts`: `pdftotext` (poppler-utils) streamed via stdin/stdout, default layout mode (not `-layout` — measured, see the file's header), 25 MB cap. Never buffered whole; over-cap or a thin/scanned extraction is `recordFailed`, never a negative claim |
+| 2. site adapter | pages the generic path structurally cannot read | `site-adapters.ts`: Reddit (`old.reddit.com`), dpreview forum threads, YouTube (yt-dlp transcript), arXiv (`/abs/`, `/pdf/` rewritten to the LaTeXML `/html/` build, with the PDF as an automatic fallback on a 404/410) |
+| 3. lightpanda sidecar | pages whose text is not in the HTML at all | self-hosted browser, own container and memory budget; on when `LIGHTPANDA_URL` is set — skipped for a PDF, a browser cannot read one any better |
 | 4. Tavily Extract | static pages Readability could not parse | costs a credit |
 | 5. Wayback Machine | origins that refuse this crawler outright | `archive.ts`; free; only after every live step failed, never for a 404 |
 

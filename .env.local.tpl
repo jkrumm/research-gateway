@@ -35,6 +35,13 @@ CONTEXT7_API_KEY=op://vps/research-gateway/CONTEXT7_API_KEY
 # only after seeding, or `bun run dev` fails on a cache miss.
 # GITHUB_TOKEN=op://vps/research-gateway/GITHUB_TOKEN
 
+# academicSearch's optional sources — empty-is-unset, same pattern as GITHUB_TOKEN below.
+# Never park a real value behind these comments as an op:// ref — op inject resolves refs
+# inside comments too, and an unseeded one fails the whole injection.
+# ACADEMIC_CONTACT_EMAIL=you@example.com
+# CORE_API_KEY=
+# S2_API_KEY=
+
 # Telemetry → argo POST /usage/records (ARGO_API_SECRET = argo's shared bearer)
 ARGO_USAGE_URL=https://argo.jkrumm.com/api/usage/records
 ARGO_API_SECRET=op://common/api/SECRET
