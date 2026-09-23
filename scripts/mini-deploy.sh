@@ -160,7 +160,7 @@ main() {
   changed_arr=("${(@f)changed}")
   local from_label="none"
   [[ -n "$deployed_sha" ]] && from_label="${deployed_sha[1,12]}"
-  log "deploying $from_label -> ${origin_head[1,12]} (${#changed_arr} changed path(s): ${(j:, :)changed_arr})"
+  log "deploying $from_label -> ${origin_head[1,12]} (${#changed_arr} changed path(s): ${(j:, :)changed_arr[1,20]}${${changed_arr[21]:+, …}:-})"
 
   if ! git -C "$APP_DIR" reset --hard origin/master >/dev/null; then
     log "ERROR: git reset --hard origin/master failed"
@@ -197,6 +197,12 @@ main() {
     return 0
   fi
 
+  # `kickstart -k` returns before the old process is gone, so the first /health answers can
+  # still come from it — the first live deploy logged "healthy" off the OLD process. Only a
+  # changed `lastRestartAt` proves the new one is serving.
+  local prev_restart
+  prev_restart=$(curl -fsS --max-time 2 "$HEALTH_URL" 2>/dev/null | jq -r '.lastRestartAt // ""' 2>/dev/null)
+
   log "restarting $LABEL_GATEWAY"
   launchctl kickstart -k "gui/$(id -u)/$LABEL_GATEWAY" 2>&1 | while IFS= read -r l; do log "  $l"; done
 
@@ -210,11 +216,13 @@ main() {
   # `draining: true` keeps polling rather than failing fast at the old 60s ceiling. Unreachable
   # (curl failure, non-2xx, unparseable body) also keeps polling — only the full window elapsing
   # without ever observing a healthy response is a failure.
-  local i=0 ok=0 health draining
+  # `health` is already a local above — re-declaring it with `local` makes zsh print its value.
+  local i=0 ok=0 draining restarted_at
   while (( i < HEALTH_POLL_SECS )); do
     if health=$(curl -fsS --max-time 2 "$HEALTH_URL" 2>/dev/null); then
       draining=$(print -r -- "$health" | jq -r '.draining // false' 2>/dev/null || print true)
-      if [[ "$draining" != "true" ]]; then
+      restarted_at=$(print -r -- "$health" | jq -r '.lastRestartAt // ""' 2>/dev/null)
+      if [[ "$draining" != "true" && -n "$restarted_at" && "$restarted_at" != "$prev_restart" ]]; then
         ok=1
         break
       fi
