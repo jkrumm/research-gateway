@@ -1,4 +1,4 @@
-import { generateText, tool, hasToolCall } from 'ai'
+import { generateText, tool, hasToolCall, stepCountIs } from 'ai'
 import type { Tool, StopCondition, ToolSet } from 'ai'
 import { workerModel, workerSubmitChoice } from '../lib/llm.js'
 import { buildTools } from './tools.js'
@@ -8,9 +8,10 @@ import { WorkerDigest } from './schema.js'
 import type { Depth } from './schema.js'
 import { createLedger, type LedgerSnapshot } from './ledger.js'
 import { groundDigest } from './ground.js'
+import { shouldForceSubmit, buildSalvageMessages } from './salvage.js'
 import { log } from '../lib/log.js'
 import { withSpan } from '../lib/otel.js'
-import { emptyUsage, toUsageStats } from '../lib/usage.js'
+import { emptyUsage, addUsage, toUsageStats } from '../lib/usage.js'
 import type { UsageStats } from '../lib/usage.js'
 import { createIdleWatchdog } from '../lib/idle-watchdog.js'
 import { env } from '../env.js'
@@ -80,6 +81,8 @@ export async function runWorker(args: {
       let stepCount = 0
       // Which ceiling cut this worker off, or undefined if it finished on its own terms.
       let forcedReason: 'context_cap' | undefined
+      // Whether the one-shot salvage call (below) is what actually produced the digest.
+      let salvaged = false
 
       // No step/turn limit and no wall-clock ceiling (settled 2026-09-12) — a worker runs
       // until it submits its digest, or this fires because a step has produced NO
@@ -97,9 +100,11 @@ export async function runWorker(args: {
           // Force the digest in-loop before the context ceiling is hit — a worker that
           // never submits still banks a digest instead of being cut off empty-handed.
           prepareStep: ({ steps }) => {
-            const last = steps[steps.length - 1]
-            const nearContext = (last?.usage?.inputTokens ?? 0) > profile.maxContextTokens * 0.8
-            if (nearContext) {
+            // Predictive, not just reactive: a step that is already growing fast enough to
+            // blow past the ceiling next step forces the submit-only step now, a step early
+            // — see salvage.ts's header for the measured jump this catches that the flat 80%
+            // check alone missed.
+            if (shouldForceSubmit({ steps, maxContextTokens: profile.maxContextTokens })) {
               forcedReason ??= 'context_cap'
               return { activeTools: ['submit_digest'], toolChoice: workerSubmitChoice('submit_digest') }
             }
@@ -123,12 +128,58 @@ export async function runWorker(args: {
           onToolExecutionEnd: () => idle.arm(),
         })
 
-        const usage = toUsageStats(result.usage, Date.now() - start)
-        const raw = extractDigest(result.toolCalls)
+        let usage = toUsageStats(result.usage, Date.now() - start)
+        let raw = extractDigest(result.toolCalls)
+
+        // Salvage: the loop ended (contextGuard's stopWhen, or the model simply stopping)
+        // without ever calling submit_digest. Rather than banking a null digest outright, make
+        // ONE more call — same model/instructions, the full transcript so far, submit_digest as
+        // the only tool — and give the model one last chance to report what it actually found.
+        // See salvage.ts's header for the measured failure this recovers from.
+        if (!raw) {
+          try {
+            const salvageMessages = buildSalvageMessages({
+              userPrompt: subQuestion + backgroundSection(context),
+              transcript: result.response.messages,
+              instruction:
+                'Budget reached. Submit your digest now via submit_digest using only sources you actually retrieved.',
+            })
+            const salvageResult = await generateText({
+              model: workerModel,
+              instructions: workerPrompt(depth),
+              messages: salvageMessages,
+              tools: { submit_digest: submitDigestTool },
+              // Resolves to 'auto' at effort high — DeepSeek thinking mode rejects a forced
+              // tool_choice — so this still relies on submit_digest being the only tool on
+              // offer, same as llm-settings.ts's submitToolChoice contract everywhere else.
+              toolChoice: workerSubmitChoice('submit_digest'),
+              stopWhen: stepCountIs(1),
+              maxRetries: 2,
+              abortSignal: idle.signal,
+              onStepEnd: () => idle.arm(),
+              onToolExecutionStart: () => idle.arm(),
+              onToolExecutionEnd: () => idle.arm(),
+            })
+            const salvageRaw = extractDigest(salvageResult.toolCalls)
+            usage = { ...addUsage(usage, toUsageStats(salvageResult.usage, 0)), durationMs: Date.now() - start }
+            if (salvageRaw) {
+              raw = salvageRaw
+              salvaged = true
+            }
+            log('worker.salvage', { jobId, round, ok: salvaged, findings: salvageRaw?.findings.length ?? 0 })
+          } catch (salvageErr) {
+            // The salvage call itself can fail (transcript too large for the model's real
+            // window, idle timeout, etc.) — fall back to today's null-digest behaviour rather
+            // than let it escape runWorker, which must never throw.
+            log('worker.salvage', { jobId, round, ok: false, error: String(salvageErr).slice(0, 300) })
+          }
+        }
 
         // Ground BEFORE the digest leaves the worker: a finding citing a page this worker
         // never retrieved is stripped here, so it never enters the synthesis prompt and
         // therefore cannot surface in the report's prose either — not just its citations.
+        // The salvage call added no new tool results, so the ledger already has everything
+        // it may cite — grounding applies identically to a salvaged digest.
         const digest = raw ? groundDigest(raw, ledger) : null
         let stripped = 0
         if (raw && digest) {
@@ -142,6 +193,7 @@ export async function runWorker(args: {
         span.setAttributes({
           'worker.steps': stepCount,
           'worker.forced_submit': forcedReason,
+          'worker.salvaged': salvaged,
           'worker.digest': digest !== null,
           'worker.findings_kept': digest?.findings.length ?? 0,
           'worker.findings_stripped': stripped,
@@ -163,6 +215,7 @@ export async function runWorker(args: {
         span.setAttributes({
           'worker.steps': stepCount,
           'worker.forced_submit': forcedReason,
+          'worker.salvaged': false,
           'worker.digest': false,
           'worker.findings_kept': 0,
           'worker.findings_stripped': 0,
