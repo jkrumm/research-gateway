@@ -224,6 +224,28 @@ describe('openJobDb — releaseLease', () => {
     expect(db.get(id)?.heartbeatAt).not.toBeUndefined() // owner-b's fresh heartbeat survives
     db.close()
   })
+
+  it('floors at -1 — releasing a never-claimed job twice cannot manufacture extra runs', () => {
+    const db = openJobDb(':memory:')
+    const id = crypto.randomUUID()
+    db.put(job({ jobId: id, status: 'running', owner: 'owner-a', attempts: 0 }))
+    db.renewLease(id, 'owner-a', Date.now())
+
+    // Release the SAME lease twice in a row (e.g. two drain passes racing) — attempts must
+    // clamp at -1, not walk further negative, or enough releases would let the crash-loop
+    // guard's `attempts >= MAX_JOB_ATTEMPTS` check never fire no matter how many times the job
+    // is actually reclaimed afterward.
+    db.releaseLease(id, 'owner-a')
+    expect(db.get(id)?.attempts).toBe(-1)
+    db.releaseLease(id, 'owner-a') // no-op: owner-a no longer holds the lease (heartbeat is NULL)
+    expect(db.get(id)?.attempts).toBe(-1)
+
+    // One legitimate claim from the floor nets to a plain 0 — the same "fresh job, one
+    // release, one reclaim, net zero" invariant as the test above, reached from -1 instead of 0.
+    const claimed = db.claimStale('owner-b', Date.now(), Date.now())
+    expect(claimed.find((j) => j.jobId === id)?.attempts).toBe(0)
+    db.close()
+  })
 })
 
 describe('openJobDb — ownsLease', () => {
