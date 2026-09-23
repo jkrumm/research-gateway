@@ -686,7 +686,11 @@ function buildBrainNotesTool(ledger: RetrievalLedger, jobId = '-'): AnyTool | nu
       return {
         query,
         results: result.notes,
-        note: "These are the owner's own prior notes. Cite the `url` field exactly as given — never a file path.",
+        // Measured 2026-09-23: a job asked which model the gateway runs "today" and reported a
+        // note's 2026-09-07 answer at high confidence — the note had simply not been updated
+        // after the 2026-09-13 switch. A note is the owner's record AS OF its date, never proof
+        // of the present.
+        note: "These are the owner's own prior notes, each true as of its `updated` date — not proof of the present. For anything current (a version, a config, what runs 'today'), state the note's date and confirm it against a primary source (githubFile, packageInfo, the live page) before asserting it; if you cannot, say the note may be superseded. Cite the `url` field exactly as given — never a file path.",
       }
     },
   }) as AnyTool
