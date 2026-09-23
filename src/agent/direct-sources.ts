@@ -14,6 +14,7 @@ import {
   rerankByName,
 } from './validate.js'
 import type { RetrievalLedger } from './ledger.js'
+import { readBoundedText, MAX_BODY_BYTES } from './bounded-read.js'
 import { mapOpenAlexWork, mapPubmedRecord, parsePubmedIds } from './academic.js'
 import type { OpenAlexWork, PubmedEsearchResult, PubmedResult, PubmedSummaryRecord } from './academic.js'
 import { searchYoutube } from './ytdlp.js'
@@ -100,7 +101,12 @@ async function getJson<T>(url: string, headers: Record<string, string>): Promise
       }
       return { ok: false, error: `HTTP ${res.status} ${res.statusText}` }
     }
-    return { ok: true, data: (await res.json()) as T }
+    // Bounded like every other network body — a registry answer is a small JSON document (the
+    // largest measured is a full PyPI JSON at ~3.7 MB), so a cut body is a failed lookup, not
+    // a partial answer to parse.
+    const { text, truncated } = await readBoundedText(res, MAX_BODY_BYTES)
+    if (truncated) return { ok: false, error: `response exceeds ${MAX_BODY_BYTES} byte cap` }
+    return { ok: true, data: JSON.parse(text) as T }
   } catch (err) {
     return { ok: false, error: String(err) }
   }
@@ -477,7 +483,16 @@ function buildGithubFileTool(ledger: RetrievalLedger, jobId: string): AnyTool {
           return { error: `githubFile failed: ${reason}`, url: blobUrl }
         }
 
-        const text = await res.text()
+        // Bounded like every other network body — a cut file is not verbatim, so it is a failed
+        // read, not a partial answer to quote. (capText already caps what a worker receives at
+        // TEXT_CAP; this bounds the download itself.)
+        const { text, truncated } = await readBoundedText(res, MAX_BODY_BYTES)
+        if (truncated) {
+          const reason = `file exceeds ${MAX_BODY_BYTES} byte cap`
+          ledger.recordFailed(blobUrl, reason)
+          log('tool.githubFile', { jobId, owner, repo, path, ref: effectiveRef, ok: false, status: res.status, error: reason })
+          return { error: `githubFile failed: ${reason}`, url: blobUrl }
+        }
         ledger.recordRetrieved(blobUrl)
         ledger.recordRetrieved(rawUrl)
         log('tool.githubFile', { jobId, owner, repo, path, ref: effectiveRef, ok: true, chars: text.length })

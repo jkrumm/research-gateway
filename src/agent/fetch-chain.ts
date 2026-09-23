@@ -6,9 +6,10 @@ import { getActiveSpan } from '../lib/otel.js'
 import { normalizeText, capText, TEXT_CAP } from './extract.js'
 import { resolveSite } from './site-adapters.js'
 import { extractText, readabilityText } from './html-parse.js'
-import { isRawContentType, isDefinitivelyMissing, isPdf, isPdfContentType, looksBinary } from './response-kind.js'
+import { isRawContentType, isDefinitivelyMissing, isPdf, looksBinary } from './response-kind.js'
 import { extractPdfText } from './pdf.js'
-import { readBoundedBytes, MAX_PDF_BYTES } from './pdf-extract.js'
+import { MAX_PDF_BYTES } from './pdf-extract.js'
+import { readBoundedBytes, readBoundedText, MAX_BODY_BYTES } from './bounded-read.js'
 import { parseRenderResponse, renderUrl } from './lightpanda.js'
 import { fetchYoutubeTranscript } from './ytdlp.js'
 import { waybackLookupUrl, isArchiveUrl, parseSnapshotDate, archiveBanner, snapshotAgeDays } from './archive.js'
@@ -301,7 +302,7 @@ export async function runFetchChain(url: string, opts: FetchChainOptions): Promi
   // entry — `attempts` stays an honest record of what actually happened, and a caller reading
   // it back (fetch-bench.ts, `tool.fetchPage` logs) sees exactly one `tavily-extract` entry for
   // these URLs, not two dishonest failures in front of it.
-  let rdReason: 'thin' | 'threw' = 'thin'
+  let rdReason: 'thin' | 'threw' | 'oversized' = 'thin'
   let rdChars = 0
 
   if (site.skipToExtract) {
@@ -372,30 +373,33 @@ export async function runFetchChain(url: string, opts: FetchChainOptions): Promi
         const contentType = res.headers.get('content-type')
         const { bytes, truncated } = await readBoundedBytes(res.body, MAX_PDF_BYTES)
 
-        if (truncated) {
-          // An oversized PDF still IS a PDF — the renderer (step 2) has nothing to add to a
-          // document with no DOM, so skip it here exactly like the identified-PDF branch below,
-          // even though pdftotext never runs against these truncated bytes.
-          if (isPdfContentType(contentType)) isPdfBody = true
-          attempt(attempts, step1, t1, { ok: false, error: `body exceeds ${MAX_PDF_BYTES} byte cap` })
-        } else if (isPdf(contentType, bytes)) {
+        if (isPdf(contentType, bytes)) {
           isPdfBody = true
-          const pdf = await extractPdfText(bytes, { jobId })
-          if (pdf.ok) {
-            attempt(attempts, 'pdf', t1, { ok: true, chars: pdf.text.length })
-            log('tool.fetchPage', { jobId, url, via: 'pdf', chars: pdf.text.length })
-            return done('pdf', pdf.text)
+          if (truncated) {
+            // A cut PDF is still a PDF — the renderer has nothing to add to a document with
+            // no DOM, so skip it here exactly like the identified-PDF branch below, even though
+            // pdftotext never runs against these truncated bytes.
+            attempt(attempts, step1, t1, { ok: false, error: `body exceeds ${MAX_PDF_BYTES} byte cap` })
+          } else {
+            const pdf = await extractPdfText(bytes, { jobId })
+            if (pdf.ok) {
+              attempt(attempts, 'pdf', t1, { ok: true, chars: pdf.text.length })
+              log('tool.fetchPage', { jobId, url, via: 'pdf', chars: pdf.text.length })
+              return done('pdf', pdf.text)
+            }
+            // pdftotext missing, failed, or below the text floor (a scanned PDF with no text
+            // layer) — falls through to Tavily Extract, which OCRs PDFs server-side. Never a
+            // reason to pass the bytes through as text.
+            attempt(attempts, 'pdf', t1, { ok: false, error: pdf.error })
+            log('tool.fetchPage', { jobId, url, via: 'pdf', error: pdf.error })
           }
-          // pdftotext missing, failed, or below the text floor (a scanned PDF with no text
-          // layer) — falls through to Tavily Extract, which OCRs PDFs server-side. Never a
-          // reason to pass the bytes through as text.
-          attempt(attempts, 'pdf', t1, { ok: false, error: pdf.error })
-          log('tool.fetchPage', { jobId, url, via: 'pdf', error: pdf.error })
         } else {
           const body = new TextDecoder().decode(bytes)
 
           // A non-HTML body IS the answer — hand it back verbatim rather than asking an HTML
-          // parser to find an article in it.
+          // parser to find an article in it. A cut raw body is still handed back: the first
+          // bytes of a large JSON/CSV dump are exactly what a citation names, and `done` caps
+          // what a worker receives at TEXT_CAP with the notice that says so.
           if (isRawContentType(contentType)) {
             const raw = normalizeText(body)
             if (raw.length > 0 && !looksBinary(raw)) {
@@ -410,6 +414,12 @@ export async function runFetchChain(url: string, opts: FetchChainOptions): Promi
             // otherwise treats as raw text, and that isPdf's magic-byte check didn't own.
             const error = raw.length === 0 ? 'empty body' : 'binary content'
             attempt(attempts, 'raw', t1, { ok: false, chars: raw.length, error })
+          } else if (truncated) {
+            // HTML with no complete document to parse — a miss like any other, and it falls
+            // through to the renderer, which is the right reader for a page too heavy to parse
+            // here. Never a reason to hand the parser a cut DOM.
+            rdReason = 'oversized'
+            attempt(attempts, step1, t1, { ok: false, error: `body exceeds ${MAX_PDF_BYTES} byte cap` })
           } else {
             // Parsing runs in a worker pool (html-parse.ts), off the event loop — linkedom +
             // Readability are synchronous CPU work that would otherwise block /health (issue #21).
@@ -493,10 +503,21 @@ export async function runFetchChain(url: string, opts: FetchChainOptions): Promi
         onArchive?.({ ok: false, ms, snapshotAgeDays: null })
         return fail(originalReason)
       }
-      const body = await res.text()
+      // The same bound as every other network body in this service (bounded-read.ts): an
+      // archived copy of a huge page stalls the loop just as hard as the live one, and a body
+      // cut at MAX_BODY_BYTES is not a document Readability can read — a miss like any other,
+      // never an error out of the chain.
+      const bounded = await readBoundedText(res, MAX_BODY_BYTES, (info) =>
+        log('tool.fetchPage', { jobId, url, via: 'oversized', step: 'wayback', ...info }),
+      )
+      if (bounded.truncated) {
+        const ms = attempt(attempts, 'wayback', tW, { ok: false, error: `body exceeds ${MAX_BODY_BYTES} byte cap` })
+        onArchive?.({ ok: false, ms, snapshotAgeDays: null })
+        return fail(originalReason)
+      }
       // Parsing runs in the same worker pool as step 1 (html-parse.ts) — Readability only, no
       // site adapter, matching what the inline wayback step always did.
-      const { text } = await readabilityText(body, budget)
+      const { text } = await readabilityText(bounded.text, budget)
       if (!text || text.length < MIN_USABLE_CHARS) {
         const ms = attempt(attempts, 'wayback', tW, { ok: false, chars: text?.length ?? 0, error: `thin (${text?.length ?? 0} chars)` })
         onArchive?.({ ok: false, ms, snapshotAgeDays: null })

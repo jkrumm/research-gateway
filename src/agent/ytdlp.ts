@@ -30,6 +30,7 @@ import { log } from '../lib/log.js'
 import { createSemaphore } from '../lib/semaphore.js'
 import { assertPublicHttpUrl } from '../lib/ssrf.js'
 import { pickCaptionTrack, parseJson3, buildTranscriptText, type YtdlpInfo } from './youtube-captions.js'
+import { readBoundedText, MAX_BODY_BYTES } from './bounded-read.js'
 
 // YouTube rate-limits this datacenter IP under burst (see the module header above) —
 // bounded on purpose, shared by both functions below since both spawn the same binary
@@ -165,7 +166,14 @@ export async function fetchYoutubeTranscript(
         log('tool.ytdlp', { jobId, url: watchUrl, ok: false, error: `caption fetch HTTP ${res.status}`, extractMs })
         return null
       }
-      body = await res.text()
+      // Bounded like every other network body — a cut caption track is not a transcript, so it
+      // is a miss (return null), never a reason to hand parseJson3 a truncated document.
+      const bounded = await readBoundedText(res, MAX_BODY_BYTES)
+      if (bounded.truncated) {
+        log('tool.ytdlp', { jobId, url: watchUrl, ok: false, error: `caption track exceeds ${MAX_BODY_BYTES} byte cap`, extractMs })
+        return null
+      }
+      body = bounded.text
     } catch (err) {
       log('tool.ytdlp', { jobId, url: watchUrl, ok: false, error: `caption fetch failed: ${String(err)}`, extractMs })
       return null
