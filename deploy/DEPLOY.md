@@ -29,7 +29,7 @@ VPN/localhost-bound, the whole LLM-path decision reopens — verify before anyth
 ssh vps
 curl -sS -X POST "$IU_BASE_URL/chat/completions" \
   -H "Authorization: Bearer $IU_API_KEY" -H "Content-Type: application/json" \
-  -d '{"model":"gpt-6-luna","reasoning_effort":"none","messages":[{"role":"user","content":"ping"}],"max_completion_tokens":2000}'
+  -d '{"model":"deepseek-v4.1-flash","messages":[{"role":"user","content":"ping"}],"max_completion_tokens":2000}'
 ```
 
 ## 1. 1Password items (account `tkrumm`)

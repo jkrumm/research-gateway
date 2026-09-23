@@ -26,15 +26,14 @@ talk to — and plain bearer HTTP for everything else (Hermes, scripts, curl).
   terminal tool with no `execute`, whose input is the structured result: `submit_plan`,
   `submit_digest`, `submit_report`). `prepareStep` forces the done-tool in-loop before any
   ceiling is hit, so a run always banks its result instead of being cut off empty-handed.
-- **LLM:** IU unified endpoint via `@ai-sdk/openai-compatible` (OpenAI leg). **`gpt-6-luna` for
-  both** the lead (plan + synthesis) and the workers, `reasoning_effort: "none"` (2026-09-23,
-  superseding `gpt-5.6-luna` and the never-deployed `deepseek-v4.1-flash` rollout —
-  `src/env.ts` and `docs/decisions.md` carry the history). Luna rejects function tools with any
-  other effort on `/chat/completions`, and every call here is a tool call; non-Luna models get
-  `"high"`. Effort and the per-call-role output budget (plan 16000 / worker step 16000 /
-  synthesis 32000 — synthesis writes the whole report inside its tool call) are applied in one
-  place, `src/lib/llm.ts`, via `wrapLanguageModel` + `defaultSettingsMiddleware`. Override the
-  model with `IU_LEAD_MODEL` / `IU_WORKER_MODEL`; prod sets neither.
+- **LLM:** IU unified endpoint via `@ai-sdk/openai-compatible`. **`deepseek-v4.1-flash` for
+  both** the lead (plan + synthesis) and the workers, `reasoning_effort: "high"` (2026-09-13
+  estate-wide model decision, superseding the earlier `gpt-5.6-luna` pick — `src/env.ts` and
+  `docs/decisions.md` carry the history). Effort and the per-call-role output budget (plan
+  16000 / worker step 16000 / synthesis 32000 — synthesis writes the whole report inside its
+  tool call) are applied in one place, `src/lib/llm.ts`, via `wrapLanguageModel` +
+  `defaultSettingsMiddleware`. Override the model with `IU_LEAD_MODEL` / `IU_WORKER_MODEL`;
+  prod sets neither.
 - **Tools:** two kinds, and the split is the point.
   - *Source-of-truth lookups* — `packageInfo` (npm, PyPI, crates.io, the Go module proxy,
     Docker Hub), `githubFile`, `githubRepo`, `findPackages`, `academicSearch` (OpenAlex,
@@ -166,7 +165,7 @@ do not mock env. `scripts/smoke.ts` runs one `runResearch()` end to end without 
 | `PORT` | no (7780) | listen port |
 | `API_SECRET` | yes | the gateway's own bearer token |
 | `IU_BASE_URL` / `IU_API_KEY` | yes | IU unified endpoint |
-| `IU_LEAD_MODEL` / `IU_WORKER_MODEL` | no (`gpt-6-luna`) | plan + synthesis / the fan-out. The defaults are the real configuration — prod sets neither. Effort + per-role budget live in `src/lib/llm.ts` |
+| `IU_LEAD_MODEL` / `IU_WORKER_MODEL` | no (`deepseek-v4.1-flash`) | plan + synthesis / the fan-out. The defaults are the real configuration — prod sets neither. Effort + per-role budget live in `src/lib/llm.ts` |
 | `SEARCH_PROVIDER` | no (`sonar`) | `sonar` \| `tavily` — which backend `searchWeb` uses |
 | `SONAR_MODEL` | no (`sonar`) | pinned; not a menu — see `env.ts` before changing it |
 | `TAVILY_API_KEY` | yes | required even on `sonar`: the Extract fallback inside `fetchPage` and the per-call search fallback |

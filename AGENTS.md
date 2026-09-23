@@ -9,7 +9,7 @@ agent needs before touching code; don't restate what README already owns.
 | Doc | Holds |
 |-|-|
 | `README.md` | Contract, Grounding, Environment, Stack, Restarts, Deploy — read this first |
-| `docs/decisions.md` | Why AI SDK not Mastra, the model history (DeepSeek → Luna → gpt-6-luna), the fan-out shape |
+| `docs/decisions.md` | Why AI SDK not Mastra, the model history (DeepSeek → Luna → DeepSeek), the fan-out shape |
 | `docs/measurements.md` | Every number, with the run it came from (search backend, fetch chain, cost) |
 | `docs/field-notes.md` | Consumer-side observations, open backlog (now GitHub issues) |
 | `docs/hyperdx-dashboard.md` | Span model + dashboard SQL |
@@ -38,16 +38,17 @@ Everything is submit-then-poll — never expect a synchronous result.
 
 ## Models
 
-`gpt-6-luna` is the default for **both** lead and worker roles (`IU_LEAD_MODEL` /
+`deepseek-v4.1-flash` is the default for **both** lead and worker roles (`IU_LEAD_MODEL` /
 `IU_WORKER_MODEL`, prod sets neither — the default in `src/env.ts` is the real
-configuration), `reasoning_effort: "none"`. 2026-09-23 owner decision (every `gpt-5.6-luna`
-use → `gpt-6-luna`), superseding the never-deployed 2026-09-13 `deepseek-v4.1-flash` rollout.
-**Trap:** Luna rejects function tools with any other effort on `/chat/completions` — unset
-fails too, only an explicit `"none"` works — and every call here is a tool call;
-`src/lib/llm-settings.ts` (`reasoningEffortFor`) owns that rule. Effort and the per-call-role
-output budget (plan / worker step / synthesis each need a different one — synthesis writes the
-whole report inside its tool call) are applied in one place, `src/lib/llm.ts`
-(`wrapLanguageModel` + `defaultSettingsMiddleware`), not scattered across call sites. Don't
+configuration), `reasoning_effort: "high"`. 2026-09-13 estate-wide model decision — supersedes
+the 2026-08-20 move to `gpt-5.6-luna` recorded in `docs/decisions.md`; DeepSeek has no
+prompt-cache discount on this route, an accepted cost. Effort and the per-call-role output
+budget (plan / worker step / synthesis each need a different one — synthesis writes the whole
+report inside its tool call) are applied in one place, `src/lib/llm.ts`
+(`wrapLanguageModel` + `defaultSettingsMiddleware`), not scattered across call sites. A Luna
+override is forced to `"none"` (`reasoningEffortFor`) — Luna rejects function tools with any
+other effort on `/chat/completions`, unset included — which is why gpt-6-luna was reverted
+after a one-day deploy on 2026-09-23. Don't
 "fix" a slow run by switching models without re-reading `docs/decisions.md` first.
 
 ## Grounding — the one invariant that must never regress
