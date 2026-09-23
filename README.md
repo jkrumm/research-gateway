@@ -242,7 +242,7 @@ that would fail on every call.
 | Step | Handles | Notes |
 |-|-|-|
 | 1. `@mozilla/readability` | ordinary article pages | serves the large majority; 404/410 short-circuit here (`response-kind.ts`) |
-| 1b. PDF | `application/pdf` (by content-type or `%PDF-` magic bytes) | `agent/pdf.ts`: `pdftotext` (poppler-utils) streamed via stdin/stdout, default layout mode (not `-layout` — measured, see the file's header), 25 MB cap. Never buffered whole; over-cap or a thin/scanned extraction is `recordFailed`, never a negative claim |
+| 1b. PDF | `application/pdf` (by content-type or `%PDF-` magic bytes) | `agent/pdf.ts`: `pdftotext` (poppler-utils) streamed via stdin/stdout, default layout mode (not `-layout` — measured, see the file's header), 25 MB input cap, 2 concurrent extractions process-wide. Never buffered whole; over-cap or a thin/scanned extraction is `recordFailed`, never a negative claim; an extraction that hits the 2 MB OUTPUT cap is still `retrieved`, with an explicit truncation notice appended so a cut paper is never mistaken for the whole one |
 | 2. site adapter | pages the generic path structurally cannot read | `site-adapters.ts`: Reddit (`old.reddit.com`), dpreview forum threads, YouTube (yt-dlp transcript), arXiv (`/abs/`, `/pdf/` rewritten to the LaTeXML `/html/` build, with the PDF as an automatic fallback on a 404/410) |
 | 3. lightpanda sidecar | pages whose text is not in the HTML at all | self-hosted browser, own container and memory budget; on when `LIGHTPANDA_URL` is set — skipped for a PDF, a browser cannot read one any better |
 | 4. Tavily Extract | static pages Readability could not parse | costs a credit |
@@ -291,7 +291,11 @@ running alike, since a deep job can legitimately wait 30+ minutes behind others 
 concurrency slot. `put()`'s writes are fenced to the CURRENT owner (`WHERE job.owner IS
 excluded.owner`), so a process that has lost its lease cannot overwrite the adopter's row even
 if it has not yet noticed — its own heartbeat tick discovers this independently and logs
-`job.lease_lost`. Whenever a heartbeat goes stale (>90s, six missed ticks) — a crash, a
+`job.lease_lost`. The run itself does not wait for that tick either: `runResearch` checks a
+cheap `ownsLease` read at every round/retry/synthesis boundary and stops with `job.fenced_stopped`
+the moment it finds its lease gone, rather than running to completion on work the owner fence
+will discard anyway — the adopter is already resuming the same job from the checkpoint this
+process last wrote. Whenever a heartbeat goes stale (>90s, six missed ticks) — a crash, a
 SIGKILL, an unclean restart — `claimStale` (one `UPDATE … RETURNING` statement; SQLite
 serializes writers across the two replicas a rolling deploy briefly runs against the same
 sqlite file, so this alone is the compare-and-set that stops two processes from both claiming
@@ -355,9 +359,11 @@ other parse failure always has.
 What the lease above still cannot save is a POISON job — see `job.crash_loop_guard` above — and
 that guard, plus a lost-process's own diagnostics, are what to watch:
 
-- `job.lease_lost` / `job.resumed` / `job.crash_loop_guard` are the three lifecycle events —
-  `job.crash_loop_guard` is the one at **error** level worth alerting on; `job.resumed` is the
-  routine, expected shape of adoption after any unclean restart. Four more alerts cover
+- `job.lease_lost` / `job.fenced_stopped` / `job.resumed` / `job.crash_loop_guard` are the
+  lifecycle events — `job.crash_loop_guard` is the one at **error** level worth alerting on;
+  `job.resumed` is the routine, expected shape of adoption after any unclean restart, and
+  `job.fenced_stopped` is the routine shape of a fenced run noticing at its next round boundary
+  rather than running to completion. Four more alerts cover
   failures that are not this: `job.error`, a `worker.failed`/`plan.fallback` burst, memory
   pressure, and a drain that cut live jobs. Thresholds and the reasoning:
   `docs/hyperdx-dashboard.md` § Alerts.
