@@ -1,5 +1,25 @@
 import { describe, it, expect } from 'bun:test'
-import { toLogAttributes, severityFor } from './otel-format.js'
+import { toLogAttributes, severityFor, parseOtlpHeadersEnv } from './otel-format.js'
+
+describe('parseOtlpHeadersEnv', () => {
+  it('parses comma-separated key=value pairs and trims them', () => {
+    expect(parseOtlpHeadersEnv('x-foo=bar, x-baz=qux')).toEqual({ 'x-foo': 'bar', 'x-baz': 'qux' })
+  })
+
+  it('splits only on the FIRST `=` so a value may itself contain `=`', () => {
+    expect(parseOtlpHeadersEnv('authorization=Bearer abc=def')).toEqual({
+      authorization: 'Bearer abc=def',
+    })
+  })
+
+  it('skips a pair with no `=`, an empty key, or an empty value', () => {
+    expect(parseOtlpHeadersEnv('garbage,=novalue,nokey=,a=1')).toEqual({ a: '1' })
+  })
+
+  it('returns an empty object for the empty string — the unset-env default', () => {
+    expect(parseOtlpHeadersEnv('')).toEqual({})
+  })
+})
 
 describe('toLogAttributes', () => {
   it('passes strings, numbers, and booleans through unchanged', () => {

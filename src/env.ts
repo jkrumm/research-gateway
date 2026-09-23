@@ -2,6 +2,9 @@ import { z } from 'zod'
 
 const Env = z.object({
   PORT: z.coerce.number().default(7780),
+  // 0.0.0.0 for the container (Traefik reaches it over the docker network); the mini pins
+  // 127.0.0.1 so only Caddy fronts it, never the LAN or a raw tailnet port.
+  HOST: z.string().default('0.0.0.0'),
   API_SECRET: z.string().min(1),
   IU_BASE_URL: z.url(),
   IU_API_KEY: z.string().min(1),
@@ -124,6 +127,9 @@ const Env = z.object({
   // (three-video sample). 45s leaves headroom for a slow one without lingering forever on a
   // wedged process.
   YTDLP_TIMEOUT_MS: z.coerce.number().default(45_000),
+  // poppler's pdftotext binary — 'pdftotext' resolves via PATH (the Dockerfile's `apk add
+  // poppler-utils` puts it at /usr/bin/pdftotext on the alpine runner). See agent/pdf.ts.
+  PDFTOTEXT_PATH: z.string().default('pdftotext'),
   // 'development' matches argo's NODE_ENV default (Env.ts) — only prod compose sets this to
   // 'production'. Feeds `deployment.environment` on every OTel span and log record (lib/otel.ts).
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
@@ -136,6 +142,53 @@ const Env = z.object({
   // endpoint — that is what keeps local dev and every test console-only with zero config.
   OTEL_EXPORTER_OTLP_ENDPOINT: z.url().optional(),
   OTEL_SERVICE_NAME: z.string().default('research-gateway'),
+  // Standard `OTEL_EXPORTER_OTLP_HEADERS` (`key=value,key=value`, values may contain `=`),
+  // sent on every OTLP POST — see otel.ts's `EXPORT_HEADERS`. Ported from audio-gateway
+  // (src/config.ts's otelHeaders), which already needs this: the mini exports to the VPS's
+  // public OTLP ingest (https://otel.jkrumm.com), which sits behind bearertokenauth, unlike the
+  // VPS container's own in-cluster :4319 leg. Empty default reproduces today's VPS behaviour
+  // (no header sent).
+  OTEL_EXPORTER_OTLP_HEADERS: z.string().default(''),
+  // The `authorization` header value on its own, so a secret manager that only resolves
+  // whole-value `op://` refs (secrets-run, op run) can inject the ingestion key without string
+  // composition — same reasoning as audio-gateway's otelAuthorization. Empty-as-unset like
+  // GITHUB_TOKEN above: `op inject` renders an empty field as `VAR=`, and sending
+  // `authorization: ` is worse than sending nothing.
+  OTEL_EXPORTER_OTLP_AUTHORIZATION: z
+    .string()
+    .trim()
+    .optional()
+    .transform((v) => (v ? v : undefined)),
+  // Optional scheme prefix ("Bearer") for the authorization header above; HyperDX's ingest
+  // takes the raw key, so this stays unset on the VPS. Matches audio-gateway's
+  // otelAuthScheme name and semantics.
+  OTEL_EXPORTER_OTLP_AUTH_SCHEME: z.string().default(''),
+  // Host label stamped on every argo usage row (part of argo's idempotency triple, and a
+  // dashboard breakdown dimension) — this service now runs on both the VPS (prod container)
+  // and the mini (native LaunchAgent), so it must not be hardcoded. Default reproduces
+  // today's VPS behaviour unchanged; the mini's .env.mini.tpl sets MACHINE=mini. Matches
+  // audio-gateway's `config.machine` convention.
+  MACHINE: z.string().default('vps'),
+  // Fallback memory ceiling (MiB) for `lib/memory-watch.ts`'s watchdog + load-shedding on a
+  // host with no cgroup — macOS (the mini's native LaunchAgent) has none, so
+  // `memory.max`/`memory.current` are unreadable there and the watchdog is otherwise
+  // permanently inert. Unset (the VPS container's default, cgroup available) keeps the cgroup
+  // path exclusive — this var is read ONLY as a fallback when the cgroup read fails.
+  MEMORY_LIMIT_MB: z.coerce.number().optional(),
+  // Optional overlays the mini's launcher (scripts/launch.sh) could NOT resolve and started
+  // without — e.g. `otel`, `github` — as a comma list. Surfaced on `GET /health` as
+  // `degraded: [...]` so a monitor can tell "up" from "up, but exporting no traces". Matches
+  // audio-gateway's AUDIO_GATEWAY_DEGRADED/`config.degraded` convention. Always '' on the VPS
+  // container, which has no such overlay concept.
+  RESEARCH_GATEWAY_DEGRADED: z
+    .string()
+    .default('')
+    .transform((v) =>
+      v
+        .split(',')
+        .map((s) => s.trim())
+        .filter((s) => s.length > 0),
+    ),
 })
 
 export const env = Env.parse(process.env)

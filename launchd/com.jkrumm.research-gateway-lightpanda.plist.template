@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.jkrumm.research-gateway-lightpanda</string>
+  <!-- The JS-rendering sidecar for the mini's native gateway instance
+       (:7781). Each render is its own lightpanda subprocess (server.ts) —
+       this LaunchAgent itself has nothing to drain, so a short ExitTimeOut
+       is fine (unlike the gateway's own plist). -->
+  <key>ProgramArguments</key>
+  <array>
+    <string>__HOME__/.research-gateway/app/scripts/launch-lightpanda.sh</string>
+  </array>
+  <key>KeepAlive</key><true/>
+  <key>RunAtLoad</key><true/>
+  <key>ThrottleInterval</key><integer>30</integer>
+  <key>WorkingDirectory</key><string>__HOME__/.research-gateway/app/lightpanda</string>
+  <key>StandardOutPath</key><string>__HOME__/Library/Logs/research-gateway-lightpanda.log</string>
+  <key>StandardErrorPath</key><string>__HOME__/Library/Logs/research-gateway-lightpanda.err</string>
+  <key>ExitTimeOut</key><integer>30</integer>
+</dict>
+</plist>

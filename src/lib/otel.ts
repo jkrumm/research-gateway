@@ -1,7 +1,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
 import pkg from '../../package.json' with { type: 'json' }
 import { env } from '../env.js'
-import { toLogAttributes, severityFor, type LogSeverity } from './otel-format.js'
+import { toLogAttributes, severityFor, parseOtlpHeadersEnv, type LogSeverity } from './otel-format.js'
 
 // Owns ALL OTel wiring for this service — traces AND logs, exported as OTLP/HTTP JSON over
 // plain `fetch`, no OpenTelemetry SDK. `log.ts` imports only `emitOtelLog` from here and
@@ -101,9 +101,10 @@ export function parseResourceAttributesEnv(raw: string): Record<string, string> 
 }
 
 // The same three attributes the LoggerProvider's `resourceFromAttributes` carried before, now
-// on both signals. No `host.name`: this service runs on exactly one host (the VPS) and has no
-// `machine` config to fill it from — `OTEL_RESOURCE_ATTRIBUTES` is the escape hatch if that
-// ever stops being true.
+// on both signals. No `host.name` set directly here — this service now runs on two hosts (the
+// VPS container and the mini's native LaunchAgent), so `OTEL_RESOURCE_ATTRIBUTES` is how each
+// instance stamps its own value (the mini sets `host.name=mini`) rather than this file guessing
+// at one.
 const RESOURCE = {
   attributes: toOtlpAttributes({
     'service.name': env.OTEL_SERVICE_NAME,
@@ -395,6 +396,24 @@ const logQueue: LogRecord[] = []
 let spanHook: ((record: SpanRecord) => void) | null = null
 let logHook: ((record: LogRecord) => void) | null = null
 
+// Every OTLP export header. `content-type` spread LAST so it always wins even if
+// OTEL_EXPORTER_OTLP_HEADERS also sets it — an object spread lets a later key win, so putting
+// it first (as this used to) let env headers silently override it; the authorization entry
+// only appears when OTEL_EXPORTER_OTLP_AUTHORIZATION is set (empty-as-unset — see env.ts),
+// matching audio-gateway's EXPORT_HEADERS. The VPS container's in-cluster :4319 leg is unauthed
+// and needs neither; the mini's export to the VPS's public OTLP ingest (bearertokenauth) sets
+// OTEL_EXPORTER_OTLP_AUTHORIZATION. Built once at module load, never logged — see the header
+// value handling below.
+const EXPORT_HEADERS: Record<string, string> = {
+  ...parseOtlpHeadersEnv(env.OTEL_EXPORTER_OTLP_HEADERS),
+  ...(env.OTEL_EXPORTER_OTLP_AUTHORIZATION && {
+    authorization: env.OTEL_EXPORTER_OTLP_AUTH_SCHEME
+      ? `${env.OTEL_EXPORTER_OTLP_AUTH_SCHEME} ${env.OTEL_EXPORTER_OTLP_AUTHORIZATION}`
+      : env.OTEL_EXPORTER_OTLP_AUTHORIZATION,
+  }),
+  'content-type': 'application/json',
+}
+
 let lastFailureLogAt = 0
 
 /**
@@ -425,7 +444,7 @@ async function postBatch(url: string, body: unknown): Promise<void> {
   try {
     const res = await fetch(url, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: EXPORT_HEADERS,
       body: JSON.stringify(body),
       signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
     })

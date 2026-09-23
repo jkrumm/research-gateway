@@ -227,12 +227,13 @@ tool is not. Podcasts needed no code: episode pages are ordinary web pages Reada
 | Step | Handles | Notes |
 |-|-|-|
 | 1. `@mozilla/readability` | ordinary article pages | serves the large majority; 404/410 short-circuit here (`response-kind.ts`) |
+| 1b. `pdftotext` | a PDF (by Content-Type or `%PDF-` magic) | `pdf.ts`, poppler, bytes never decoded as text; skips the renderer; a scanned PDF below the floor falls to Tavily Extract |
 | 2. site adapter | pages the generic path structurally cannot read | `site-adapters.ts`: Reddit (`old.reddit.com`), dpreview forum threads, YouTube (yt-dlp transcript) |
 | 3. lightpanda sidecar | pages whose text is not in the HTML at all | self-hosted browser, own container and memory budget; on when `LIGHTPANDA_URL` is set |
 | 4. Tavily Extract | static pages Readability could not parse | costs a credit |
 | 5. Wayback Machine | origins that refuse this crawler outright | `archive.ts`; free; only after every live step failed, never for a 404 |
 
-Every renderer reports failure by not failing — Reddit's 200 + JS shell, lightpanda's `exit 0`
+Every renderer reports failure by not failing — a PDF decoded as UTF-8 (1.98M chars of binary recorded as a `readability` success until 2026-09-23; `looksBinary` now fails any such body), Reddit's 200 + JS shell, lightpanda's `exit 0`
 on a dead domain, a Medium paywall that returns the lede above the 200-char floor — and each
 shape is detected and unit-tested against the measured bytes. The fetch-level bench
 (`scripts/fetch-bench.ts`) is the instrument here; a job-level A/B cannot resolve fetch
@@ -315,7 +316,9 @@ a terminal `error` ("lost, resubmit"), and that reap is the thing to watch:
 
 ## Deploy
 
-VPS, Tailscale-only (grey-cloud A record → VPS Tailscale IP, not the Cloudflare Tunnel) →
+Two instances of the same code. **Mini** (native LaunchAgents, where every consumer runs —
+[`deploy/MINI.md`](./deploy/MINI.md)): idle-gated deploy-on-push via a 2-minute git poller.
+**VPS** (the fallback until retired): Tailscale-only (grey-cloud A record → VPS Tailscale IP, not the Cloudflare Tunnel) →
 Traefik → rollhook on push to `master`. **The compose file and prod `.env.tpl` are owned by
 the `vps` repo** (`apps/research-gateway/`); this repo has no copy. [`deploy/DEPLOY.md`](./deploy/DEPLOY.md).
 

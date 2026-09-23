@@ -109,7 +109,7 @@ export async function reportUsage(args: {
   outcome?: 'ok' | 'error'
 }): Promise<void> {
   const now = new Date().toISOString()
-  const record = { ...buildLlmUsageRecord(args), ts: now, ingested_at: now }
+  const record = { ...buildLlmUsageRecord({ ...args, machine: env.MACHINE }), ts: now, ingested_at: now }
   await postUsageRecord(record)
 }
 
@@ -131,7 +131,7 @@ export async function reportTavilyUsage(args: {
   outcome?: 'ok' | 'error'
 }): Promise<void> {
   const now = new Date().toISOString()
-  const record = { ...buildTavilyCreditRecord(args), ts: now, ingested_at: now }
+  const record = { ...buildTavilyCreditRecord({ ...args, machine: env.MACHINE }), ts: now, ingested_at: now }
   await postUsageRecord(record)
 }
 
@@ -150,7 +150,7 @@ export async function reportSonarUsage(args: {
   outcome?: 'ok' | 'error'
 }): Promise<void> {
   const now = new Date().toISOString()
-  const record = { ...buildSonarSearchRecord(args), ts: now, ingested_at: now }
+  const record = { ...buildSonarSearchRecord({ ...args, machine: env.MACHINE }), ts: now, ingested_at: now }
   await postUsageRecord(record)
 }
 
@@ -167,7 +167,7 @@ export async function reportRenderUsage(args: {
   outcome?: 'ok' | 'error'
 }): Promise<void> {
   const now = new Date().toISOString()
-  const record = { ...buildRenderRecord(args), ts: now, ingested_at: now }
+  const record = { ...buildRenderRecord({ ...args, machine: env.MACHINE }), ts: now, ingested_at: now }
   await postUsageRecord(record)
 }
 
@@ -183,7 +183,7 @@ export async function reportYtdlpUsage(args: {
   outcome?: 'ok' | 'error'
 }): Promise<void> {
   const now = new Date().toISOString()
-  const record = { ...buildYtdlpRecord(args), ts: now, ingested_at: now }
+  const record = { ...buildYtdlpRecord({ ...args, machine: env.MACHINE }), ts: now, ingested_at: now }
   await postUsageRecord(record)
 }
 
@@ -208,6 +208,6 @@ export async function reportArchiveUsage(args: {
   outcome?: 'ok' | 'error'
 }): Promise<void> {
   const now = new Date().toISOString()
-  const record = { ...buildArchiveRecord(args), ts: now, ingested_at: now }
+  const record = { ...buildArchiveRecord({ ...args, machine: env.MACHINE }), ts: now, ingested_at: now }
   await postUsageRecord(record)
 }

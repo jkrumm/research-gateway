@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.jkrumm.research-gateway-deploy</string>
+  <!-- The mini's "push to master deploys" poller — the VPS gets rollhook
+       (a webhook + OIDC receiver), this box has none, so a StartInterval
+       timer takes its place. Runs scripts/mini-deploy.sh from the app clone
+       every 2 minutes. RunAtLoad is false so a login/reboot never races the
+       very first `make mini-setup` before the clone exists. -->
+  <key>ProgramArguments</key>
+  <array>
+    <string>__HOME__/.research-gateway/app/scripts/mini-deploy.sh</string>
+  </array>
+  <key>StartInterval</key><integer>120</integer>
+  <key>RunAtLoad</key><false/>
+  <key>WorkingDirectory</key><string>__HOME__/.research-gateway/app</string>
+  <key>StandardOutPath</key><string>__HOME__/Library/Logs/research-gateway-deploy.log</string>
+  <key>StandardErrorPath</key><string>__HOME__/Library/Logs/research-gateway-deploy.log</string>
+</dict>
+</plist>

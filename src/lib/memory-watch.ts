@@ -23,6 +23,15 @@ import { log } from './log.js'
 //
 // cgroup v2 only (`/sys/fs/cgroup/memory.max`, what the VPS runs); unreadable or `max` means
 // no limit is known and the watchdog stays inert — local dev and every test run that way.
+//
+// The mini's native LaunchAgent has no cgroup at all (macOS), so cgroup stays permanently
+// unreadable there and the watchdog above would be inert for that instance's whole life. When
+// `MEMORY_LIMIT_MB` is set (opt-in — .env.mini.tpl sets it, nothing else does), an
+// unreadable cgroup falls back to `process.memoryUsage().rss` against that MiB ceiling instead
+// — same thresholds, same log events, same `memorySnapshot()` shape, just a different
+// numerator/denominator pair. cgroup stays preferred whenever it IS readable (the VPS), so this
+// never changes VPS behaviour. `source: 'cgroup' | 'rss'` on every snapshot and pressure log
+// says which one was in play.
 
 const CGROUP_DIR = '/sys/fs/cgroup'
 const SAMPLE_INTERVAL_MS = 5_000
@@ -54,15 +63,35 @@ function readCgroupEvents(): { max: number; oom: number } | null {
   }
 }
 
-// Read on demand by `/health` (via `memorySnapshot`) — same cgroup files the watch timer
-// samples, exposed as a pure read with no side effect. `null` off-cgroup (unreadable, or
-// `memory.max` is 0/absent) — every local dev run and every test run.
-export function memorySnapshot(): { currentBytes: number; limitBytes: number; ratio: number } | null {
+export interface MemorySnapshot {
+  currentBytes: number
+  limitBytes: number
+  ratio: number
+  source: 'cgroup' | 'rss'
+}
+
+/** `memory.max`, or null when unreadable/absent/0 (no limit known — off-cgroup or unlimited). */
+function cgroupLimitBytes(): number | null {
   const limitBytes = readCgroupNumber('memory.max')
-  if (limitBytes === null || limitBytes === 0) return null
-  const currentBytes = readCgroupNumber('memory.current')
-  if (currentBytes === null) return null
-  return { currentBytes, limitBytes, ratio: currentBytes / limitBytes }
+  return limitBytes === null || limitBytes === 0 ? null : limitBytes
+}
+
+// Read on demand by `/health` (via `memorySnapshot`) — same cgroup files the watch timer
+// samples, exposed as a pure read with no side effect. `fallbackLimitMb` is `MEMORY_LIMIT_MB`
+// (env.ts), threaded in by the caller rather than read from env here — this module stays
+// env-free. `null` when NEITHER a cgroup limit nor a fallback is available — every local dev
+// run and every test run on a machine with no cgroup and no MEMORY_LIMIT_MB set.
+export function memorySnapshot(fallbackLimitMb?: number): MemorySnapshot | null {
+  const cgroupLimit = cgroupLimitBytes()
+  if (cgroupLimit !== null) {
+    const currentBytes = readCgroupNumber('memory.current')
+    if (currentBytes === null) return null
+    return { currentBytes, limitBytes: cgroupLimit, ratio: currentBytes / cgroupLimit, source: 'cgroup' }
+  }
+  if (fallbackLimitMb === undefined) return null
+  const limitBytes = fallbackLimitMb * 1024 * 1024
+  const currentBytes = process.memoryUsage().rss
+  return { currentBytes, limitBytes, ratio: currentBytes / limitBytes, source: 'rss' }
 }
 
 // `onPressureChange` is how the watchdog stops being observability-only and starts shedding
@@ -72,22 +101,33 @@ export function memorySnapshot(): { currentBytes: number; limitBytes: number; ra
 // `false` when it re-arms below REARM_RATIO. Required, not optional: a watchdog that only
 // logs is the exact gap the 2026-09-04 OOM kill exposed (all 3 concurrent jobs died with the
 // process because nothing upstream ever stopped admitting more).
-export function startMemoryWatch(onPressureChange: (under: boolean) => void): void {
-  const limitBytes = readCgroupNumber('memory.max')
-  if (limitBytes === null || limitBytes === 0) return
+/**
+ * `fallbackLimitMb` is `MEMORY_LIMIT_MB` (env.ts), threaded in by `index.ts` rather than read
+ * from env here — same reasoning as `memorySnapshot`. Only consulted when the cgroup limit is
+ * unreadable; cgroup wins whenever it's available, so this never changes VPS behaviour.
+ */
+export function startMemoryWatch(
+  onPressureChange: (under: boolean) => void,
+  fallbackLimitMb?: number,
+): void {
+  const cgroupLimit = cgroupLimitBytes()
+  const source: 'cgroup' | 'rss' = cgroupLimit !== null ? 'cgroup' : 'rss'
+  const limitBytes = cgroupLimit ?? (fallbackLimitMb !== undefined ? fallbackLimitMb * 1024 * 1024 : null)
+  if (limitBytes === null) return
 
   let armed = true
   const timer = setInterval(() => {
-    const currentBytes = readCgroupNumber('memory.current')
+    const currentBytes = source === 'cgroup' ? readCgroupNumber('memory.current') : process.memoryUsage().rss
     if (currentBytes === null) return
     const ratio = currentBytes / limitBytes
     if (armed && ratio >= PRESSURE_RATIO) {
       armed = false
-      const events = readCgroupEvents()
+      const events = source === 'cgroup' ? readCgroupEvents() : null
       log('process.memory_pressure', {
         currentBytes,
         limitBytes,
         ratio: Number(ratio.toFixed(3)),
+        source,
         eventsMax: events?.max,
         eventsOom: events?.oom,
       })
@@ -98,7 +138,7 @@ export function startMemoryWatch(onPressureChange: (under: boolean) => void): vo
       armed = true
       // Invisible today without this: the pressure line above is unreadable in isolation —
       // it says load was shed, never says when it stopped being necessary.
-      log('process.memory_recovered', { currentBytes, limitBytes, ratio: Number(ratio.toFixed(3)) })
+      log('process.memory_recovered', { currentBytes, limitBytes, ratio: Number(ratio.toFixed(3)), source })
       onPressureChange(false)
     }
   }, SAMPLE_INTERVAL_MS)

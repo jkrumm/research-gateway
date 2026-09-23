@@ -88,6 +88,7 @@ export async function reportTavilyAccountUsage(): Promise<void> {
       searchUsage: body.account.search_usage ?? 0,
       extractUsage: body.account.extract_usage ?? 0,
       currentPlan: body.account.current_plan ?? 'unknown',
+      machine: env.MACHINE,
     })
     const ts = new Date().toISOString()
     await postUsageRecord({ ...record, ts, ingested_at: ts })

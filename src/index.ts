@@ -135,13 +135,19 @@ process.on('unhandledRejection', (reason) => {
   const stack = reason instanceof Error ? reason.stack?.slice(0, 2_000) : undefined
   log('process.unhandledRejection', { reason: String(reason), stack })
 })
-startMemoryWatch(setMemoryPressure)
+startMemoryWatch(setMemoryPressure, env.MEMORY_LIMIT_MB)
 // The drain window is only real while the compose `stop_grace_period` (vps repo) stays above
 // it, and those two numbers live in two repos. If they ever drift the wrong way, Docker
 // SIGKILLs before `drainThenExit` gets to log anything — the identical silent shape this file
 // was instrumented to eliminate. Logging it at BOOT means the value is on the record before a
 // shutdown needs it.
 log('process.boot', { drainMs: env.SHUTDOWN_DRAIN_MS, pid: process.pid })
+if (env.RESEARCH_GATEWAY_DEGRADED.length > 0) {
+  log('process.degraded', {
+    reason: 'started degraded — an optional overlay did not resolve (see launch.sh stderr for the ref)',
+    degraded: env.RESEARCH_GATEWAY_DEGRADED,
+  })
+}
 
 // Elysia's error `code` is either a named framework error ('VALIDATION' | 'NOT_FOUND' |
 // 'PARSE' | 'INVALID_COOKIE_SIGNATURE' | 'INVALID_FILE_TYPE' | 'INTERNAL_SERVER_ERROR' |
@@ -273,7 +279,7 @@ export const app = new Elysia()
   .use(mcpRoutes)
   .use(researchRoutes)
   .use(probeRoutes)
-  .listen({ port: env.PORT, idleTimeout: 255 })
+  .listen({ hostname: env.HOST, port: env.PORT, idleTimeout: 255 })
 
 export type App = typeof app
 

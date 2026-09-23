@@ -54,6 +54,9 @@ function numberFromEnv(name: string, fallback: number): number {
 
 const PORT = numberFromEnv('PORT', 7781)
 const BIN = process.env['LIGHTPANDA_BIN'] ?? '/usr/local/bin/lightpanda'
+// All interfaces is right inside the compose network; natively on the mini it would put an
+// unauthenticated render endpoint on the LAN and the tailnet, so the launcher pins loopback.
+const HOST = process.env['HOST'] ?? '0.0.0.0'
 
 // Sized against the measured worst case: 205 MB for the heaviest page in the sweep, at the
 // heap cap below. 3 x 205 MB + this Bun process (~50 MB) = ~665 MB, which is what the 768 MiB
@@ -186,6 +189,7 @@ async function render(url: string): Promise<RenderResult> {
 // --- Server ------------------------------------------------------------------------------
 
 const server = Bun.serve({
+  hostname: HOST,
   port: PORT,
   idleTimeout: 0,
   fetch: async (req) => {

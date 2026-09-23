@@ -31,7 +31,8 @@ export const healthRoute = new Elysia()
       ...restartStats(),
       draining: isDraining(),
       jobs: jobCounts(),
-      memory: memorySnapshot(),
+      memory: memorySnapshot(env.MEMORY_LIMIT_MB),
+      degraded: env.RESEARCH_GATEWAY_DEGRADED,
     }),
     {
       response: z.object({
@@ -53,15 +54,25 @@ export const healthRoute = new Elysia()
             currentBytes: z.number(),
             limitBytes: z.number(),
             ratio: z.number(),
+            source: z
+              .enum(['cgroup', 'rss'])
+              .describe('cgroup memory.current/memory.max, or a process.memoryUsage().rss fallback against MEMORY_LIMIT_MB off-cgroup'),
           })
           .nullable()
-          .describe('cgroup memory usage against its limit; null off-cgroup (local dev, tests)'),
+          .describe(
+            'Memory usage against its limit; null when neither a cgroup limit nor MEMORY_LIMIT_MB is available (local dev, tests)',
+          ),
+        degraded: z
+          .array(z.string())
+          .describe(
+            'Optional overlays the launcher could not resolve and started without (e.g. "otel", "github") — always empty on the VPS container. Nothing gates on this; `status` stays "ok".',
+          ),
       }),
       detail: {
         tags: ['System'],
         summary: 'Liveness probe',
         description:
-          'Returns `{ status: "ok" }` if the service process is up, plus `lastRestartAt` and the `reaped` / `interrupted` job counts of this process lifetime — an unclean restart shows as `reaped` > 0 until the next deploy. `draining`, `jobs`, and `memory` are monitor-facing visibility into load and shutdown state, added alongside the restart fields. Only `status` gates anything (Docker healthcheck, rollhook) — a draining container still serves polls correctly, so none of the new fields degrade it. No auth required.',
+          'Returns `{ status: "ok" }` if the service process is up, plus `lastRestartAt` and the `reaped` / `interrupted` job counts of this process lifetime — an unclean restart shows as `reaped` > 0 until the next deploy. `draining`, `jobs`, `memory`, and `degraded` are monitor-facing visibility into load, shutdown, and overlay state, added alongside the restart fields. Only `status` gates anything (Docker healthcheck, rollhook) — a draining container still serves polls correctly, and a non-empty `degraded` still reports "ok", so none of the new fields degrade it. No auth required.',
       },
     },
   )

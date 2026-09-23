@@ -14,6 +14,7 @@ agent needs before touching code; don't restate what README already owns.
 | `docs/field-notes.md` | Consumer-side observations, open backlog (now GitHub issues) |
 | `docs/hyperdx-dashboard.md` | Span model + dashboard SQL |
 | `deploy/DEPLOY.md` | VPS deploy steps; **the vps repo owns compose + `.env.tpl`, this repo has no copy** |
+| `deploy/MINI.md` | The mini's native instance: layout, secrets overlays, the deploy poller, operating targets |
 
 ## Async job contract
 
@@ -61,6 +62,14 @@ runs in code at the worker boundary and the job boundary — never in a prompt a
 citation rules did not hold, twice, before this existed). If you touch `src/agent/ground.ts`,
 `src/agent/tools.ts`, or add a new tool: run `src/agent/ground.test.ts` and don't merge a
 regression against issue #1's case. Full model: README § Grounding.
+
+## Two instances
+
+The mini runs this natively (LaunchAgents from a deploy clone at `~/.research-gateway/app`,
+`deploy/MINI.md`); the VPS container is the fallback. Every new env var needs a default that
+keeps the VPS unchanged — the mini opts in via `.env.mini.tpl` (`HOST`, `MACHINE`,
+`MEMORY_LIMIT_MB`, OTLP auth). A push reaches both: rollhook on the VPS, the idle-gated poller on
+the mini. `launchd/` template changes need `make launchd-install` by hand.
 
 ## Deploy-on-push, and what it costs
 
@@ -119,8 +128,8 @@ Anything importing `env.ts` is untested by design — factor pure logic out inst
   adding a source to an existing tool is cheap, a new tool definition is not (README §
   Source-of-truth lookups)
 - `src/agent/fetch-chain.ts` + `site-adapters.ts` + `lightpanda.ts` + `archive.ts` — the
-  5-step `fetchPage` chain (Readability → site adapter → lightpanda sidecar → Tavily
-  Extract → Wayback). Readability/site-adapter parsing runs off the event loop in a worker
+  5-step `fetchPage` chain (Readability, or `pdftotext` for a PDF (`pdf.ts`) → site adapter →
+  lightpanda sidecar → Tavily Extract → Wayback). Readability/site-adapter parsing runs off the event loop in a worker
   pool (`html-parse.ts` + `parse-worker.ts`); the whole chain is bounded by a per-fetch
   budget (`FETCH_CHAIN_BUDGET_MS`).
 - `src/lib/job-store.ts` + `job-db.ts` — sqlite job durability + heartbeat reaping; also owns

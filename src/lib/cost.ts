@@ -113,6 +113,13 @@ export function buildLlmUsageRecord(args: {
   cachedInputTokens: number
   durationMs: number
   /**
+   * Host label for the `machine` argo column (part of its idempotency triple, and a dashboard
+   * breakdown dimension) — threaded in from the caller rather than read from `env.MACHINE`
+   * here, so this module stays env-free and unit-testable with zero env vars (see the header
+   * comment). The caller already imports env.js for its own reasons (ARGO_* / TAVILY_API_KEY).
+   */
+  machine: string
+  /**
    * Defaults to 'ok'. Reporting only successes leaves `outcome` permanently 'ok',
    * which reads as a service that has never failed rather than one that isn't
    * measured. A failed job re-reports its last snapshot as 'error' — same
@@ -143,7 +150,7 @@ export function buildLlmUsageRecord(args: {
     project: 'research-gateway',
     workspace: 'private',
     sub_tool: args.subTool,
-    machine: 'vps',
+    machine: args.machine,
     billing: 'iu',
     outcome: args.outcome ?? 'ok',
     input_tokens: uncachedInputTokens,
@@ -196,6 +203,8 @@ export function buildTavilyCreditRecord(args: {
   credits: number
   searchCalls: number
   extractCalls: number
+  /** See buildLlmUsageRecord's `machine` doc — threaded in, never read from env here. */
+  machine: string
   outcome?: 'ok' | 'error'
 }): TavilyCreditUsageRecord {
   return {
@@ -209,7 +218,7 @@ export function buildTavilyCreditRecord(args: {
     project: 'research-gateway',
     workspace: 'private',
     sub_tool: 'tavily',
-    machine: 'vps',
+    machine: args.machine,
     billing: 'iu',
     outcome: args.outcome ?? 'ok',
     input_tokens: 0,
@@ -248,6 +257,8 @@ export function buildSonarSearchRecord(args: {
   outputTokens: number
   searchCalls: number
   searchQueries: number
+  /** See buildLlmUsageRecord's `machine` doc — threaded in, never read from env here. */
+  machine: string
   outcome?: 'ok' | 'error'
 }): SonarSearchUsageRecord {
   return {
@@ -261,7 +272,7 @@ export function buildSonarSearchRecord(args: {
     project: 'research-gateway',
     workspace: 'private',
     sub_tool: 'sonar',
-    machine: 'vps',
+    machine: args.machine,
     billing: 'iu',
     outcome: args.outcome ?? 'ok',
     input_tokens: args.inputTokens,
@@ -314,7 +325,13 @@ export function buildTavilyAccountRecord(args: {
   searchUsage: number
   extractUsage: number
   currentPlan: string
+  /** See buildLlmUsageRecord's `machine` doc — threaded in, never read from env here. */
+  machine: string
 }): TavilyAccountUsageRecord {
+  // `machine` is destructured out rather than left in `rest`: it belongs on the record's
+  // top-level `machine` column, not duplicated into `raw`, which carries only what Tavily
+  // itself reported.
+  const { machine, ...rest } = args
   return {
     source: 'research-gateway',
     source_id: 'tavily-account',
@@ -324,7 +341,7 @@ export function buildTavilyAccountRecord(args: {
     project: 'research-gateway',
     workspace: 'private',
     sub_tool: 'tavily-account',
-    machine: 'vps',
+    machine,
     billing: 'iu',
     outcome: 'ok',
     input_tokens: 0,
@@ -335,7 +352,7 @@ export function buildTavilyAccountRecord(args: {
     duration_ms: null,
     cost_usd: null,
     cost_source: 'none',
-    raw: { ...args },
+    raw: { ...rest },
   }
 }
 
@@ -350,6 +367,8 @@ export function buildRenderRecord(args: {
   renders: number
   failures: number
   totalMs: number
+  /** See buildLlmUsageRecord's `machine` doc — threaded in, never read from env here. */
+  machine: string
   outcome?: 'ok' | 'error'
 }): RenderUsageRecord {
   return {
@@ -361,7 +380,7 @@ export function buildRenderRecord(args: {
     project: 'research-gateway',
     workspace: 'private',
     sub_tool: 'lightpanda',
-    machine: 'vps',
+    machine: args.machine,
     billing: 'iu',
     outcome: args.outcome ?? 'ok',
     input_tokens: 0,
@@ -387,6 +406,8 @@ export function buildYtdlpRecord(args: {
   calls: number
   failures: number
   totalMs: number
+  /** See buildLlmUsageRecord's `machine` doc — threaded in, never read from env here. */
+  machine: string
   outcome?: 'ok' | 'error'
 }): YtdlpUsageRecord {
   return {
@@ -398,7 +419,7 @@ export function buildYtdlpRecord(args: {
     project: 'research-gateway',
     workspace: 'private',
     sub_tool: 'ytdlp',
-    machine: 'vps',
+    machine: args.machine,
     billing: 'iu',
     outcome: args.outcome ?? 'ok',
     input_tokens: 0,
@@ -428,6 +449,8 @@ export function buildArchiveRecord(args: {
   totalMs: number
   /** Null when no rescue in the job carried a parseable snapshot date — see tools.ts. */
   oldestSnapshotDays: number | null
+  /** See buildLlmUsageRecord's `machine` doc — threaded in, never read from env here. */
+  machine: string
   outcome?: 'ok' | 'error'
 }): ArchiveUsageRecord {
   return {
@@ -439,7 +462,7 @@ export function buildArchiveRecord(args: {
     project: 'research-gateway',
     workspace: 'private',
     sub_tool: 'wayback',
-    machine: 'vps',
+    machine: args.machine,
     billing: 'iu',
     outcome: args.outcome ?? 'ok',
     input_tokens: 0,

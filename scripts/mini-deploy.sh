@@ -1,0 +1,236 @@
+#!/bin/zsh
+# research-gateway/scripts/mini-deploy.sh — the mini's "push to master
+# deploys" equivalent of rollhook: there is no webhook receiver on this box,
+# so com.jkrumm.research-gateway-deploy polls this every 2 minutes instead
+# (launchd/com.jkrumm.research-gateway-deploy.plist.template, StartInterval).
+#
+# Everything lives inside `main`, invoked only on the LAST line. This file is
+# itself tracked in the repo `main` pulls from — the `git reset --hard`
+# partway through rewrites THIS FILE on disk mid-run if it changed upstream.
+# zsh parses a `function name { ... }` block into one compiled unit at
+# definition time (reading up to the matching `}` before anything inside it
+# runs), so once `main` has been defined — which happens before the reset
+# ever executes — the reset changing the file on disk does not affect the
+# already-parsed body still running inside it. Do not move logic outside
+# `main`, and do not `source` this file.
+
+set -u
+
+APP_DIR="$HOME/.research-gateway/app"
+DATA_DIR="$HOME/.research-gateway/data"
+LOCK_DIR="$DATA_DIR/mini-deploy.lock"
+DEPLOYED_SHA_FILE="$DATA_DIR/deployed-sha"
+HEALTH_URL="http://127.0.0.1:7780/health"
+LABEL_GATEWAY="com.jkrumm.research-gateway"
+LABEL_LIGHTPANDA="com.jkrumm.research-gateway-lightpanda"
+
+# git's well-known hash of the empty tree — diffing against it lists every path in the target
+# commit, which is the fallback used when there is no trustworthy deployed-sha to diff from.
+EMPTY_TREE_SHA="4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+
+# A lock older than this is reclaimed regardless of whether its holder pid looks alive — a
+# hang-guard floor, not a tuning default. The slowest real tick is the post-restart health
+# poll below (up to 1860s); 2h clears that with room for a genuinely wedged process to still
+# be caught rather than wedging every future tick forever.
+STALE_LOCK_SECS=$((2 * 60 * 60))
+
+# Matches the post-restart health-poll window: keep retrying past a `draining: true` /
+# unreachable response for up to this long before declaring the deploy failed. Same value as
+# SHUTDOWN_DRAIN_MS's neighbor in src/env.ts (1860s, strictly above the 1800s drain itself) —
+# a restarted process can legitimately still be draining its PREVIOUS instance's jobs for
+# nearly that whole window.
+HEALTH_POLL_SECS=1860
+
+export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+
+log() {
+  print "[$(date '+%Y-%m-%dT%H:%M:%S%z')] $*"
+}
+
+# Atomic write: temp file in the same dir, then `mv` — a reader (this script, next tick) must
+# never observe a partially-written deployed-sha.
+write_deployed_sha() {
+  local sha="$1" tmp
+  tmp="$DEPLOYED_SHA_FILE.tmp.$$"
+  print -r -- "$sha" > "$tmp" && mv -f "$tmp" "$DEPLOYED_SHA_FILE"
+}
+
+# mkdir is atomic — the lock a concurrent tick (a slow deploy overrunning the next 2-minute
+# StartInterval fire) cannot also acquire. On contention, a stale lock (holder pid no longer
+# alive, or the lock has simply outlived STALE_LOCK_SECS) is reclaimed instead of wedging
+# every future tick behind a process that crashed or was killed without cleaning up after
+# itself — nothing else ever removes $LOCK_DIR.
+acquire_lock() {
+  if mkdir "$LOCK_DIR" 2>/dev/null; then
+    print $$ > "$LOCK_DIR/pid"
+    return 0
+  fi
+
+  local holder_pid mtime now age
+  holder_pid=$(cat "$LOCK_DIR/pid" 2>/dev/null)
+  mtime=$(stat -f %m "$LOCK_DIR" 2>/dev/null || print 0)
+  now=$(date +%s)
+  age=$((now - mtime))
+
+  if [[ -n "$holder_pid" ]] && kill -0 "$holder_pid" 2>/dev/null && (( age < STALE_LOCK_SECS )); then
+    return 1  # genuinely held by a live process, and not stale yet
+  fi
+
+  # Either the holder pid is dead, or the lock has simply outlived STALE_LOCK_SECS — reclaim
+  # it. `rm -rf` (not `rmdir`) because the lock dir holds the pid file; the subsequent `mkdir`
+  # is still the atomicity boundary — only one concurrent reclaimer wins it, the other just
+  # returns 1 and retries next tick.
+  rm -rf "$LOCK_DIR" 2>/dev/null
+  if mkdir "$LOCK_DIR" 2>/dev/null; then
+    log "reclaimed stale lock at $LOCK_DIR (holder pid ${holder_pid:-unknown}, age ${age}s)"
+    print $$ > "$LOCK_DIR/pid"
+    return 0
+  fi
+  return 1
+}
+
+main() {
+  # `make mini-setup` already creates DATA_DIR, but make it idempotently here
+  # too — otherwise a missing parent directory makes the lock mkdir below
+  # fail exactly like "another tick is running", which is the wrong error to
+  # surface for a setup problem.
+  mkdir -p "$DATA_DIR"
+
+  if ! acquire_lock; then
+    log "another mini-deploy tick is still holding $LOCK_DIR — skipping this tick"
+    return 0
+  fi
+  trap 'rm -rf "$LOCK_DIR" 2>/dev/null' EXIT INT TERM
+
+  if [[ ! -d "$APP_DIR/.git" ]]; then
+    log "ERROR: $APP_DIR is not a git clone yet — run 'make mini-setup' first"
+    return 1
+  fi
+
+  if ! git -C "$APP_DIR" fetch --quiet origin master; then
+    log "ERROR: git fetch origin master failed (network or credential-helper) — will retry next tick"
+    return 1
+  fi
+
+  # The deployed-sha marker (not git HEAD) is the source of truth for "is a deploy needed" —
+  # it is written ONLY after install succeeded and the restart came back healthy (or no
+  # restart was needed), whereas `git reset --hard` below moves HEAD unconditionally before
+  # any of that is known. Gating on HEAD==origin (the old behavior) meant a failed install or
+  # an unhealthy restart left HEAD already at origin's commit, so the NEXT tick saw
+  # head==origin and exited early without ever retrying. Missing file reads as "" — never
+  # equal to a real sha — so a fresh clone with no marker yet always needs-deploy.
+  local origin_head deployed_sha
+  origin_head=$(git -C "$APP_DIR" rev-parse origin/master)
+  deployed_sha=$(cat "$DEPLOYED_SHA_FILE" 2>/dev/null || print '')
+  if [[ -n "$deployed_sha" && "$deployed_sha" == "$origin_head" ]]; then
+    return 0  # up to date — the common case, no log line for it
+  fi
+
+  # Idle gate: a down service can't lose jobs, so an unreachable /health
+  # deploys anyway rather than wedging every future tick behind a dead
+  # process. A reachable-but-busy service defers — the next tick retries.
+  local health running=0 queued=0
+  if health=$(curl -fsS --max-time 5 "$HEALTH_URL" 2>/dev/null); then
+    running=$(print -r -- "$health" | jq -r '.jobs.running // 0' 2>/dev/null || print 0)
+    queued=$(print -r -- "$health" | jq -r '.jobs.queued // 0' 2>/dev/null || print 0)
+    if (( running + queued > 0 )); then
+      log "deferred: $running running + $queued queued job(s) — will retry next tick"
+      return 0
+    fi
+  else
+    log "GET $HEALTH_URL unreachable — deploying anyway (a down service cannot lose jobs)"
+  fi
+
+  # Diff from deployed-sha, not HEAD — HEAD only ever equals origin (see the reset below), so
+  # diffing from it would always report zero changed paths on a retry after a failed install.
+  # If deployed-sha is missing, or is no longer an ancestor of origin/master (a force-push, or
+  # this is the very first deploy), there is no trustworthy base to diff from: fall back to
+  # diffing against the empty tree, which lists every path in origin/master and so classifies
+  # everything below as changed — the safe default (full install + full restart).
+  local base_ref="$EMPTY_TREE_SHA"
+  if [[ -n "$deployed_sha" ]] \
+    && git -C "$APP_DIR" cat-file -e "${deployed_sha}^{commit}" 2>/dev/null \
+    && git -C "$APP_DIR" merge-base --is-ancestor "$deployed_sha" "$origin_head" 2>/dev/null; then
+    base_ref="$deployed_sha"
+  fi
+
+  local changed
+  changed=$(git -C "$APP_DIR" diff --name-only "$base_ref" "$origin_head")
+  local -a changed_arr
+  changed_arr=("${(@f)changed}")
+  local from_label="none"
+  [[ -n "$deployed_sha" ]] && from_label="${deployed_sha[1,12]}"
+  log "deploying $from_label -> ${origin_head[1,12]} (${#changed_arr} changed path(s): ${(j:, :)changed_arr})"
+
+  if ! git -C "$APP_DIR" reset --hard origin/master >/dev/null; then
+    log "ERROR: git reset --hard origin/master failed"
+    return 1
+  fi
+
+  local deps_changed=0 restart_needed=0 lightpanda_changed=0 launchd_changed=0
+  local f
+  for f in "${changed_arr[@]}"; do
+    case "$f" in
+      package.json|bun.lock) deps_changed=1; restart_needed=1 ;;
+      *.md|docs/*) ;;  # docs-only changes never restart anything
+      lightpanda/*) lightpanda_changed=1; restart_needed=1 ;;
+      launchd/*) launchd_changed=1 ;;
+      *) restart_needed=1 ;;
+    esac
+  done
+
+  if [[ "$deps_changed" -eq 1 ]]; then
+    log "package.json/bun.lock changed — bun install --frozen-lockfile --production"
+    if ! (cd "$APP_DIR" && bun install --frozen-lockfile --production); then
+      log "ERROR: bun install failed — leaving the gateway on its current running build"
+      return 1
+    fi
+  fi
+
+  if [[ "$launchd_changed" -eq 1 ]]; then
+    log "WARNING: launchd/ templates changed — this deploy does NOT re-render or reload plists. Run 'make launchd-install' by hand to pick up the change."
+  fi
+
+  if [[ "$restart_needed" -eq 0 ]]; then
+    write_deployed_sha "$origin_head"
+    log "deployed $(git -C "$APP_DIR" rev-parse --short HEAD) — no restart-worthy paths changed, gateway left running"
+    return 0
+  fi
+
+  log "restarting $LABEL_GATEWAY"
+  launchctl kickstart -k "gui/$(id -u)/$LABEL_GATEWAY" 2>&1 | while IFS= read -r l; do log "  $l"; done
+
+  if [[ "$lightpanda_changed" -eq 1 ]]; then
+    log "restarting $LABEL_LIGHTPANDA (lightpanda/ changed)"
+    launchctl kickstart -k "gui/$(id -u)/$LABEL_LIGHTPANDA" 2>&1 | while IFS= read -r l; do log "  $l"; done
+  fi
+
+  # Reachable AND not draining is "healthy" — a freshly kickstarted process can legitimately
+  # still be draining its previous instance's in-flight jobs (index.ts's SIGTERM path), so
+  # `draining: true` keeps polling rather than failing fast at the old 60s ceiling. Unreachable
+  # (curl failure, non-2xx, unparseable body) also keeps polling — only the full window elapsing
+  # without ever observing a healthy response is a failure.
+  local i=0 ok=0 health draining
+  while (( i < HEALTH_POLL_SECS )); do
+    if health=$(curl -fsS --max-time 2 "$HEALTH_URL" 2>/dev/null); then
+      draining=$(print -r -- "$health" | jq -r '.draining // false' 2>/dev/null || print true)
+      if [[ "$draining" != "true" ]]; then
+        ok=1
+        break
+      fi
+    fi
+    sleep 1; i=$((i + 1))
+  done
+
+  local sha
+  sha=$(git -C "$APP_DIR" rev-parse --short HEAD)
+  if [[ "$ok" -eq 1 ]]; then
+    write_deployed_sha "$origin_head"
+    log "deploy OK — $sha up and healthy after restart"
+  else
+    log "ERROR: deploy of $sha did NOT come back healthy within ${HEALTH_POLL_SECS}s (unreachable or still draining) — check ~/Library/Logs/research-gateway.err"
+    return 1
+  fi
+}
+
+main

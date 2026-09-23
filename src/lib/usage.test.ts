@@ -150,6 +150,7 @@ describe('buildLlmUsageRecord', () => {
     reasoningTokens: 50,
     cachedInputTokens: 400,
     durationMs: 1234,
+    machine: 'vps',
   }
 
   it('reports input_tokens as the uncached remainder, not the AI SDK total', () => {
@@ -178,10 +179,15 @@ describe('buildLlmUsageRecord', () => {
     expect(buildLlmUsageRecord(args).outcome).toBe('ok')
     expect(buildLlmUsageRecord({ ...args, outcome: 'error' }).outcome).toBe('error')
   })
+
+  it('stamps `machine` from the caller rather than hardcoding it', () => {
+    expect(buildLlmUsageRecord(args).machine).toBe('vps')
+    expect(buildLlmUsageRecord({ ...args, machine: 'mini' }).machine).toBe('mini')
+  })
 })
 
 describe('buildTavilyCreditRecord', () => {
-  const args = { jobId: 'job-123', credits: 42, searchCalls: 3, extractCalls: 12 }
+  const args = { jobId: 'job-123', credits: 42, searchCalls: 3, extractCalls: 12, machine: 'vps' }
 
   it('scopes source_id as `${jobId}:tavily` so it never collides with the lead/worker rows', () => {
     const record = buildTavilyCreditRecord(args)
@@ -200,7 +206,13 @@ describe('buildTavilyCreditRecord', () => {
   })
 
   it('carries extractCalls even when credits is 0 — the normal case for single-URL extracts', () => {
-    const record = buildTavilyCreditRecord({ jobId: 'job-123', credits: 0, searchCalls: 0, extractCalls: 5 })
+    const record = buildTavilyCreditRecord({
+      jobId: 'job-123',
+      credits: 0,
+      searchCalls: 0,
+      extractCalls: 5,
+      machine: 'vps',
+    })
     expect(record.raw).toEqual({ tavilyCredits: 0, tavilySearchCalls: 0, tavilyExtractCalls: 5 })
   })
 
@@ -223,7 +235,7 @@ describe('buildTavilyCreditRecord', () => {
 })
 
 describe('buildRenderRecord', () => {
-  const args = { jobId: 'job-123', renders: 8, failures: 2, totalMs: 45_231 }
+  const args = { jobId: 'job-123', renders: 8, failures: 2, totalMs: 45_231, machine: 'vps' }
 
   it('scopes source_id as `${jobId}:render` so it never collides with the other four records', () => {
     const record = buildRenderRecord(args)
@@ -265,7 +277,7 @@ describe('buildRenderRecord', () => {
 })
 
 describe('buildYtdlpRecord', () => {
-  const args = { jobId: 'job-123', calls: 5, failures: 1, totalMs: 18_432 }
+  const args = { jobId: 'job-123', calls: 5, failures: 1, totalMs: 18_432, machine: 'vps' }
 
   it('scopes source_id as `${jobId}:ytdlp` so it never collides with the other records', () => {
     const record = buildYtdlpRecord(args)
@@ -307,7 +319,14 @@ describe('buildYtdlpRecord', () => {
 })
 
 describe('buildArchiveRecord', () => {
-  const args = { jobId: 'job-123', rescues: 2, failures: 1, totalMs: 4_812, oldestSnapshotDays: 1227 }
+  const args = {
+    jobId: 'job-123',
+    rescues: 2,
+    failures: 1,
+    totalMs: 4_812,
+    oldestSnapshotDays: 1227,
+    machine: 'vps',
+  }
 
   it('scopes source_id as `${jobId}:archive` so it never collides with the other records', () => {
     const record = buildArchiveRecord(args)
@@ -360,6 +379,7 @@ describe('buildSonarSearchRecord', () => {
     outputTokens: 96,
     searchCalls: 6,
     searchQueries: 6,
+    machine: 'vps',
   }
 
   it('scopes source_id as `${jobId}:sonar` so it never collides with the tavily or lead/worker rows', () => {
@@ -367,7 +387,13 @@ describe('buildSonarSearchRecord', () => {
     expect(record.source_id).toBe('job-123:sonar')
     expect(record.sub_tool).toBe('sonar')
     expect(record.source_id).not.toBe(
-      buildTavilyCreditRecord({ jobId: 'job-123', credits: 1, searchCalls: 1, extractCalls: 0 }).source_id,
+      buildTavilyCreditRecord({
+        jobId: 'job-123',
+        credits: 1,
+        searchCalls: 1,
+        extractCalls: 0,
+        machine: 'vps',
+      }).source_id,
     )
   })
 
@@ -426,13 +452,13 @@ describe('buildTavilyAccountRecord', () => {
   }
 
   it('uses a FIXED, unscoped source_id — an account gauge, not a per-job counter', () => {
-    const record = buildTavilyAccountRecord(args)
+    const record = buildTavilyAccountRecord({ ...args, machine: 'vps' })
     expect(record.source_id).toBe('tavily-account')
     expect(record.sub_tool).toBe('tavily-account')
   })
 
   it('carries every reported number in `raw`, never in a token or duration field', () => {
-    const record = buildTavilyAccountRecord(args)
+    const record = buildTavilyAccountRecord({ ...args, machine: 'vps' })
     expect(record.raw).toEqual(args)
     expect(record.input_tokens).toBe(0)
     expect(record.output_tokens).toBe(0)
@@ -443,18 +469,18 @@ describe('buildTavilyAccountRecord', () => {
   })
 
   it('leaves cost_usd unset — no verified USD-per-credit rate exists to compute it honestly', () => {
-    const record = buildTavilyAccountRecord(args)
+    const record = buildTavilyAccountRecord({ ...args, machine: 'vps' })
     expect(record.cost_usd).toBeNull()
     expect(record.cost_source).toBe('none')
   })
 
   it('leaves model/model_norm unset — an account-usage read is not a model call', () => {
-    const record = buildTavilyAccountRecord(args)
+    const record = buildTavilyAccountRecord({ ...args, machine: 'vps' })
     expect(record.model).toBeNull()
     expect(record.model_norm).toBeNull()
   })
 
   it('always reports outcome "ok" — there is no per-call success/failure to distinguish', () => {
-    expect(buildTavilyAccountRecord(args).outcome).toBe('ok')
+    expect(buildTavilyAccountRecord({ ...args, machine: 'vps' }).outcome).toBe('ok')
   })
 })

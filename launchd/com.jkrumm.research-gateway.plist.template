@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.jkrumm.research-gateway</string>
+  <!-- The mini's native instance of research-gateway (:7780), alongside the
+       VPS Docker container. Runs from the DEDICATED deploy clone
+       (~/.research-gateway/app), never the dev checkout — see
+       scripts/mini-deploy.sh and Makefile's mini-setup. Never point
+       ProgramArguments at the bun binary directly — macOS BTM silently
+       disallows launching a Homebrew binary that way; the wrapper script is
+       required. -->
+  <key>ProgramArguments</key>
+  <array>
+    <string>__HOME__/.research-gateway/app/scripts/launch.sh</string>
+  </array>
+  <key>KeepAlive</key><true/>
+  <key>RunAtLoad</key><true/>
+  <key>ThrottleInterval</key><integer>30</integer>
+  <key>WorkingDirectory</key><string>__HOME__/.research-gateway/app</string>
+  <key>StandardOutPath</key><string>__HOME__/Library/Logs/research-gateway.log</string>
+  <key>StandardErrorPath</key><string>__HOME__/Library/Logs/research-gateway.err</string>
+  <!-- SHUTDOWN_DRAIN_MS (src/env.ts) is 1_800_000ms = 1800s: on SIGTERM the
+       process drains running jobs before exiting. launchd's own default
+       ExitTimeOut is 20s — it would SIGKILL straight through that drain,
+       the exact trap sideclaw's own plist + Makefile `reload` drift check
+       exists to avoid. Set comfortably above 1800s. -->
+  <key>ExitTimeOut</key><integer>1860</integer>
+</dict>
+</plist>
