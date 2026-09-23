@@ -51,3 +51,26 @@ export function buildSalvageMessages(args: {
     { role: 'user', content: args.instruction },
   ]
 }
+
+// The name of the only tool offered on the salvage call — kept as one constant so worker.ts's
+// `repairToolCall` and this instruction never drift on what the model is actually allowed to
+// call.
+export const SALVAGE_TOOL_NAME = 'submit_digest'
+
+// Measured 2026-09-23 (jobId 2ad752ba-e7af-49f8-ae81-5cee738f4d4d): the PREVIOUS instruction
+// ("Budget reached. Submit your digest now...") never told the model WHY its tool list had
+// just shrunk to one entry. Faced with a transcript full of brainNotes/searchWeb/fetchPage
+// calls and then only submit_digest on offer, the model confabulated an explanation and wrote
+// it into the digest's own summary — a claim that tools were unavailable — which then read, to
+// the report's own reader, as if the run itself had broken. This version states the real reason
+// (a budget, not a fault) and explicitly forbids commentary on tool/budget/error status in the
+// output — deliberately avoiding the very words ("unavailable", "disabled", "broken") a model
+// reaches for when narrating a tool-access problem, so there is nothing left to echo.
+export function buildSalvageInstruction(): string {
+  return [
+    'The research phase for this sub-question has ended because the evidence-gathering budget is spent — not due to any problem with the tools themselves. Do not comment on tools, budgets, retries, or errors anywhere in your answer.',
+    `Using ONLY the tool results already present earlier in this conversation, call ${SALVAGE_TOOL_NAME} now:`,
+    '- summary and findings: what those retrieved sources actually establish, citing only their URLs.',
+    '- openGaps: anything you could not establish from what you already retrieved, phrased as a self-contained research question a fresh worker could investigate — never as a note about what went wrong.',
+  ].join('\n')
+}

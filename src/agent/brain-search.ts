@@ -137,12 +137,14 @@ export async function searchBrain(query: string, jobId = '-'): Promise<BrainSear
     return { ok: false, error: `brainNotes search failed: ${rg.error ?? 'unknown error'}` }
   }
   if (rg.paths.length === 0) {
-    log('tool.brainNotes', { jobId, query, terms, results: 0, ok: true })
+    log('tool.brainNotes', { jobId, query, terms, strong: 0, ok: true })
     return { ok: true, notes: [] }
   }
 
   const candidates = await readScopedCandidates(rg.paths, brainDirReal, wikiDirReal)
+  // `notes` is now ONLY strong matches (rankAndBuildNotes drops everything else) — `strong`,
+  // not `results`, is the honest field name for what this count means.
   const notes = rankAndBuildNotes({ candidates, terms, baseUrl: env.BRAIN_BASE_URL })
-  log('tool.brainNotes', { jobId, query, terms, candidates: candidates.length, results: notes.length, ok: true })
+  log('tool.brainNotes', { jobId, query, terms, candidates: candidates.length, strong: notes.length, ok: true })
   return { ok: true, notes }
 }

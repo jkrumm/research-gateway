@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test'
-import { shouldForceSubmit, buildSalvageMessages } from './salvage.js'
+import { shouldForceSubmit, buildSalvageMessages, buildSalvageInstruction, SALVAGE_TOOL_NAME } from './salvage.js'
 
 describe('shouldForceSubmit', () => {
   it('is false with no steps', () => {
@@ -61,5 +61,29 @@ describe('buildSalvageMessages', () => {
       { role: 'user', content: 'Q' },
       { role: 'user', content: 'Go.' },
     ])
+  })
+})
+
+describe('buildSalvageInstruction', () => {
+  it('contains no tool-availability wording', () => {
+    const instruction = buildSalvageInstruction().toLowerCase()
+    expect(instruction).not.toMatch(/tool.*(unavailable|disabled|broken|no longer|not available|stopped working)/)
+    expect(instruction).not.toContain('unavailable')
+    expect(instruction).not.toContain('disabled')
+    expect(instruction).not.toContain('nosuchtoolerror')
+  })
+
+  it('explicitly attributes the ending to budget, not to a tool failure', () => {
+    const instruction = buildSalvageInstruction()
+    expect(instruction).toContain('budget is spent')
+    expect(instruction).toContain('not due to any problem with the tools themselves')
+  })
+
+  it('names the one tool it must call', () => {
+    expect(buildSalvageInstruction()).toContain(SALVAGE_TOOL_NAME)
+  })
+
+  it('tells the model where unresolved items belong', () => {
+    expect(buildSalvageInstruction()).toContain('openGaps')
   })
 })

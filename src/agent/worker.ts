@@ -1,4 +1,4 @@
-import { generateText, tool, hasToolCall, stepCountIs } from 'ai'
+import { generateText, tool, hasToolCall, stepCountIs, NoSuchToolError } from 'ai'
 import type { Tool, StopCondition, ToolSet } from 'ai'
 import { workerModel, workerSubmitChoice } from '../lib/llm.js'
 import { buildTools } from './tools.js'
@@ -8,7 +8,7 @@ import { WorkerDigest } from './schema.js'
 import type { Depth } from './schema.js'
 import { createLedger, type LedgerSnapshot } from './ledger.js'
 import { groundDigest } from './ground.js'
-import { shouldForceSubmit, buildSalvageMessages } from './salvage.js'
+import { shouldForceSubmit, buildSalvageMessages, buildSalvageInstruction, SALVAGE_TOOL_NAME } from './salvage.js'
 import { log } from '../lib/log.js'
 import { withSpan } from '../lib/otel.js'
 import { emptyUsage, addUsage, toUsageStats } from '../lib/usage.js'
@@ -141,8 +141,7 @@ export async function runWorker(args: {
             const salvageMessages = buildSalvageMessages({
               userPrompt: subQuestion + backgroundSection(context),
               transcript: result.response.messages,
-              instruction:
-                'Budget reached. Submit your digest now via submit_digest using only sources you actually retrieved.',
+              instruction: buildSalvageInstruction(),
             })
             const salvageResult = await generateText({
               model: workerModel,
@@ -152,9 +151,27 @@ export async function runWorker(args: {
               // Resolves to 'auto' at effort high — DeepSeek thinking mode rejects a forced
               // tool_choice — so this still relies on submit_digest being the only tool on
               // offer, same as llm-settings.ts's submitToolChoice contract everywhere else.
-              toolChoice: workerSubmitChoice('submit_digest'),
+              toolChoice: workerSubmitChoice(SALVAGE_TOOL_NAME),
               stopWhen: stepCountIs(1),
               maxRetries: 2,
+              // A model that, mid-transcript-replay, still reaches for a tool no longer on
+              // offer (brainNotes/searchWeb/fetchPage — only submit_digest is declared for
+              // this call) hits AI_NoSuchToolError. The AI SDK already degrades an unrepaired
+              // one into a non-throwing "invalid" tool-call entry rather than an escaping
+              // exception (ai/dist/index.js's parseToolCall: every repair-failure path is
+              // caught by the SAME outer try that already catches the bare NoSuchToolError),
+              // so `repairToolCall` cannot change whether this call survives — passing a
+              // narrower `activeTools` on top of the already-single-tool `tools` object above
+              // would be equally inert for the same reason. What this hook DOES add is
+              // visibility: without it, a stray tool call here degrades silently into the
+              // SDK's internal invalid-entry bookkeeping with nothing in our own logs to show
+              // it happened.
+              repairToolCall: async ({ toolCall, error }) => {
+                if (NoSuchToolError.isInstance(error)) {
+                  log('worker.salvage_repair', { jobId, round, attemptedTool: toolCall.toolName })
+                }
+                return null
+              },
               abortSignal: idle.signal,
               onStepEnd: () => idle.arm(),
               onToolExecutionStart: () => idle.arm(),
