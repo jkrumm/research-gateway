@@ -119,7 +119,9 @@ Anything importing `env.ts` is untested by design — factor pure logic out inst
   Source-of-truth lookups)
 - `src/agent/fetch-chain.ts` + `site-adapters.ts` + `lightpanda.ts` + `archive.ts` — the
   5-step `fetchPage` chain (Readability → site adapter → lightpanda sidecar → Tavily
-  Extract → Wayback)
+  Extract → Wayback). Readability/site-adapter parsing runs off the event loop in a worker
+  pool (`html-parse.ts` + `parse-worker.ts`); the whole chain is bounded by a per-fetch
+  budget (`FETCH_CHAIN_BUDGET_MS`).
 - `src/lib/job-store.ts` + `job-db.ts` — sqlite job durability + heartbeat reaping; also owns
   the drain (`beginDraining` / `waitForDrain`) and the admission state
 - `src/lib/admission.ts` — the pure "may a new job start" decision (draining > memory pressure

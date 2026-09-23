@@ -1,12 +1,11 @@
 import { tavily } from '@tavily/core'
-import { parseHTML } from 'linkedom'
-import { Readability } from '@mozilla/readability'
 import { env } from '../env.js'
 import { assertPublicHttpUrl } from '../lib/ssrf.js'
 import { log } from '../lib/log.js'
 import { getActiveSpan } from '../lib/otel.js'
 import { normalizeText, capText, TEXT_CAP } from './extract.js'
 import { resolveSite } from './site-adapters.js'
+import { extractText, readabilityText } from './html-parse.js'
 import { isRawContentType, isDefinitivelyMissing } from './response-kind.js'
 import { parseRenderResponse, renderUrl } from './lightpanda.js'
 import { fetchYoutubeTranscript } from './ytdlp.js'
@@ -116,6 +115,12 @@ export interface FetchChainOptions {
    */
   renderBaseUrl?: string | undefined
   /**
+   * Total wall-clock budget for this chain (defaults to FETCH_CHAIN_BUDGET_MS). Exists so a
+   * test can exercise the budget path without waiting 90s. Only the fetch chain is bounded —
+   * never the research job or worker loop.
+   */
+  budgetMs?: number
+  /**
    * Called for EVERY yt-dlp transcript attempt this chain makes (skipToExtract URLs only) —
    * success and failure alike, mirroring `onRender` above exactly. Not called for non-video
    * URLs, since no attempt was made at all.
@@ -139,6 +144,14 @@ const tvly = tavily({ apiKey: env.TAVILY_API_KEY })
 // the boundary between "this page has content" and "this page has a cookie banner".
 const MIN_USABLE_CHARS = 200
 
+// Total wall-clock budget for ONE fetchPage call, across every fallback in the chain. Each
+// step already has its own timeout (safeFetch 10s/hop, lightpanda 60s, Tavily 30s, yt-dlp
+// 45s), but nothing bounded their SUM: a URL whose plain fetch, render AND extract all
+// degraded serially chained those budgets together (measured 2026-09-23: tool.fetchPage p95
+// 137s, max ~1,134s). This signal aborts the chain as a whole. It is NOT a job/worker
+// deadline — only the per-fetchPage HTTP chain is bounded (rules/agent-limits.md).
+const FETCH_CHAIN_BUDGET_MS = 90_000
+
 // Whether a response is verbatim-answer or document-to-extract, and whether a status means
 // "absent" rather than "not to you" — both live in response-kind.ts so they are unit-tested.
 
@@ -149,13 +162,19 @@ const MIN_USABLE_CHARS = 200
 // Returns the final URL alongside the response: with `redirect: 'manual'` the response is
 // the REDIRECT TARGET's, and callers that attribute anything to the requested URL (the
 // ledger's missing tier) must attribute it to where the answer actually came from.
-async function safeFetch(startUrl: string, jobId = '-', maxHops = 3): Promise<{ res: Response; finalUrl: string }> {
+async function safeFetch(
+  startUrl: string,
+  jobId = '-',
+  maxHops = 3,
+  signal?: AbortSignal,
+): Promise<{ res: Response; finalUrl: string }> {
   let current = startUrl
   for (let hop = 0; ; hop++) {
     await assertPublicHttpUrl(current) // re-validate EVERY hop (initial + each redirect target)
     const res = await fetch(current, {
       headers: { 'user-agent': 'research-gateway/0.1 (+research bot)' },
-      signal: AbortSignal.timeout(10_000),
+      // The per-hop timeout AND the chain-wide budget: whichever fires first aborts the hop.
+      signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(10_000)]) : AbortSignal.timeout(10_000),
       redirect: 'manual',
     })
     if (res.status >= 300 && res.status < 400) {
@@ -204,6 +223,14 @@ export async function runFetchChain(url: string, opts: FetchChainOptions): Promi
   const jobId = opts.jobId ?? '-'
   const renderBaseUrl = opts.renderBaseUrl ?? env.LIGHTPANDA_URL
   const attempts: FetchAttempt[] = []
+
+  // One budget for the WHOLE chain (see FETCH_CHAIN_BUDGET_MS), aborted into every network
+  // step below. Steps that cannot take an AbortSignal (Tavily Extract, the yt-dlp spawn) check
+  // it directly before starting.
+  const budgetMs = opts.budgetMs ?? FETCH_CHAIN_BUDGET_MS
+  const budget = AbortSignal.timeout(budgetMs)
+  const chainStartedAt = performance.now()
+  const budgetReason = `fetch chain budget exhausted after ${budgetMs}ms`
 
   // Some hosts need a different address, a different reader, or both (site-adapters.ts).
   // Everything below fetches `fetchUrl`; everything the ledger and the caller see stays
@@ -280,6 +307,8 @@ export async function runFetchChain(url: string, opts: FetchChainOptions): Promi
 
     // ── Step yt-dlp: the real read for a video URL, tried before the paid fallback ──
     const tY = performance.now()
+    // The spawn takes no AbortSignal, so check the budget before starting it.
+    if (budget.aborted) return fail(budgetReason)
     const ytResult = await fetchYoutubeTranscript(fetchUrl, { jobId })
     if (ytResult) {
       const ms = attempt(attempts, 'yt-dlp', tY, { ok: true, chars: ytResult.chars })
@@ -314,7 +343,7 @@ export async function runFetchChain(url: string, opts: FetchChainOptions): Promi
       // followed by hand, `res` is the redirect target's response, and a redirect to a 404
       // says the TARGET does not exist — the requested URL's fate is unknown, and a
       // fabricated missing record there would wrongly demote or drop claims about it.
-      const { res, finalUrl } = await safeFetch(fetchUrl, jobId)
+      const { res, finalUrl } = await safeFetch(fetchUrl, jobId, 3, budget)
       if (isDefinitivelyMissing(res.status)) {
         const reason = `HTTP ${res.status} — the resource does not exist at this URL`
         attempt(attempts, 'readability', t1, { ok: false, error: reason })
@@ -345,16 +374,10 @@ export async function runFetchChain(url: string, opts: FetchChainOptions): Promi
           // page to a browser.
           attempt(attempts, 'raw', t1, { ok: false, chars: 0, error: 'empty body' })
         } else {
-          const { document } = parseHTML(body)
-          // A site adapter reads its own markup; anything else, and any adapter that does not
-          // recognise what it got, falls through to Readability unchanged.
-          const adapted = site.extract ? site.extract(document as never) : null
-          if (adapted) step1 = 'site-adapter'
-          const article = adapted
-            ? null
-            : new Readability(document as unknown as ConstructorParameters<typeof Readability>[0]).parse()
-          const raw = adapted ?? article?.textContent?.trim()
-          const text = raw ? normalizeText(raw) : raw
+          // Parsing runs in a worker pool (html-parse.ts), off the event loop — linkedom +
+          // Readability are synchronous CPU work that would otherwise block /health (issue #21).
+          const { via, text } = await extractText(url, body, budget)
+          step1 = via
           rdChars = text?.length ?? 0
           if (text && text.length >= MIN_USABLE_CHARS) {
             attempt(attempts, step1, t1, { ok: true, chars: text.length })
@@ -365,7 +388,7 @@ export async function runFetchChain(url: string, opts: FetchChainOptions): Promi
         }
       }
     } catch (err) {
-      // fetch or linkedom failed — fall through to the rendering steps.
+      // fetch or parse failed — fall through to the rendering steps.
       rdReason = 'threw'
       attempt(attempts, step1, t1, { ok: false, error: String(err) })
     }
@@ -384,7 +407,7 @@ export async function runFetchChain(url: string, opts: FetchChainOptions): Promi
           // Generous on purpose: the sidecar's own budget is a 20s queue wait plus a 35s
           // render, and it answers a saturated queue with a fast, explicit failure. This only
           // has to outlast that, so a slow render is never cut off by the caller.
-          signal: AbortSignal.timeout(60_000),
+          signal: AbortSignal.any([budget, AbortSignal.timeout(60_000)]),
         })
         const parsed = parseRenderResponse(res.status, await res.json().catch(() => null))
         if (parsed.ok) {
@@ -423,17 +446,16 @@ export async function runFetchChain(url: string, opts: FetchChainOptions): Promi
       // — five hops, where the chain's default of 3 failed the whole rescue with "too many
       // redirects". Every hop is still re-validated against the SSRF guard inside safeFetch, so
       // this widens the budget, not the trust.
-      const { res } = await safeFetch(waybackLookupUrl(fetchUrl), jobId, 8)
+      const { res } = await safeFetch(waybackLookupUrl(fetchUrl), jobId, 8, budget)
       if (!res.ok) {
         const ms = attempt(attempts, 'wayback', tW, { ok: false, error: `HTTP ${res.status}` })
         onArchive?.({ ok: false, ms, snapshotAgeDays: null })
         return fail(originalReason)
       }
       const body = await res.text()
-      const { document } = parseHTML(body)
-      const article = new Readability(document as unknown as ConstructorParameters<typeof Readability>[0]).parse()
-      const raw = article?.textContent?.trim()
-      const text = raw ? normalizeText(raw) : raw
+      // Parsing runs in the same worker pool as step 1 (html-parse.ts) — Readability only, no
+      // site adapter, matching what the inline wayback step always did.
+      const { text } = await readabilityText(body, budget)
       if (!text || text.length < MIN_USABLE_CHARS) {
         const ms = attempt(attempts, 'wayback', tW, { ok: false, chars: text?.length ?? 0, error: `thin (${text?.length ?? 0} chars)` })
         onArchive?.({ ok: false, ms, snapshotAgeDays: null })
@@ -457,11 +479,17 @@ export async function runFetchChain(url: string, opts: FetchChainOptions): Promi
 
   // ── Step 3: Tavily Extract — the only paid step, and therefore the last ──
   const t3 = performance.now()
+  // Tavily's SDK takes a seconds `timeout`, not an AbortSignal, so the budget cannot abort an
+  // in-flight extract: check it first (a paid call must not fire after the budget is spent)
+  // and clamp the SDK's own timeout to whatever the budget has left.
+  if (budget.aborted) return fail(budgetReason)
+  const remainingMs = budgetMs - (performance.now() - chainStartedAt)
+  const tavilyTimeoutSec = Math.max(1, Math.min(30, Math.ceil(remainingMs / 1000)))
   try {
     const ex = await tvly.extract([fetchUrl], {
       extractDepth: 'basic',
       format: 'markdown',
-      timeout: 30,
+      timeout: tavilyTimeoutSec,
       includeUsage: true,
     })
     // The call resolved — Tavily billed it — regardless of whether this URL ends up in
