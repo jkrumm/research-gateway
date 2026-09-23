@@ -4,6 +4,7 @@ import { z } from 'zod'
 import { env } from '../env.js'
 import { log } from '../lib/log.js'
 import { capText, TEXT_CAP } from './extract.js'
+import { createRateGate } from './rate-gate.js'
 import {
   badDockerName,
   badPackageName,
@@ -779,23 +780,9 @@ async function lookupPubmed(query: string, limit: number, ledger: RetrievalLedge
 // ── arxiv ────────────────────────────────────────────────────────────────────
 // export.arxiv.org's own rate policy: 1 request / 3 s, ONE connection — process-wide, not
 // per-worker or per-job, since every worker of every concurrent job shares this one gateway
-// process. A simple serialized queue with a floor between dispatches enforces both halves at
-// once (the chain IS the one connection).
-function createRateGate(minIntervalMs: number): <T>(fn: () => Promise<T>) => Promise<T> {
-  let chain: Promise<void> = Promise.resolve()
-  let lastRunAt = 0
-  return function gated<T>(fn: () => Promise<T>): Promise<T> {
-    const runAfter = chain.then(async () => {
-      const wait = lastRunAt + minIntervalMs - Date.now()
-      if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait))
-      lastRunAt = Date.now()
-    })
-    // The queue must advance even when a call fails — a failed request that never released
-    // the chain would wedge every subsequent call behind it for the rest of the process.
-    chain = runAfter.catch(() => {})
-    return runAfter.then(fn)
-  }
-}
+// process. `createRateGate` (rate-gate.ts) is what enforces both halves at once: it serializes
+// calls AND floors the interval between them, and lives in its own env-free module so the
+// serialization property itself is unit-tested without this file's env.js import chain.
 const arxivGate = createRateGate(3_000)
 const semanticScholarGate = createRateGate(1_000)
 
