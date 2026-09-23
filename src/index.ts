@@ -10,7 +10,9 @@ import { probeRoutes } from './routes/probe.js'
 import { log } from './lib/log.js'
 import { flushOtel } from './lib/otel.js'
 import { startMemoryWatch } from './lib/memory-watch.js'
-import { beginDraining, jobCounts, waitForDrain, setMemoryPressure } from './lib/job-store.js'
+import { startLoopWatch } from './lib/loop-watch.js'
+import { beginDraining, jobCounts, waitForDrain, setMemoryPressure, setMemoryHold, releaseAllOwnedLeases } from './lib/job-store.js'
+import { startAdoptionLoop } from './lib/run-job.js'
 
 // ── Process-level diagnostics ────────────────────────────────────────────────
 // On 2026-07-31 the container exited with code 0, mid-flight, during a deep job,
@@ -19,13 +21,15 @@ import { beginDraining, jobCounts, waitForDrain, setMemoryPressure } from './lib
 // path was already guarded (reportUsage cannot reject, withSlot is safe,
 // startResearchJob catches everything). At the time, the job store was in-memory, so
 // that restart took every in-flight job with it — the job store now persists to sqlite
-// (lib/job-db.ts) with heartbeat-based reaping (lib/job-store.ts), so a restart like
-// this one no longer silently drops a job: a `done` job's result survives, and one
-// caught mid-run comes back as a terminal `error` once its heartbeat goes stale, not
-// a vanished 404.
+// (lib/job-db.ts) with a lease/checkpoint model (lib/job-store.ts, lib/run-job.ts's
+// adoption loop), so a restart like this one no longer silently drops a job: a `done` job's
+// result survives, and one caught mid-run is ADOPTED once its previous owner's lease goes
+// stale and resumed from its last completed round's checkpoint, not reaped to a terminal
+// error.
 //
-// 2026-09-04 07:37 UTC, the same shape again — "exit 0, no process.* line", 15 jobs
-// reaped at boot — and this time the VPS kernel journal had the answer: the memory
+// 2026-09-04 07:37 UTC, the same shape again — "exit 0, no process.* line", 15 jobs lost
+// at boot (this was still the reap-to-error era) — and this time the VPS kernel journal had
+// the answer: the memory
 // cgroup OOM killer SIGKILLed bun at exactly the 1 GiB `mem_limit`. SIGKILL runs no
 // handler, so NONE of the hooks below can ever describe that exit; and `docker inspect`
 // on the restarted container reports `ExitCode: 0` / `OOMKilled: false` because both
@@ -96,8 +100,16 @@ async function drainThenExit(code: number): Promise<void> {
 
   const { remaining, waitedMs } = await waitForDrain(env.SHUTDOWN_DRAIN_MS)
   // Error severity when remaining > 0 (see otel-format.ts ERROR_EVENTS) — those are jobs
-  // still running when the deadline elapsed, about to be lost exactly like a reap.
+  // still running when the deadline elapsed.
   log('process.drained', { remaining, waitedMs })
+  if (remaining > 0) {
+    // These jobs are NOT cancelled — this process exits regardless in a few seconds — but
+    // releasing their leases NOW means whichever replica survives this drain adopts them
+    // immediately (job-store.ts's `runAdoptionPass`/`claimStaleJobs`) instead of waiting out
+    // the full HEARTBEAT_STALE_MS after this process is already gone. Each resumes from its
+    // last completed round's checkpoint, not from scratch.
+    releaseAllOwnedLeases()
+  }
 
   // `waitForDrain` watches the job SLOT, which frees the moment the agent loop returns — before
   // the MCP `job_wait` holding that job's result has written its response back. Exiting on that
@@ -135,7 +147,15 @@ process.on('unhandledRejection', (reason) => {
   const stack = reason instanceof Error ? reason.stack?.slice(0, 2_000) : undefined
   log('process.unhandledRejection', { reason: String(reason), stack })
 })
-startMemoryWatch(setMemoryPressure)
+startMemoryWatch(setMemoryPressure, setMemoryHold)
+// See lib/loop-watch.ts — measures timer drift every 5 s so a starved loop (the 2026-09-20
+// reaped-on-read / worker.failed shape, listener dead while jobs kept running) is visible
+// and measurable instead of only diagnosable after the fact.
+startLoopWatch()
+// Claims (and resumes from checkpoint) every job whose lease went stale before this process
+// booted, then keeps doing so every 30s — see run-job.ts's header comment for why this lives
+// there rather than in job-store.ts (an import-cycle guard, not a layering preference).
+startAdoptionLoop()
 // The drain window is only real while the compose `stop_grace_period` (vps repo) stays above
 // it, and those two numbers live in two repos. If they ever drift the wrong way, Docker
 // SIGKILLs before `drainThenExit` gets to log anything — the identical silent shape this file

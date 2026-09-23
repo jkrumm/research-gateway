@@ -7,6 +7,7 @@ import { applyConsistencyGate, CONSISTENCY_WARNING } from './extract.js'
 import { assembleReport, nextRoundQuestions } from './assemble.js'
 import { mergeLedgers, type LedgerSnapshot } from './ledger.js'
 import { groundReport } from './ground.js'
+import { CHECKPOINT_VERSION, type ResearchCheckpoint } from './checkpoint.js'
 import type { Depth, ResearchReport, SubmittedReport, SubQuestion, WorkerDigest } from './schema.js'
 import { log } from '../lib/log.js'
 import { computeCost, emptyUsage, addUsage } from '../lib/usage.js'
@@ -119,9 +120,12 @@ function tracedRound(args: {
 export async function runResearch(
   input: { query: string; context?: string | undefined; depth?: Depth; jobId?: string },
   onUsage?: (stats: JobUsage) => void,
+  opts?: { checkpoint?: ResearchCheckpoint | null; onCheckpoint?: (checkpoint: ResearchCheckpoint) => void },
 ): Promise<ResearchReport> {
   const depth = input.depth ?? 'standard'
   const jobId = input.jobId ?? '-'
+  const checkpoint = opts?.checkpoint ?? null
+  const onCheckpoint = opts?.onCheckpoint
 
   // The whole job is one trace, and its id is derived from the jobId — so a job id from the
   // REST/MCP surface is enough to find the trace, with no lookup table in between.
@@ -136,30 +140,57 @@ export async function runResearch(
       const profile = profiles[depth]
       const start = Date.now()
 
-      log('research.start', { jobId, depth, queryPreview: input.query.slice(0, 200) })
-
-      let leadUsage = emptyUsage()
-      let workerUsage = emptyUsage()
-      const allDigests: WorkerDigest[] = []
-      const askedLower = new Set<string>()
-      const allLedgers: LedgerSnapshot[] = []
-      let workersDispatchedTotal = 0
+      // Everything below is either FRESH state or restored from a checkpoint taken after a
+      // previous round completed (agent/checkpoint.ts) — see run-job.ts's adoption loop for
+      // where `checkpoint` comes from. Search-spend meters (tools.ts) are NOT restorable:
+      // they are in-memory and reset on every process boot, so a resumed job's reported
+      // search cost covers only the post-resume portion. LLM usage below has no such gap — it
+      // travels inside the checkpoint and is correct across a resume.
+      let leadUsage = checkpoint?.leadUsage ?? emptyUsage()
+      let workerUsage = checkpoint?.workerUsage ?? emptyUsage()
+      const allDigests: WorkerDigest[] = checkpoint ? [...checkpoint.digests] : []
+      const askedLower = new Set<string>(checkpoint?.askedLower ?? [])
+      const allLedgers: LedgerSnapshot[] = checkpoint ? [...checkpoint.ledgers] : []
+      let workersDispatchedTotal = checkpoint?.workersDispatchedTotal ?? 0
       // Job-level failure causes, across every round and the one retry — feeds both the
       // zero-evidence throw's message and `shouldRetryRound`'s decision. A job-level latch:
       // one retry per JOB, not per round, so a job with two zero-digest rounds doesn't
       // silently double its worker spend chasing the same upstream outage.
-      const allFailures: string[] = []
-      let alreadyRetried = false
+      const allFailures: string[] = checkpoint ? [...checkpoint.failures] : []
+      let alreadyRetried = checkpoint?.alreadyRetried ?? false
 
-      // No span wrapper here — planResearch opens `research.plan` itself, so the quick-depth
-      // path (which makes no LLM call at all) produces no zero-duration span. Same for
-      // synthesize/`research.synthesis` below.
-      const { plan, usage: planUsage } = await planResearch({ query: input.query, context: input.context, depth, jobId })
-      leadUsage = addUsage(leadUsage, planUsage)
-      log('research.plan', { jobId, subQuestions: plan.subQuestions.length })
+      const buildCheckpoint = (subQuestions: SubQuestion[], round: number): ResearchCheckpoint => ({
+        version: CHECKPOINT_VERSION,
+        subQuestions,
+        round,
+        digests: allDigests,
+        ledgers: allLedgers,
+        askedLower: [...askedLower],
+        failures: allFailures,
+        alreadyRetried,
+        leadUsage,
+        workerUsage,
+        workersDispatchedTotal,
+      })
 
-      let currentQuestions: SubQuestion[] = plan.subQuestions
-      let round = 1
+      let currentQuestions: SubQuestion[]
+      let round: number
+      if (checkpoint) {
+        currentQuestions = checkpoint.subQuestions
+        round = checkpoint.round
+        log('research.resumed', { jobId, round, digests: allDigests.length })
+      } else {
+        // No span wrapper here — planResearch opens `research.plan` itself, so the
+        // quick-depth path (which makes no LLM call at all) produces no zero-duration span.
+        // Same for synthesize/`research.synthesis` below.
+        const { plan, usage: planUsage } = await planResearch({ query: input.query, context: input.context, depth, jobId })
+        leadUsage = addUsage(leadUsage, planUsage)
+        log('research.plan', { jobId, subQuestions: plan.subQuestions.length })
+        currentQuestions = plan.subQuestions
+        round = 1
+        onCheckpoint?.(buildCheckpoint(currentQuestions, round))
+      }
+
       while (currentQuestions.length > 0) {
         for (const sq of currentQuestions) askedLower.add(sq.question.trim().toLowerCase())
 
@@ -239,13 +270,17 @@ export async function runResearch(
           digestsReturned: roundDigests.length,
         })
 
-        if (round >= profile.rounds) break
+        // Checkpoint after this completed round — including its retry, if one ran — with the
+        // NEXT round's questions (empty once there is nothing left to run, which resumes
+        // straight into synthesis below rather than re-entering this loop for nothing).
+        const gapQuestions = round < profile.rounds ? nextRoundQuestions(roundDigests, askedLower, profile.gapWorkers) : []
+        const nextRound = gapQuestions.length > 0 ? round + 1 : round
+        onCheckpoint?.(buildCheckpoint(gapQuestions, nextRound))
 
-        const gapQuestions = nextRoundQuestions(roundDigests, askedLower, profile.gapWorkers)
         if (gapQuestions.length === 0) break
 
         currentQuestions = gapQuestions
-        round += 1
+        round = nextRound
       }
 
       // Guard clause: no digest was ever produced — every worker failed or timed out on every

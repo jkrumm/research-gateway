@@ -42,8 +42,13 @@ talk to — and plain bearer HTTP for everything else (Hermes, scripts, curl).
 - **Grounding:** a retrieval ledger records what each tool actually returned; findings and
   citations are gated against it in code at both the worker and job boundary, so a page the
   run could not fetch can never back a claim. See [Grounding](#grounding).
-- **Job store:** `bun:sqlite`, status-only durability with heartbeat-based reaping — a `done`
-  result survives a redeploy; a job caught mid-run comes back as a terminal `error`.
+- **Job store:** `bun:sqlite`, an owner LEASE per job (heartbeat-renewed) plus a resumable
+  checkpoint — a `done` result survives a redeploy, and a job whose owner's lease goes stale
+  (a crash, a SIGKILL, an unclean restart) is CLAIMED by whichever process notices next and
+  resumed from its last completed round, not reaped to a terminal error. A poison job — one
+  that crashes `MAX_JOB_ATTEMPTS` processes in a row — still ends terminal, so this is a
+  superset of the old reap-on-restart behaviour, not a replacement of its safety net. See
+  [Restarts](#restarts-and-what-they-cost).
 - **Telemetry:** per-job spend to argo, traces and logs to ClickStack over OTLP — SDK-free.
 
 ## Contract
@@ -51,7 +56,7 @@ talk to — and plain bearer HTTP for everything else (Hermes, scripts, curl).
 | Endpoint | Auth | Body / Params | Returns |
 |-|-|-|-|
 | `GET /` | public | — | discovery: the public route list, `/openapi`, the MCP tools |
-| `GET /health` | public | — | `{ status: "ok", lastRestartAt, reaped, interrupted }` — only `status` gates anything (Docker healthcheck, rollhook); the counts show an unclean restart to a keyword monitor. See [Restarts](#restarts-and-what-they-cost) |
+| `GET /health` | public | — | `{ status: "ok", lastRestartAt, resumed, failedAfterRestarts }` — only `status` gates anything (Docker healthcheck, rollhook); the counts show adoption/crash-loop activity to a keyword monitor. Also carries `draining`, `jobs`, the cgroup `memory` ratio and `eventLoopLagMs` / `eventLoopLagPeakMs`. See [Restarts](#restarts-and-what-they-cost) |
 | `GET /health/render` | public | — | `{ renderer, active, queued, error }` — the sidecar. **Deliberately not part of `/health`**: the renderer is optional, and a broken one must not block deploys of a gateway that is otherwise fine |
 | `GET /health/tavily` | public | — | live account state from `api.tavily.com/usage` incl. `overPlan` — crossing into pay-as-you-go was otherwise silent |
 | `GET /health/ytdlp` | public | — | `{ ytdlp, version, error }` — `yt-dlp --version` inside the container |
@@ -260,55 +265,106 @@ Dashboard tiles and SQL: [`docs/hyperdx-dashboard.md`](./docs/hyperdx-dashboard.
 
 ## Restarts, and what they cost
 
-Status-only durability: the agent's in-flight work is never resumed, so a job that loses its
-process is lost. Two mechanisms keep that from being the normal case.
+A job's status, query/depth, terminal result, and enough of the agent's own progress to RESUME
+it all survive a process restart — the lease/checkpoint model below. A job whose owning
+process disappears is not lost; it is ADOPTED by whichever process notices next and continued
+from its last completed round. Three mechanisms make that the normal case, and a fourth is the
+backstop for the job it still cannot save.
 
-**A deploy drains rather than kills.** SIGTERM stops admitting new jobs, rejects the ones still
-queued behind the concurrency semaphore with "never started — resubmit", and then waits up to
-`SHUTDOWN_DRAIN_MS` for the running ones to finish before flushing OTel and exiting. This is
-free because of the rollout order: rollhook starts the new container and waits for it to be
-healthy *before* stopping the old one, and both replicas write through to the same sqlite job
-store — so a client polling through the new container still sees the old replica's job reach
-`done`. The cost is a longer deploy tail when a job is in flight.
+**Ownership is a lease, not a fact recorded once.** Every job row carries an `owner` (a
+per-process id) and a heartbeat, renewed every 15s for the job's ENTIRE lifetime — queued and
+running alike, since a deep job can legitimately wait 30+ minutes behind others for a
+concurrency slot. `put()`'s writes are fenced to the CURRENT owner (`WHERE job.owner IS
+excluded.owner`), so a process that has lost its lease cannot overwrite the adopter's row even
+if it has not yet noticed — its own heartbeat tick discovers this independently and logs
+`job.lease_lost`. Whenever a heartbeat goes stale (>90s, six missed ticks) — a crash, a
+SIGKILL, an unclean restart — `claimStale` (one `UPDATE … RETURNING` statement; SQLite
+serializes writers across the two replicas a rolling deploy briefly runs against the same
+sqlite file, so this alone is the compare-and-set that stops two processes from both claiming
+one job) reassigns the row and resets it to `queued`. After every completed round, `run.ts`
+saves a checkpoint (the next round's questions, every digest and ledger gathered so far, usage
+so far) to that same row; the adopter resumes from it (`job.resumed`) instead of re-planning
+and re-researching from scratch. A poison job — one that crashes `MAX_JOB_ATTEMPTS` (3)
+processes in a row — is given up on rather than resurrected forever (`job.crash_loop_guard`,
+terminal `error`). The one gap: the per-job SEARCH-spend meters (`agent/tools.ts`) are
+in-memory and reset on every boot, so a resumed job's reported search cost covers only its
+post-adoption portion — LLM usage has no such gap, since it travels inside the checkpoint.
 
-The window is sized off the measured distribution, not a guess:
+**A deploy drains rather than kills, and now hands off rather than fails.** SIGTERM stops
+admitting new jobs. Every job still queued behind the concurrency semaphore has its lease
+RELEASED and its heartbeat silenced (`job.drain_handed_off`) rather than being failed with
+"resubmit" — a sibling replica (or this same container's next boot) claims it immediately,
+since a released lease is claimable with no staleness wait at all. Jobs already RUNNING get up
+to `SHUTDOWN_DRAIN_MS` to finish before the process falls through to flushing OTel and exiting;
+if that window elapses with jobs still running, THEIR leases are released too
+(`releaseAllOwnedLeases`, `index.ts`) so the next replica adopts them within moments rather
+than waiting out the full 90s staleness window after this process is already gone. None of this
+needs the sibling replica to be new: rollhook starts the new container and waits for it healthy
+*before* stopping the old one, and both write through to the same sqlite file, so a client
+polling through the new container sees whichever replica's job reaches `done`.
+
+The `SHUTDOWN_DRAIN_MS` window itself is sized off the measured distribution, not a guess:
 [docs/measurements.md § Job duration](./docs/measurements.md#job-duration-by-depth--the-30-day-span-record)
 is the single source for those numbers and the place to re-derive them. The short version is
 why the first value was wrong — 600s came from one fast deep run, and the span record says it
-would have missed 39% of deep jobs. At 1800s the observed maximum clears with headroom, and the
-ceiling stops being this number: a deep job's own summed phase timeouts cap it near 34 minutes
-anyway. A job that still outruns the window gets cut — `process.drained` logs `remaining` at
-**error** level when that happens, which is the number to re-read before anyone argues for
-agent-loop checkpointing.
+would have missed 39% of deep jobs. At 1800s the observed maximum clears with headroom — there
+is no wall-clock ceiling on a job's own duration any more (depth controls breadth, not a time
+budget, since 2026-09-12), so this window is purely about how long a deploy is willing to wait
+before handing a still-running job to the next replica instead. `process.drained` logs
+`remaining` at **error** level when the window elapses with jobs still running — read alongside
+`job.resumed` on whichever replica claims them next.
 
-**Memory pressure sheds instead of dying.** `lib/memory-watch.ts` samples the cgroup every 5 s;
-at 85% of the limit it logs `process.memory_pressure` *and* flips admission to refuse new jobs,
-re-arming (`process.memory_recovered`) below 75%. A watchdog that only logged is what the
-2026-09-04 OOM kill exposed — all three concurrent jobs died with the process because nothing
-upstream ever stopped admitting more.
+**Memory pressure sheds instead of dying, with a softer warning first.** `lib/memory-watch.ts`
+samples the cgroup every 5 s. At 70% it HOLDS dispatch (`process.memory_hold`) — a queued job
+simply waits for a free slot, never refused — releasing at 65%; at 85% it logs
+`process.memory_pressure` and flips admission to refuse NEW submissions outright, re-arming
+(`process.memory_recovered`) below 75%. A watchdog that only logged (no shedding at all) is
+what the 2026-09-04 OOM kill exposed — all three concurrent jobs died with the process because
+nothing upstream ever stopped admitting more.
 
-What survives neither is a SIGKILL. The next boot reaps any job whose heartbeat is >90s stale to
-a terminal `error` ("lost, resubmit"), and that reap is the thing to watch:
+**Event-loop stalls are measured, not inferred — and the one that motivated this is now fixed
+structurally.** `lib/loop-watch.ts` samples timer drift every 5 s; a lag over 1 s logs
+`process.loop_lag` at error level, and `GET /health` exposes both the latest sample
+(`eventLoopLagMs`) and the worst of the last 60 s (`eventLoopLagPeakMs`) — the latest alone is
+not enough, because a monitor polling every 30-60 s usually reads the quiet interval that
+followed the stall. 2026-09-20: a deep job's synchronous HTML parse (linkedom + Readability)
+blocked this one shared event loop long enough to starve heartbeats, the idle watchdog, and the
+HTTP listener together — a LIVE process that looked dead to everything polling it. Three
+things now prevent a repeat: `MAX_BODY_BYTES` bounds what `fetch-chain.ts` DOWNLOADS (a
+byte-counting reader that cancels the response once it is over), `PARSE_INPUT_CAP` bounds what
+it PARSES, and — the structural fix PR #23's own header conceded was still missing — the parse
+itself now runs on a small pool of Bun Workers (`agent/parse-pool.ts`), not this loop, with its
+own 60s per-parse hang guard. A worker that hangs or crashes is replaced; the fetch chain sees
+that as an ordinary step-1 miss and falls through to lightpanda/Tavily Extract exactly as any
+other parse failure always has.
 
-- `job.reaped` is logged at **error** level with a `count` — the HyperDX alert fires on it,
-  and on `job.reaped_on_read` too. Four more alerts cover the failures that are not a hard
-  kill: `job.error`, an `worker.failed`/`plan.fallback` burst, memory pressure, and a drain
-  that cut live jobs. Thresholds and the reasoning: `docs/hyperdx-dashboard.md` § Alerts.
-- `GET /health` carries `lastRestartAt`, `reaped` (this boot), `interrupted` (this process
-  lifetime), `draining`, `jobs.running` / `jobs.queued` and the cgroup `memory` ratio — enough
-  for a keyword monitor with no log access to see load, shedding and shutdown state. Only
-  `status` gates anything; a draining container still serves polls correctly, so it stays `ok`.
+What the lease above still cannot save is a POISON job — see `job.crash_loop_guard` above — and
+that guard, plus a lost-process's own diagnostics, are what to watch:
+
+- `job.lease_lost` / `job.resumed` / `job.crash_loop_guard` are the three lifecycle events —
+  `job.crash_loop_guard` is the one at **error** level worth alerting on; `job.resumed` is the
+  routine, expected shape of adoption after any unclean restart. Four more alerts cover
+  failures that are not this: `job.error`, a `worker.failed`/`plan.fallback` burst, memory
+  pressure, and a drain that cut live jobs. Thresholds and the reasoning:
+  `docs/hyperdx-dashboard.md` § Alerts.
+- `GET /health` carries `lastRestartAt`, `resumed` (this process lifetime), `failedAfterRestarts`,
+  `draining`, `jobs.running` / `jobs.queued`, the cgroup `memory` ratio and `eventLoopLagMs` /
+  `eventLoopLagPeakMs` — enough for a keyword monitor with no log access to see load, adoption
+  and shutdown state. Only `status` gates anything; a draining container still serves polls
+  correctly, so it stays `ok`.
 - **A kernel OOM kill leaves no container log line, and `docker inspect` on the restarted
   container reports `ExitCode: 0` / `OOMKilled: false`** — both describe the *current* run.
   That is how 2026-07-31 and 2026-09-04 both read as "mystery exit 0"; the VPS kernel journal
   (`journalctl -k | grep oom`) held the 2026-09-04 answer: SIGKILL at exactly the 1 GiB
-  `mem_limit`, 15 jobs reaped. `lib/memory-watch.ts` now logs `process.memory_pressure` at
-  error level when the cgroup's `memory.current` crosses 85% of its limit (sampled every
-  5 s, with the `memory.events` counters) — the only in-process warning a SIGKILL allows. `process.exit` / `beforeExit` / `uncaughtException` / `unhandledRejection`
-  are logged too, for every exit that *is* in-process.
-- Markdown-only pushes do not deploy (`paths-ignore`); everything else does. With the drain in
-  place a deploy mid-job is survivable rather than destructive, but `GET /health`'s `jobs`
-  counts still tell you whether you are about to add ten minutes to the deploy tail.
+  `mem_limit`, 15 jobs lost (this was still the reap-to-error era — the same event today would
+  be adopted, not lost). `lib/memory-watch.ts` logs `process.memory_pressure` at error level
+  when the cgroup's `memory.current` crosses 85% of its limit (sampled every 5 s, with the
+  `memory.events` counters) — the only in-process warning a SIGKILL allows. `process.exit` /
+  `beforeExit` / `uncaughtException` / `unhandledRejection` are logged too, for every exit
+  that *is* in-process.
+- Markdown-only pushes do not deploy (`paths-ignore`); everything else does. With the drain and
+  hand-off in place a deploy mid-job is survivable rather than destructive, but `GET /health`'s
+  `jobs` counts still tell you whether you are about to add minutes to the deploy tail.
 
 ## Deploy
 

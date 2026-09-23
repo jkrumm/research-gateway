@@ -1,6 +1,6 @@
 import { env } from '../env.js'
 import type { ResearchReport, Depth, JobStatus } from '../agent/schema.js'
-import { openJobDb } from './job-db.js'
+import { openJobDb, type JobRecord } from './job-db.js'
 import { log } from './log.js'
 import { admit, canDispatch, type AdmissionRefusal } from './admission.js'
 
@@ -24,35 +24,47 @@ export interface Job {
   // (while 'queued', possibly for 30+ minutes behind other deep jobs) through 'running' to
   // completion. Absent only for a legacy pre-heartbeat row or a terminal job.
   heartbeatAt?: number
+  /** The process instance currently leasing this job — see `INSTANCE_ID` below. */
+  owner?: string
+  /** How many times this job has been (re)claimed after a lost lease. 0 until it happens once. */
+  attempts: number
+  /** A serialized `ResearchCheckpoint` (agent/checkpoint.ts), or absent if none exists yet. */
+  checkpointJson?: string
 }
 
-// Shown to a caller polling a job whose heartbeat went stale (or was never set) while it was
-// 'queued' or 'running' — the process that was executing it is presumed gone, so there is
-// nothing left to wait for. Status-only durability: the AGENT's own in-flight work is not
-// resumed (checkpoint/resume is a separate, later change), so the honest answer is "lost,
-// resubmit" rather than "still running" (which would leave a caller polling forever for work
-// nobody is doing).
-const INTERRUPTED_MESSAGE =
-  'This research job was lost when the service restarted before it finished running. It cannot be resumed — resubmit the query.'
+// One id per PROCESS, not per job: `owner` throughout job-db.ts means "whichever process
+// currently proves a job alive by heartbeating it". `crypto.randomUUID()` rather than a
+// hostname/pid — two replicas can share a hostname (containers on the same host/port), and a
+// pid recycles across a restart inside the same container, either of which would let a fresh
+// process's writes slip past an old row's owner fence by coincidence.
+export const INSTANCE_ID = crypto.randomUUID()
 
-// Shown to a waiter still sitting in the semaphore queue when `beginDraining` rejects it: the
-// job never started (unlike INTERRUPTED_MESSAGE, which covers one that was queued/running and
-// lost its heartbeat), so there is nothing to reap on the next boot — just resubmit.
-const DRAIN_QUEUED_MESSAGE =
-  'This research job was still queued when the service began restarting. It never started — resubmit the query.'
+// How many times a job may be (re)claimed after a lost lease before it is given up on rather
+// than resurrected again — the crash-loop guard for a POISON job: one that reproducibly kills
+// (or wedges) whatever process runs it, so re-adopting it forever would just move the crash
+// from replica to replica instead of surfacing it. Not a runtime cap on a healthy job — see
+// ~/.claude/rules/agent-limits.md; this bounds RESTARTS of one job record, not a job's
+// duration or step count.
+export const MAX_JOB_ATTEMPTS = 3
+
+// Rejects a `withSlot` waiter that a drain is handing off to another replica rather than
+// failing outright — `run-job.ts`'s `.catch` recognizes this type and does NOT turn it into
+// `status: 'error'`, since the job is not lost, only no longer this process's to run.
+export class HandedOffError extends Error {}
 
 // How often the owning process re-proves a job (queued OR running) is alive (see
 // `startHeartbeat`), and how far behind that a heartbeat has to fall before another process
-// may treat the job as dead. The gap between the two (90s vs 15s — 6 missed ticks) absorbs an
-// occasional slow event-loop tick without a false reap; it is NOT meant to absorb a genuinely
-// dead process for long, since that is exactly the scenario this whole mechanism exists to
-// detect promptly.
+// may claim the job as abandoned (see `claimStaleJobs`). The gap between the two (90s vs 15s —
+// 6 missed ticks) absorbs an occasional slow event-loop tick without a false claim; it is NOT
+// meant to absorb a genuinely dead process for long, since that is exactly the scenario this
+// whole mechanism exists to detect promptly.
 const HEARTBEAT_INTERVAL_MS = 15_000
 const HEARTBEAT_STALE_MS = 90_000
 
 // `jobs` is the hot-path source of truth (getJob/job_wait poll it every couple seconds); `db`
-// is the durable write-through so a job's status and terminal result survive a restart. Every
-// create and status transition writes to both, synchronously — see createJob/updateJob below.
+// is the durable write-through so a job's status, result and resumable checkpoint survive a
+// restart. Every create and status transition writes to both, synchronously — see
+// createJob/updateJob below.
 const db = openJobDb(env.JOB_DB_PATH)
 
 const jobs = new Map<string, Job>()
@@ -63,31 +75,40 @@ const jobs = new Map<string, Job>()
 // stays frozen at whatever it read at boot. `getJob` uses this to decide whose word to trust.
 const owned = new Set<string>()
 
-// ── Boot: hydrate from the durable store ────────────────────────────────────
-// A job that reached 'done'/'error' survives with its full result. A job that was
-// 'queued'/'running' with a stale (or absent) heartbeat is reaped straight to a terminal
-// 'error' — never rehydrated as 'running' (see INTERRUPTED_MESSAGE above). Deliberately NOT a
-// blanket "everything queued/running at boot is dead": rollhook's rolling deploy runs two
-// replicas against the SAME sqlite file for a brief overlap, and the old replica may still be
-// genuinely alive and heartbeating a job when this process boots. Only a stale heartbeat means
-// nobody is left proving the job alive.
-const reaped = db.reapInterrupted(INTERRUPTED_MESSAGE, Date.now() - HEARTBEAT_STALE_MS)
-if (reaped.length > 0) {
-  // Error level (otel-format.ts ERROR_EVENTS) with a `count`: every reaped job is one a caller
-  // lost to a restart, and this line is what the HyperDX alert fires on.
-  log('job.reaped', { count: reaped.length, jobIds: reaped.map((job) => job.jobId) })
-}
+// Stop-functions for every heartbeat THIS process currently runs, keyed by jobId — so a drain
+// can silence a specific job's heartbeat (handing it off) without waiting for `run-job.ts`'s
+// own `.finally()` to get around to it. Entries remove themselves once stopped, either
+// normally (the job reached a terminal status) or via a hand-off.
+const heartbeatStoppers = new Map<string, () => void>()
+
+// ── Boot: hydrate the in-memory cache from the durable store ────────────────
+// No reap at boot any more: a job whose heartbeat is stale is CLAIMED (see `claimStaleJobs`,
+// driven by run-job.ts's adoption loop) and resumed from its checkpoint, never written over
+// with a terminal error on sight. `startAdoptionLoop` (run-job.ts) is what actually calls
+// `claimStaleJobs` at boot and every 30s after — this module only owns the store itself.
 for (const job of db.all()) {
   jobs.set(job.jobId, job)
 }
 
-// Surfaced on GET /health so a keyword monitor can see an unclean restart without log access.
-// `reaped` is this boot's reap; `interrupted` also counts jobs reaped later on read (getJob).
+// Surfaced on GET /health so a keyword monitor can see restart/resume activity without log
+// access. `resumed` and `failedAfterRestarts` replace the old `reaped`/`interrupted` counters
+// now that a stale job is adopted rather than reaped — see README § Restarts.
 const bootedAt = new Date().toISOString()
-let interruptedCount = reaped.length
+let resumedCount = 0
+let failedAfterRestartsCount = 0
 
-export function restartStats(): { lastRestartAt: string; reaped: number; interrupted: number } {
-  return { lastRestartAt: bootedAt, reaped: reaped.length, interrupted: interruptedCount }
+export function restartStats(): { lastRestartAt: string; resumed: number; failedAfterRestarts: number } {
+  return { lastRestartAt: bootedAt, resumed: resumedCount, failedAfterRestarts: failedAfterRestartsCount }
+}
+
+/** Bumped by run-job.ts's adoption loop for every job it resumes from a lost lease. */
+export function notifyJobResumed(): void {
+  resumedCount++
+}
+
+/** Bumped by run-job.ts's adoption loop for every job given up on by `MAX_JOB_ATTEMPTS`. */
+export function notifyJobFailedAfterRestarts(): void {
+  failedAfterRestartsCount++
 }
 
 const JOB_TTL_MS = env.JOB_TTL_MINUTES * 60_000
@@ -121,79 +142,118 @@ export function createJob(input: { query: string; depth: Depth; context?: string
     depth: input.depth,
     ...(input.context !== undefined ? { context: input.context } : {}),
     createdAt: Date.now(),
+    owner: INSTANCE_ID,
+    attempts: 0,
   }
   jobs.set(job.jobId, job)
-  db.put(job)
+  db.put(job) // a brand-new row: always succeeds, there is no existing lease to fence against
   return job
 }
 
+// READ-ONLY. A job this process owns and is heartbeating is, by definition, still being
+// executed by this very process right now — there is nothing to re-check, and nothing here
+// ever writes. A job this process does NOT own (or has never seen) is read fresh from the
+// shared file, since a sibling replica may be actively writing to that row while this
+// process's cached copy (hydrated once at boot) sits frozen. This replaces the old
+// reap-on-read: a stale lease is no longer this function's problem to fix — `claimStaleJobs`
+// (below, driven by run-job.ts's adoption loop) is the only thing that ever adopts a job away
+// from a dead owner, and it runs on its own schedule, not on a caller's poll.
 export function getJob(jobId: string): Job | undefined {
-  let job = jobs.get(jobId)
-  if (!job || (job.status !== 'running' && job.status !== 'queued')) return job
-
-  // A non-terminal job this process does NOT own is being executed by the sibling replica of a
-  // rolling deploy, which heartbeats it into the shared sqlite file this process never re-reads.
-  // Trusting the boot-time snapshot here reaped a LIVE job ~90s after this replica booted and
-  // wrote 'error' over the owner's row — the precise failure the drain exists to prevent,
-  // reintroduced from the other side, and made far more likely by the drain itself: the old
-  // replica now outlives the new one's boot by up to SHUTDOWN_DRAIN_MS instead of 2 seconds.
-  if (!owned.has(jobId)) {
-    const fresh = db.get(jobId)
-    // A missing row means the cached snapshot is all there is (sweep only ever deletes terminal
-    // jobs, so this is not reachable in practice) — fall through to the staleness check below
-    // rather than hand back a 'running' job nothing is proving alive.
-    if (fresh) {
-      job = fresh
-      jobs.set(jobId, fresh)
-      if (fresh.status !== 'running' && fresh.status !== 'queued') return fresh
-    }
+  const cached = jobs.get(jobId)
+  if (cached && owned.has(jobId)) return cached
+  const fresh = db.get(jobId)
+  if (fresh) {
+    jobs.set(jobId, fresh)
+    return fresh
   }
-
-  // Read-time half of the heartbeat guarantee: a job hydrated at boot as 'queued'/'running'
-  // (owned by whichever replica actually created or started it) can go stale between boot and
-  // the next reapInterrupted call, which only runs once at startup. Without this check, a
-  // caller could poll such an orphaned job and wait indefinitely. A job this process itself
-  // owns has its heartbeatAt kept fresh by `startHeartbeat` for its entire queued+running
-  // lifetime, so this never fires for genuinely live local work.
-  const stale = job.heartbeatAt === undefined || Date.now() - job.heartbeatAt > HEARTBEAT_STALE_MS
-  if (!stale) return job
-
-  const reapedJob: Job = { ...job, status: 'error', error: INTERRUPTED_MESSAGE, finishedAt: Date.now() }
-  jobs.set(jobId, reapedJob)
-  db.put(reapedJob)
-  interruptedCount++
-  log('job.reaped_on_read', { jobId, count: 1 })
-  return reapedJob
+  return cached
 }
 
 export function updateJob(jobId: string, patch: Partial<Job>): void {
   const job = jobs.get(jobId)
   if (!job) return
-  const updated = { ...job, ...patch }
-  jobs.set(jobId, updated)
-  db.put(updated)
+  // Always written as THIS process's own claim of ownership: updateJob is only ever called
+  // for a job this process is actively running (createJob's caller, or run-job.ts's
+  // adoption-resumed jobs, both of which set `owner: INSTANCE_ID` before any of this runs).
+  // `db.put`'s owner fence is what makes this safe even so — see its own doc comment.
+  const updated: Job = { ...job, ...patch, owner: INSTANCE_ID }
+  if (db.put(updated)) {
+    jobs.set(jobId, updated)
+  }
+  // A `false` return means this process's lease was already gone by the time this write
+  // landed — the SAME signal `startHeartbeat`'s tick gets from `renewLease`, just discovered
+  // here instead. Nothing further to do: the adopter's row is untouched, and this process's
+  // heartbeat tick will independently notice and log `job.lease_lost` on its own next tick.
 }
 
-// Start (and immediately stamp) a liveness heartbeat for a running job. The caller — run-job.ts
-// — starts this the moment a job transitions to 'running' and stops it in a `finally`, so the
+/** Wraps `db.saveCheckpoint` with this process's own instance id — see job-db.ts's doc comment for the owner fence. */
+export function saveJobCheckpoint(jobId: string, json: string | null): void {
+  // Best-effort: a checkpoint that fails to save only costs a resumed job some re-done work,
+  // while a throw here would fail the live run that called it.
+  try {
+    db.saveCheckpoint(jobId, INSTANCE_ID, json)
+  } catch (err) {
+    log('job.checkpoint_failed', { jobId, error: String(err) })
+  }
+}
+
+// Start (and immediately stamp) a liveness LEASE for a job. The caller — run-job.ts — starts
+// this the moment a job is dispatched (queued or running) and stops it in a `finally`, so the
 // heartbeat runs for exactly the job's actual lifetime and clears on both success and failure.
 // Returns a stop function; `.unref()` matches `_sweepTimer` so it never blocks process exit.
 export function startHeartbeat(jobId: string): () => void {
   // Heartbeating a job IS owning it — this is the one place a job becomes this process's own,
-  // and `getJob` reads `owned` to decide whether its cached copy is authoritative or has to be
-  // re-read from the shared file. Kept in the set after the timer stops: the stop happens in
-  // run-job.ts's `.finally()`, by which point the job is terminal and the cache is correct.
+  // and `getJob` reads `owned` to decide whose word to trust.
   owned.add(jobId)
+  let fenced = false
   const tick = (): void => {
+    if (fenced) return
     const now = Date.now()
+    let renewed: boolean
+    try {
+      renewed = db.renewLease(jobId, INSTANCE_ID, now)
+    } catch (err) {
+      // A transient sqlite error (a lock held past busy_timeout) must not become an
+      // uncaughtException that kills every job on this replica — the next tick retries, and
+      // the 90s staleness window absorbs several missed ones.
+      log('job.heartbeat_failed', { jobId, error: String(err) })
+      return
+    }
+    if (!renewed) {
+      // Another process already claimed this job (`claimStaleJobs`) — our lease is gone.
+      // We let the run finish rather than abort it (no AbortSignal threaded through the agent
+      // loop in this change): every later `updateJob`/checkpoint write for this job is
+      // refused by the owner fence anyway, so whatever this process eventually produces is
+      // silently discarded in favour of the adopter's own result.
+      fenced = true
+      log('job.lease_lost', { jobId })
+      owned.delete(jobId)
+      return
+    }
     const job = jobs.get(jobId)
     if (job) jobs.set(jobId, { ...job, heartbeatAt: now })
-    db.touchHeartbeat(jobId, now)
   }
   tick()
   const timer = setInterval(tick, HEARTBEAT_INTERVAL_MS)
   if (typeof timer.unref === 'function') timer.unref()
-  return () => clearInterval(timer)
+  const stop = (): void => {
+    clearInterval(timer)
+    heartbeatStoppers.delete(jobId)
+  }
+  heartbeatStoppers.set(jobId, stop)
+  return stop
+}
+
+// Atomically adopts every `queued`/`running` job whose lease has gone stale — a crash, a
+// SIGKILL, an unclean restart of whichever process last owned it — and returns them so the
+// caller (run-job.ts's adoption loop) can resume each from its checkpoint. Updates the local
+// cache to match what was just claimed, the same way any other write here does.
+export function claimStaleJobs(now: number): Job[] {
+  const claimed = db.claimStale(INSTANCE_ID, now, now - HEARTBEAT_STALE_MS)
+  for (const record of claimed) {
+    jobs.set(record.jobId, record)
+  }
+  return claimed
 }
 
 // ── Semaphore ──────────────────────────────────────────────────────────────
@@ -202,12 +262,14 @@ export function startHeartbeat(jobId: string): () => void {
 // Avoids reaching for p-limit for a few lines of logic.
 
 let running = 0
-const queue: Array<{ resolve: () => void; reject: (err: Error) => void }> = []
+// Each queued waiter carries its OWN jobId, so a drain can look up (and silence) that
+// specific job's heartbeat and release its lease when handing it off — see `beginDraining`.
+const queue: Array<{ jobId: string; resolve: () => void; reject: (err: Error) => void }> = []
 
 // Set once by `beginDraining` (SIGTERM/SIGINT — see index.ts) and never cleared: a process
 // that started shutting down must never resume accepting work. `tryDispatch` checks it so a
 // slot freed by a job finishing mid-drain does not start a fresh one from the queue — every
-// queued waiter was already rejected by `beginDraining` itself, so the queue is empty by the
+// queued waiter was already handed off by `beginDraining` itself, so the queue is empty by the
 // time this matters, but the guard also covers the (impossible in practice, cheap to guard)
 // case of a `withSlot` call racing in after draining began.
 let draining = false
@@ -216,13 +278,24 @@ let draining = false
 // purely a read for `admission()`; nothing here sheds already-running work.
 let memoryPressure = false
 
-// A loop, not a single dispatch: `release()` frees one slot at a time, but `setMemoryPressure`
-// releasing the brake can free several at once, and every free slot must be filled in that one
-// call or the backlog stalls until the next unrelated release.
+// Set by `setMemoryHold`, driven by `memory-watch.ts`'s SOFTER, earlier threshold (70%,
+// below the 85% `memoryPressure` shed). A queued job simply WAITS for a free slot rather than
+// being refused — unlike `memoryPressure`, this never reaches `admission()`, only dispatch.
+let memoryHold = false
+
+// A loop, not a single dispatch: `release()` frees one slot at a time, but `setMemoryPressure`/
+// `setMemoryHold` releasing the brake can free several at once, and every free slot must be
+// filled in that one call or the backlog stalls until the next unrelated release.
 function tryDispatch(): void {
   if (draining) return
   while (
-    canDispatch({ memoryPressure, running, queued: queue.length, maxConcurrency: env.RESEARCH_MAX_CONCURRENCY })
+    canDispatch({
+      memoryPressure,
+      held: memoryHold,
+      running,
+      queued: queue.length,
+      maxConcurrency: env.RESEARCH_MAX_CONCURRENCY,
+    })
   ) {
     running++
     const waiter = queue.shift()
@@ -230,13 +303,13 @@ function tryDispatch(): void {
   }
 }
 
-function acquire(): Promise<void> {
-  if (!memoryPressure && running < env.RESEARCH_MAX_CONCURRENCY) {
+function acquire(jobId: string): Promise<void> {
+  if (!memoryPressure && !memoryHold && running < env.RESEARCH_MAX_CONCURRENCY) {
     running++
     return Promise.resolve()
   }
   return new Promise<void>((resolve, reject) => {
-    queue.push({ resolve, reject })
+    queue.push({ jobId, resolve, reject })
   })
 }
 
@@ -245,8 +318,8 @@ function release(): void {
   tryDispatch()
 }
 
-export async function withSlot<T>(fn: () => Promise<T>): Promise<T> {
-  await acquire()
+export async function withSlot<T>(jobId: string, fn: () => Promise<T>): Promise<T> {
+  await acquire(jobId)
   try {
     return await fn()
   } finally {
@@ -271,28 +344,52 @@ export function setMemoryPressure(under: boolean): void {
   if (!under) tryDispatch()
 }
 
+// Same shape as `setMemoryPressure`, one threshold earlier — see `memoryHold`'s own comment.
+export function setMemoryHold(held: boolean): void {
+  memoryHold = held
+  if (!held) tryDispatch()
+}
+
 export function jobCounts(): { running: number; queued: number } {
   return { running, queued: queue.length }
 }
 
-// Idempotent — a second SIGTERM must not re-reject an already-emptied queue. Rejects every
-// waiter still sitting in the semaphore queue: that job was created (it exists in the store
-// as 'queued') but never got a slot, so there is nothing running to wait for and nothing to
-// reap on the next boot — the honest answer is DRAIN_QUEUED_MESSAGE, not a hang. `run-job.ts`'s
-// `withSlot(...).catch(...)` (see startResearchJob) turns this rejection into `status: 'error'`
-// with that message.
+// Idempotent — a second SIGTERM must not re-hand-off an already-emptied queue. HANDS OFF every
+// waiter still sitting in the semaphore queue, rather than failing them: each of these jobs
+// legitimately exists in the store as 'queued', so releasing its lease (and silencing its
+// heartbeat) makes it immediately claimable by whichever replica survives this drain — its
+// last completed round's checkpoint, if any, is still on the row, so the adopter resumes it
+// instead of starting over. `run-job.ts`'s `withSlot(...).catch(...)` recognizes
+// `HandedOffError` and does NOT turn it into `status: 'error'` (see `startResearchJob`).
 export function beginDraining(): void {
   if (draining) return
   draining = true
   const waiters = queue.splice(0, queue.length)
   for (const waiter of waiters) {
-    waiter.reject(new Error(DRAIN_QUEUED_MESSAGE))
+    heartbeatStoppers.get(waiter.jobId)?.()
+    owned.delete(waiter.jobId)
+    db.releaseLease(waiter.jobId, INSTANCE_ID)
+    waiter.reject(new HandedOffError('This research job was still queued when this process began restarting; its lease was released for another instance to resume.'))
   }
-  log('job.drain_queued', { count: waiters.length })
+  log('job.drain_handed_off', { count: waiters.length })
 }
 
-// Polled by index.ts's shutdown path. Only `running` counts — the queue was already rejected
-// in `beginDraining`, so a job stuck there is already terminal, not something worth waiting on.
+// Called by index.ts's `drainThenExit` once `waitForDrain` elapses with jobs still RUNNING —
+// releases their leases (and silences their heartbeats) exactly like `beginDraining` did for
+// the queued ones, so the next replica adopts them immediately instead of waiting out the full
+// HEARTBEAT_STALE_MS after this process is already gone. The jobs themselves are NOT
+// cancelled — this process is about to exit regardless, and their last checkpoint is what the
+// adopter resumes from.
+export function releaseAllOwnedLeases(): void {
+  for (const jobId of [...owned]) {
+    heartbeatStoppers.get(jobId)?.()
+    owned.delete(jobId)
+    db.releaseLease(jobId, INSTANCE_ID)
+  }
+}
+
+// Polled by index.ts's shutdown path. Only `running` counts — the queue was already handed
+// off in `beginDraining`, so a job stuck there is no longer this process's concern.
 export async function waitForDrain(deadlineMs: number): Promise<{ remaining: number; waitedMs: number }> {
   const start = Date.now()
   const deadline = start + deadlineMs

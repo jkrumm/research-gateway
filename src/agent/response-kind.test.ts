@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test'
-import { isRawContentType, isDefinitivelyMissing } from './response-kind.js'
+import { isRawContentType, isDefinitivelyMissing, PARSE_INPUT_CAP, MAX_BODY_BYTES, parseInputOverflow } from './response-kind.js'
 
 describe('isRawContentType', () => {
   it('accepts JSON, including with charset parameters and odd casing', () => {
@@ -67,5 +67,61 @@ describe('isDefinitivelyMissing', () => {
   it('does not short-circuit success', () => {
     expect(isDefinitivelyMissing(200)).toBe(false)
     expect(isDefinitivelyMissing(204)).toBe(false)
+  })
+})
+
+describe('PARSE_INPUT_CAP', () => {
+  // The number is the fix, not a tuning default: it is what bounds the worst-case
+  // synchronous parse (linkedom + Readability on the shared event loop) that starved
+  // heartbeats and the HTTP listener on 2026-09-20. If someone moves it, they should do
+  // it with the measurements in hand, not by editing the constant on a hunch.
+  it('stays at the measured value the oversized-body guard depends on', () => {
+    expect(PARSE_INPUT_CAP).toBe(2_000_000)
+  })
+
+  it('sits far above any real article page so it never bites honest traffic', () => {
+    // Typical article pages land under 200k chars (fetch-chain.ts's header); the largest
+    // real pages are an order of magnitude past that. The cap is for adversarial and
+    // accidental giants, not for pages the parser can handle.
+    expect(PARSE_INPUT_CAP).toBeGreaterThanOrEqual(1_000_000)
+  })
+})
+
+describe('MAX_BODY_BYTES', () => {
+  // The invariant, not the number: the reader in fetch-chain.ts counts BYTES and this cap
+  // counts CHARACTERS, so the byte bound has to be wide enough that it can never be the
+  // reason a page the character cap would have accepted goes missing. A UTF-8 character is
+  // at most 4 bytes, which makes 4x the exact-width — narrower and a legitimate page at the
+  // parse cap gets cut before the parse decision is even reached.
+  it('never cuts a body the character cap would have accepted', () => {
+    const MAX_UTF8_BYTES_PER_CHAR = 4
+    expect(MAX_BODY_BYTES).toBeGreaterThanOrEqual(PARSE_INPUT_CAP * MAX_UTF8_BYTES_PER_CHAR)
+  })
+})
+
+describe('parseInputOverflow', () => {
+  // The decision both step 1 and the Wayback rescue make, in one place — so a single cut body
+  // cannot be a miss on one path and a parse on the other.
+  it('passes a body that is inside both bounds', () => {
+    expect(parseInputOverflow('x'.repeat(PARSE_INPUT_CAP), false)).toBeNull()
+  })
+
+  it('rejects a whole body over the character cap, and says by how much', () => {
+    const reason = parseInputOverflow('x'.repeat(PARSE_INPUT_CAP + 1), false)
+    expect(reason).toContain('oversized')
+    expect(reason).toContain(String(PARSE_INPUT_CAP))
+  })
+
+  it('rejects a CUT body even when what arrived is under the character cap', () => {
+    // The byte reader can stop mid-body, so the decoded text may be short while the document
+    // it came from was not. Parsing a prefix is worse than not parsing: Readability would
+    // return the opening of a page as if it were all of it.
+    expect(parseInputOverflow('x'.repeat(64), true)).toContain('oversized')
+  })
+
+  it('names the byte bound when the body was cut, not the character cap', () => {
+    // Which bound fired is the difference between "this page is a giant" and "we stopped
+    // reading it" — the second is a caller-side choice and reads wrong in a trace otherwise.
+    expect(parseInputOverflow('', true)).toContain(String(MAX_BODY_BYTES))
   })
 })

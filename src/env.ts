@@ -101,8 +101,8 @@ const Env = z.object({
   // MUST stay strictly below the compose `stop_grace_period` (1860s, vps repo) or SIGKILL wins
   // first and the drain buys nothing. `process.boot` logs this value so the drift is visible.
   SHUTDOWN_DRAIN_MS: z.coerce.number().default(1_800_000),
-  // bun:sqlite job store (status-only durability — see lib/job-db.ts). Relative default
-  // resolves against the process CWD: the repo root in local dev, /app (the Dockerfile
+  // bun:sqlite job store (durable status + lease + resumable checkpoint — see lib/job-db.ts).
+  // Relative default resolves against the process CWD: the repo root in local dev, /app (the Dockerfile
   // WORKDIR) in the container, where the vps repo's apps/research-gateway/compose.yml mounts a
   // named volume at /app/data.
   JOB_DB_PATH: z.string().default('./data/jobs.sqlite'),
