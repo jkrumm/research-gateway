@@ -81,7 +81,10 @@ const Env = z.object({
   ARGO_API_SECRET: z.string().optional(),
   RESEARCH_MAX_CONCURRENCY: z.coerce.number().default(3),
   RESEARCH_MAX_QUEUE: z.coerce.number().default(50),
-  JOB_TTL_MINUTES: z.coerce.number().default(30),
+  // How long a FINISHED job's result stays readable (sqlite, so it survives restarts). 240, not
+  // the old 30: a fan-out caller submits many jobs and reads them one by one, and its reader is
+  // slower than the writers — at 30 minutes finished reports expired before they were read.
+  JOB_TTL_MINUTES: z.coerce.number().default(240),
   // How long index.ts's shutdown path waits for RUNNING jobs to finish before force-exiting
   // (see `drainThenExit`, `waitForDrain`).
   //
@@ -101,14 +104,46 @@ const Env = z.object({
   // MUST stay strictly below the compose `stop_grace_period` (1860s, vps repo) or SIGKILL wins
   // first and the drain buys nothing. `process.boot` logs this value so the drift is visible.
   SHUTDOWN_DRAIN_MS: z.coerce.number().default(1_800_000),
-  // bun:sqlite job store (status-only durability — see lib/job-db.ts). Relative default
-  // resolves against the process CWD: the repo root in local dev, /app (the Dockerfile
+  // bun:sqlite job store (durable status + lease + resumable checkpoint — see lib/job-db.ts).
+  // Relative default resolves against the process CWD: the repo root in local dev, /app (the Dockerfile
   // WORKDIR) in the container, where the vps repo's apps/research-gateway/compose.yml mounts a
   // named volume at /app/data.
   JOB_DB_PATH: z.string().default('./data/jobs.sqlite'),
   // yt-dlp binary path — bundled into the image at build time (Dockerfile), pinned to a
   // specific release. See agent/ytdlp.ts.
   YTDLP_PATH: z.string().default('/usr/local/bin/yt-dlp'),
+  // pdftotext (poppler-utils) — PATH lookup by default: `/opt/homebrew/bin` locally,
+  // `/usr/bin` in the Alpine runner image (Dockerfile installs `poppler-utils`). Unlike
+  // yt-dlp this is an apk package, not a pinned binary download, so there is no fixed
+  // absolute path to default to. See agent/pdf.ts.
+  PDFTOTEXT_PATH: z.string().default('pdftotext'),
+  // Optional. Enables the `unpaywall` academicSearch source (a DOI -> best open-access
+  // location lookup) — unpaywall requires a real contact address in every request and
+  // BLOCKLISTS `@example.com` outright (measured 2026-09-23: `@example.com` -> 422 same as no
+  // email). Empty-as-unset, same pattern as GITHUB_TOKEN: an unseeded `op://` ref in local
+  // dev must not send a broken address, it must take the source out of the enum entirely.
+  ACADEMIC_CONTACT_EMAIL: z
+    .string()
+    .trim()
+    .optional()
+    .transform((v) => (v ? v : undefined)),
+  // Optional. Raises CORE's search-API rate limit above the keyless 100 tokens/day, 10/min —
+  // the tool works without it. See agent/direct-sources.ts's `core` source.
+  CORE_API_KEY: z
+    .string()
+    .trim()
+    .optional()
+    .transform((v) => (v ? v : undefined)),
+  // Optional, and load-bearing for whether `semanticscholar` even appears in academicSearch's
+  // source enum at all: MEASURED 2026-08-03 (and again 2026-09-20, docs/measurements.md),
+  // unauthenticated api.semanticscholar.org/graph/v1/paper/search returns HTTP 429 on the
+  // very first call from the VPS. Without a key the source is not offered, rather than
+  // offered and failing every time it is used.
+  S2_API_KEY: z
+    .string()
+    .trim()
+    .optional()
+    .transform((v) => (v ? v : undefined)),
   // MEASURED 2026-08-06 from the VPS: YouTube rate-limits this datacenter IP under burst
   // (`HTTP Error 429` on a `--sub-langs` glob expansion). Bounded on purpose, not a tuning
   // default — raising it trades a slower queue for a higher chance of a 429 mid-job.

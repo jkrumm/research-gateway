@@ -4,6 +4,7 @@ import { env } from '../env.js'
 import { fetchTavilyUsage } from '../lib/tavily-account.js'
 import { restartStats, isDraining, jobCounts } from '../lib/job-store.js'
 import { memorySnapshot } from '../lib/memory-watch.js'
+import { loopSnapshot } from '../lib/loop-watch.js'
 
 async function readYtdlpVersion(): Promise<string> {
   const proc = Bun.spawn([env.YTDLP_PATH, '--version'], {
@@ -19,28 +20,59 @@ async function readYtdlpVersion(): Promise<string> {
   return stdout.trim()
 }
 
+// `pdftotext -v` prints its version to STDERR, not stdout (measured — poppler's own
+// convention, same as several other poppler-utils binaries) — the one difference from
+// `readYtdlpVersion` above, which this otherwise mirrors exactly.
+async function readPdftotextVersion(): Promise<string> {
+  const proc = Bun.spawn([env.PDFTOTEXT_PATH, '-v'], {
+    stdout: 'pipe',
+    stderr: 'pipe',
+    timeout: 5_000,
+    killSignal: 'SIGKILL',
+  })
+  const stderr = await new Response(proc.stderr).text()
+  const code = await proc.exited
+  if (proc.signalCode) throw new Error('pdftotext -v timed out')
+  if (code !== 0) throw new Error(`pdftotext -v exited ${code}`)
+  return stderr.split('\n')[0]?.trim() ?? stderr.trim()
+}
+
 export const healthRoute = new Elysia()
   // `status` stays the only field anything GATES on (Docker healthcheck, rollhook, Traefik).
-  // The restart fields are visibility for a keyword monitor: `reaped` > 0 means this boot found
-  // queued/running jobs with a stale heartbeat — the process before it died without finishing
-  // them (2026-09-04: a cgroup OOM kill, 15 jobs). They reset on the next clean deploy.
+  // The restart fields are visibility for a keyword monitor: `resumed` > 0 means this process
+  // has adopted a job whose previous owner's heartbeat went stale (a crash, a SIGKILL, an
+  // unclean restart — 2026-09-04's cgroup OOM kill, 15 jobs, is the incident this whole
+  // mechanism traces back to) and resumed it from checkpoint; `failedAfterRestarts` counts the
+  // ones given up on after MAX_JOB_ATTEMPTS restarts (job-store.ts's crash-loop guard). Both
+  // reset on the next clean deploy — this process's own lifetime, not the store's.
   .get(
     '/health',
-    () => ({
-      status: 'ok' as const,
-      ...restartStats(),
-      draining: isDraining(),
-      jobs: jobCounts(),
-      memory: memorySnapshot(),
-    }),
+    () => {
+      const loop = loopSnapshot()
+      return {
+        status: 'ok' as const,
+        ...restartStats(),
+        draining: isDraining(),
+        jobs: jobCounts(),
+        memory: memorySnapshot(),
+        eventLoopLagMs: loop.lastMs,
+        eventLoopLagPeakMs: loop.peakMs,
+      }
+    },
     {
       response: z.object({
         status: z.literal('ok'),
         lastRestartAt: z.string().describe('ISO time this process booted — the last (re)start'),
-        reaped: z.number().describe('Jobs reaped as interrupted at this boot (stale heartbeat)'),
-        interrupted: z
+        resumed: z
           .number()
-          .describe('Jobs reaped in this process lifetime: the boot reap plus any reaped later on read'),
+          .describe(
+            'Jobs this process has ADOPTED from a lost lease and resumed from checkpoint, this process lifetime (lib/run-job.ts\'s adoption loop) — replaces the old reap counter now that a stale job is resumed rather than reaped',
+          ),
+        failedAfterRestarts: z
+          .number()
+          .describe(
+            'Jobs given up on after MAX_JOB_ATTEMPTS restarts without finishing — the crash-loop guard, this process lifetime',
+          ),
         draining: z
           .boolean()
           .describe('True once SIGTERM/SIGINT began a graceful drain — new jobs are being refused'),
@@ -56,12 +88,24 @@ export const healthRoute = new Elysia()
           })
           .nullable()
           .describe('cgroup memory usage against its limit; null off-cgroup (local dev, tests)'),
+        eventLoopLagMs: z
+          .number()
+          .nullable()
+          .describe(
+            'Event-loop lag in ms from the most recent 5s sample (lib/loop-watch.ts) — how late that interval fired; sustained high values mean the loop is being blocked (synchronous parsing, GC). Null before the first sample exists (the first seconds of a boot)',
+          ),
+        eventLoopLagPeakMs: z
+          .number()
+          .nullable()
+          .describe(
+            'Worst event-loop lag in the last 60s of samples — the same measurement as eventLoopLagMs but not overwritten by the quiet interval that follows a stall, which is what a monitor polling every 30-60s would otherwise read',
+          ),
       }),
       detail: {
         tags: ['System'],
         summary: 'Liveness probe',
         description:
-          'Returns `{ status: "ok" }` if the service process is up, plus `lastRestartAt` and the `reaped` / `interrupted` job counts of this process lifetime — an unclean restart shows as `reaped` > 0 until the next deploy. `draining`, `jobs`, and `memory` are monitor-facing visibility into load and shutdown state, added alongside the restart fields. Only `status` gates anything (Docker healthcheck, rollhook) — a draining container still serves polls correctly, so none of the new fields degrade it. No auth required.',
+          'Returns `{ status: "ok" }` if the service process is up, plus `lastRestartAt` and the `resumed` / `failedAfterRestarts` job counts of this process lifetime — a job adopted from a lost lease shows as `resumed` > 0 until the next deploy. `draining`, `jobs`, `memory`, `eventLoopLagMs` and `eventLoopLagPeakMs` are monitor-facing visibility into load, shutdown and event-loop state, added alongside the restart fields. Only `status` gates anything (Docker healthcheck, rollhook) — a draining container still serves polls correctly, so none of the new fields degrade it. No auth required.',
       },
     },
   )
@@ -214,6 +258,33 @@ export const healthRoute = new Elysia()
         summary: 'yt-dlp binary probe',
         description:
           'Runs `yt-dlp --version` inside the container and reports the result. No auth required. NOTHING gates on this — yt-dlp failing degrades video transcripts/search to the Tavily Extract fallback, not the service.',
+      },
+    },
+  )
+  // Same posture as `/health/ytdlp`: a runtime regression here (a base image swap, poppler-utils
+  // missing from the apk layer) would otherwise only surface as every PDF fetch silently falling
+  // back to Tavily Extract, which cannot read PDFs either (agent/pdf.ts).
+  .get(
+    '/health/pdf',
+    async () => {
+      try {
+        const version = await readPdftotextVersion()
+        return { pdftotext: 'ok' as const, version, error: null }
+      } catch (err) {
+        return { pdftotext: 'down' as const, version: null, error: String(err) }
+      }
+    },
+    {
+      response: z.object({
+        pdftotext: z.enum(['ok', 'down']),
+        version: z.string().nullable(),
+        error: z.string().nullable(),
+      }),
+      detail: {
+        tags: ['System'],
+        summary: 'pdftotext binary probe',
+        description:
+          'Runs `pdftotext -v` inside the container and reports the result. No auth required. NOTHING gates on this — pdftotext failing degrades PDF fetches to the Tavily Extract fallback (which cannot read PDFs either), not the service.',
       },
     },
   )

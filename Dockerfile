@@ -18,6 +18,16 @@ RUN apk add --no-cache curl ca-certificates \
   && addgroup -S app && adduser -S app -G app \
   && mkdir -p /app/data && chown app:app /app/data
 
+# poppler-utils — pdftotext for agent/pdf.ts, which runs its DEFAULT layout mode (not
+# `-layout`; see that file's header for the measurement). Deliberately unpinned: this fleet runs
+# no Renovate, and Alpine drops superseded package builds from its index, so an exact
+# `=25.04.0-r0` pin would break the first build after a security bump. Alpine 3.22 ships
+# 25.04.0; `GET /health/pdf` reports what a given image actually carries.
+RUN apk add --no-cache poppler-utils \
+  # Fails the BUILD on a missing/broken binary, not every PDF fetch at runtime — same
+  # posture as the yt-dlp version check below.
+  && pdftotext -v
+
 # yt-dlp — a binary in the image, not an npm dependency (agent/ytdlp.ts spawns it directly).
 # Pinned, not `latest`, so a bump is deliberate and one line to change.
 ARG YTDLP_VERSION=2026.07.04

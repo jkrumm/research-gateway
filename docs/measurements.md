@@ -617,3 +617,39 @@ wedged-but-running container never triggers a restart policy. At 1 GiB the ident
 peaked at 228.2 MiB. On 2026-09-04 the kernel's cgroup OOM killer took the 1 GiB container
 outright (`anon-rss:935864kB`), reaping 15 jobs — `mem_limit` and `RESEARCH_MAX_CONCURRENCY`
 are one decision.
+
+## Paper reading — the PDF step and the arXiv adapter, two live runs
+
+`scripts/smoke.ts "EMOS vs quantile regression forests for wind speed post-processing, evidence
+from papers" quick`, run twice against the live IU endpoint + Tavily, 2026-09-23:
+
+| | run 1 | run 2 |
+|-|-|-|
+| citations | 6 | 6 |
+| sources | 4 | 2 |
+| status | `ok` | `partial` (5 citations capped, 0 dropped) |
+| pagesRetrieved / pagesFailed | 4 / 1 | 2 / 2 |
+| arXiv HTML read (LaTeXML, via `site-adapter`) | `arxiv.org/pdf/2106.09512v1` → rewritten → 118,420 chars | — (search did not surface an arXiv result this time) |
+| worker.ungrounded | none logged | none logged |
+
+Run 1's worker cited `arxiv.org/pdf/2106.09512v1` (the form OpenAlex/a model routinely gives);
+`site-adapters.ts`'s arXiv adapter rewrote it to the `/html/` LaTeXML build before the fetch
+ever happened, and `extractArxivHtml` read it — the `via: 'site-adapter'` log line and the
+118,420-char count are both evidence it was the LaTeXML path, not a PDF fallback, that fired.
+Run 2's search results happened not to include an arXiv or other PDF URL at all (an AMS journal
+page and a dead KNMI PDF link, `cdn.knmi.nl` — a real network failure, not a bug: the origin
+refused the connection before any content-type was ever read), which is why `status` differs
+between the two runs — this is normal run-to-run search variance, not a regression.
+
+Neither smoke run happened to exercise the raw (non-arXiv) PDF branch, so it was verified
+directly with `runFetchChain`, no LLM, against a real Copernicus GMD paper — the exact case
+this feature was built for:
+
+| url | via | chars | note |
+|-|-|-|-|
+| `gmd.copernicus.org/…/gmd-19-4703-2026.pdf` | `pdf` | 89,061 (extracted), capped to 80,181 (TEXT_CAP) | `content-type: application/pdf`, no magic-sniff needed |
+| `arxiv.org/abs/2309.04452` | `site-adapter` | 78,881 | rewritten to `arxiv.org/html/2309.04452`, read via LaTeXML |
+
+Both terminate at their first attempt (`attempts: [{step, ok:true}]`) — no wasted lightpanda or
+Tavily Extract call for either shape, confirming the PDF/arXiv steps sit ahead of the renderer
+and the paid fallback exactly as designed.

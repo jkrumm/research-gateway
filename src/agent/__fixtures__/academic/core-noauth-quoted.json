@@ -1,0 +1,183 @@
+{
+  "totalHits": 2170746,
+  "limit": 5,
+  "offset": 0,
+  "results": [
+    {
+      "acceptedDate": "",
+      "arxivId": null,
+      "authors": [
+        {
+          "name": "M\u00f6ller, Annette"
+        },
+        {
+          "name": "M\u00f6ller, Annette Christine ; https://orcid.org/"
+        },
+        {
+          "name": "Baran, S\u00e1ndor"
+        },
+        {
+          "name": "Moeller, Annette"
+        }
+      ],
+      "citationCount": 0,
+      "contributors": [
+        "Moeller, Annette",
+        "Baran, Sandor"
+      ],
+      "outputs": [
+        "https://api.core.ac.uk/v3/outputs/95353184",
+        "https://api.core.ac.uk/v3/outputs/161054865",
+        "https://api.core.ac.uk/v3/outputs/191379696",
+        "https://api.core.ac.uk/v3/outputs/483747845",
+        "https://api.core.ac.uk/v3/outputs/620377147"
+      ],
+      "createdDate": "2019-09-09T02:00:00+01:00",
+      "dataProviders": [
+        {
+          "id": 4786,
+          "name": "Crossref",
+          "url": "https://api.core.ac.uk/v3/data-providers/4786",
+          "logo": "https://api.core.ac.uk/data-providers/4786/logo"
+        },
+        {
+          "id": 980,
+          "name": "DEA University of Debrecen Electronic Archive",
+          "url": "https://api.core.ac.uk/v3/data-providers/980",
+          "logo": "https://api.core.ac.uk/data-providers/980/logo"
+        },
+        {
+          "id": 601,
+          "name": "Publications at Bielefeld University",
+          "url": "https://api.core.ac.uk/v3/data-providers/601",
+          "logo": "https://api.core.ac.uk/data-providers/601/logo"
+        },
+        {
+          "id": 410,
+          "name": "Repository of the Academy's Library",
+          "url": "https://api.core.ac.uk/v3/data-providers/410",
+          "logo": "https://api.core.ac.uk/data-providers/410/logo"
+        },
+        {
+          "id": 10922,
+          "name": "GRO.publications (Univ. G\u00f6ttingen)",
+          "url": "https://api.core.ac.uk/v3/data-providers/10922",
+          "logo": "https://api.core.ac.uk/data-providers/10922/logo"
+        }
+      ],
+      "depositedDate": "2017-09-16T01:00:00+01:00",
+      "abstract": "Baran S, M\u00f6ller AC. Bivariate ensemble model output statistics approach for joint forecasting of wind speed and temperature. Meteorology and Atmospheric Physics. 2017;129(1):99-112.Forecast ensembles are typically employed to account for prediction uncertainties in numerical weather prediction models. However, ensembles often exhibit biases and dispersion errors, thus they require statistical post-processing to improve their predictive performance. Two popular univariate post-processing models are the Bayesian model averaging (BMA) and the ensemble model output statistics (EMOS). In the last few years, increased interest has emerged in developing multivariate post-processing models, incorporating dependencies between weather quantities, such as for example a bivariate distribution for wind vectors or even a more general setting allowing to combine any types of weather variables. In line with a recently proposed approach to model temperature and wind speed jointly by a bivariate BMA model, this paper introduces an EMOS model for these weather quantities based on a bivariate truncated normal distribution. The bivariate EMOS model is applied to temperature and wind speed forecasts of the 8-member University of Washington mesoscale ensemble and the 11-member ALADIN-HUNEPS ensemble of the Hungarian Meteorological Service and its predictive performance is compared to the performance of the bivariate BMA model and a multivariate Gaussian copula approach, post-processing the margins with univariate EMOS. While the predictive skills of the compared methods are similar, the bivariate EMOS model requires considerably lower computation times than the bivariate BMA method",
+      "documentType": null,
+      "doi": "10.1007/s00703-016-0467-8",
+      "downloadUrl": "https://core.ac.uk/download/95353184.pdf",
+      "fieldOfStudy": "Article",
+      "fullText": "Not available for public API users.",
+      "id": 14109412,
+      "identifiers": [
+        {
+          "identifier": "95353184",
+          "type": "core_id"
+        },
+        {
+          "identifier": "10.1007/s00703-016-0467-8",
+          "type": "doi"
+        },
+        {
+          "identifier": "oai:real.mtak.hu:62619",
+          "type": "oai_id"
+        },
+        {
+          "identifier": "161054865",
+          "type": "core_id"
+        },
+        {
+          "identifier": "oai:dea.lib.unideb.hu:2437/237937",
+          "type": "oai_id"
+        },
+        {
+          "identifier": "191379696",
+          "type": "core_id"
+        },
+        {
+          "identifier": "483747845",
+          "type": "core_id"
+        },
+        {
+          "identifier": "oai:pub.uni-bielefeld.de:2960066",
+          "type": "oai_id"
+        },
+        {
+          "identifier": "620377147",
+          "type": "core_id"
+        },
+        {
+          "identifier": "oai:publications.goettingen-research-online.de:2/43351",
+          "type": "oai_id"
+        },
+        {
+          "identifier": "oai:real.mtak.hu:62619",
+          "type": "oai"
+        },
+        {
+          "identifier": "oai:dea.lib.unideb.hu:2437/237937",
+          "type": "oai"
+        },
+        {
+          "identifier": "oai:pub.uni-bielefeld.de:2960066",
+          "type": "oai"
+        },
+        {
+          "identifier": "oai:publications.goettingen-research-online.de:2/43351",
+          "type": "oai"
+        }
+      ],
+      "title": "Bivariate ensemble model output statistics approach for joint forecasting of wind speed and temperature",
+      "language": null,
+      "magId": null,
+      "oaiIds": [
+        "oai:real.mtak.hu:62619",
+        "oai:dea.lib.unideb.hu:2437/237937",
+        "oai:pub.uni-bielefeld.de:2960066",
+        "oai:publications.goettingen-research-online.de:2/43351"
+      ],
+      "publishedDate": "2017-01-01T00:00:00+00:00",
+      "publisher": "Springer",
+      "pubmedId": null,
+      "references": [],
+      "sourceFulltextUrls": [
+        "https://core.ac.uk/download/95353184.pdf"
+      ],
+      "updatedDate": "",
+      "yearPublished": 2017,
+      "journals": [
+        {
+          "title": null,
+          "identifiers": []
+        }
+      ],
+      "links": [
+        {
+          "type": "download",
+          "url": "https://core.ac.uk/download/95353184.pdf"
+        },
+        {
+          "type": "reader",
+          "url": "https://core.ac.uk/reader/95353184"
+        },
+        {
+          "type": "thumbnail_m",
+          "url": "https://core.ac.uk/image/95353184/large"
+        },
+        {
+          "type": "thumbnail_l",
+          "url": "https://core.ac.uk/image/95353184/large"
+        },
+        {
+          "type": "display",
+          "url": "https://core.ac.uk/works/14109412"
+        }
+      ]
+    }
+  ],
+  "searchId": "67d247f380eea4d12e8bd25bf9ebab44"
+}

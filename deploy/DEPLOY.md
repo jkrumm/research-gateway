@@ -119,11 +119,12 @@ For the renderer, the check that matters is a page whose text is not in its HTML
   oom` on the host is the record, `process.memory_pressure` in HyperDX the warning. The limit
   is 2 GiB since 2026-09-08, and the watchdog now sheds new work at 85% instead of only
   logging — but shedding cannot protect the jobs already running, only headroom can.
-- **Job store durability is status-only.** A `done` result survives a redeploy; a job caught
-  mid-run — one that outran the drain — comes back as a terminal `error` once its heartbeat is
-  >90s stale — never as a
-  blanket "everything running at boot is dead", because rollhook's overlap has both replicas
-  on the same sqlite file and the old one may still be genuinely working.
+- **Job store: results are durable, running jobs are leased.** A finished result stays in sqlite
+  for `JOB_TTL_MINUTES` (240) across any number of restarts. A queued or running job whose owner's
+  heartbeat goes >90s stale is claimed by the surviving replica and resumed from its last
+  completed round (README § Restarts). A job is never reaped just because it was running at
+  boot: during rollhook's overlap both replicas share the sqlite file, and the old one may still
+  be working.
 - **The SSRF guard (`src/lib/ssrf.ts`) is load-bearing** — the gateway fetches pages itself.
   A DNS-rebinding TOCTOU gap remains and is documented inline.
 - **Budget ceilings are the cost backstop.** Anything holding the bearer can trigger a loop;

@@ -58,7 +58,7 @@ export const probeRoutes = new Elysia().post(
       url: z.string(),
       fetchUrl: z.string().describe('The address actually dialled — differs when a site adapter rewrites it'),
       via: z
-        .enum(['raw', 'site-adapter', 'readability', 'lightpanda', 'yt-dlp', 'tavily-extract', 'wayback'])
+        .enum(['raw', 'site-adapter', 'readability', 'pdf', 'lightpanda', 'yt-dlp', 'tavily-extract', 'wayback'])
         .nullable()
         .describe('The step that terminated the chain, or null if every step failed'),
       chars: z.number(),
@@ -66,7 +66,7 @@ export const probeRoutes = new Elysia().post(
       error: z.string().nullable(),
       attempts: z.array(
         z.object({
-          step: z.enum(['raw', 'site-adapter', 'readability', 'lightpanda', 'yt-dlp', 'tavily-extract', 'wayback']),
+          step: z.enum(['raw', 'site-adapter', 'readability', 'pdf', 'lightpanda', 'yt-dlp', 'tavily-extract', 'wayback']),
           ok: z.boolean(),
           chars: z.number().optional(),
           error: z.string().optional(),

@@ -64,7 +64,7 @@ export interface SiteAdapter {
    * decline — the URL then falls through to the generic path unchanged, exactly as if this
    * host had no adapter.
    */
-  plan?: (parsed: URL) => { fetchUrl: string; skipToExtract: boolean } | null
+  plan?: (parsed: URL) => { fetchUrl: string; skipToExtract: boolean; fallbackUrl?: string } | null
 }
 
 // dpreview forum threads are cited by their slug URL, and the slug URL is unreadable: MEASURED
@@ -84,6 +84,122 @@ const dpreviewAdapter: SiteAdapter = {
     if (!match?.[1]) return null // non-forum URL, or a slug with no trailing numeric id
     return { fetchUrl: `https://www.dpreview.com/forums/thread/${match[1]}`, skipToExtract: false }
   },
+}
+
+// ── arXiv LaTeXML extraction ─────────────────────────────────────────────────
+// LaTeXML's HTML build represents an equation as `<math alttext="...">` — MEASURED to carry
+// the exact LaTeX source (`Y\mid X\sim\mathcal{F}_{\bm{\theta}}`), strictly better than any
+// glyph reconstruction `pdftotext` could do on the same formula in the PDF — and a table as
+// `<table class="ltx_tabular">`. This walks the article body substituting `$<alttext>$` for
+// each formula and rendering table rows as ` | `-joined cells, one row per line, so a worker
+// reads the paper's actual equations and tables rather than losing them to prose extraction.
+// Returns null when the page is not a LaTeXML document (a 404, or any other page this module
+// was never meant to touch), so Readability takes over exactly as if there were no adapter.
+//
+// A richer structural view than extract-reddit.ts's MinimalDocument — reconstructing reading
+// order needs node identity (text vs element), attributes and child order, which a flat
+// querySelectorAll cannot give it. Still dependency-free: linkedom's real DOM implements
+// every member used here, so this stays a type-only contract, not an import; the mismatch
+// with `SiteAdapter.extract`'s declared (narrower) parameter type is bridged with one cast at
+// the adapter definition below, the same way parse-worker.ts casts its call site.
+interface LatexmlNode {
+  nodeType: number
+  nodeValue: string | null
+  tagName?: string
+  childNodes: ArrayLike<LatexmlNode>
+  getAttribute?(name: string): string | null
+  querySelectorAll?(selectors: string): ArrayLike<LatexmlNode>
+}
+interface LatexmlDocument {
+  querySelector(selectors: string): LatexmlNode | null
+}
+
+const TEXT_NODE = 3
+const ELEMENT_NODE = 1
+// Tags whose content gets a line break after it, so paragraphs/headings/list items don't run
+// together into one unbroken line once every element boundary is otherwise invisible.
+const BLOCK_TAGS = new Set(['p', 'div', 'section', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'li', 'article'])
+
+/** Plain text of a subtree, substituting `$<alttext>$` for any formula inside it — used for table cells, which may themselves contain inline math. */
+function textWithMath(node: LatexmlNode): string {
+  if (node.nodeType === TEXT_NODE) return node.nodeValue ?? ''
+  if (node.nodeType !== ELEMENT_NODE) return ''
+  if (node.tagName?.toLowerCase() === 'math') {
+    const alttext = node.getAttribute?.('alttext')
+    if (alttext) return `$${alttext}$`
+  }
+  return Array.from(node.childNodes)
+    .map((c) => textWithMath(c))
+    .join('')
+}
+
+function tableRowsAsText(table: LatexmlNode): string {
+  const rows = Array.from(table.querySelectorAll?.('tr') ?? [])
+  const lines: string[] = []
+  for (const row of rows) {
+    const cells = Array.from(row.querySelectorAll?.('td, th') ?? [])
+    const cellText = cells.map((c) => textWithMath(c).trim()).filter(Boolean)
+    if (cellText.length > 0) lines.push(cellText.join(' | '))
+  }
+  return lines.join('\n')
+}
+
+function walkLatexml(node: LatexmlNode, out: string[]): void {
+  if (node.nodeType === TEXT_NODE) {
+    if (node.nodeValue) out.push(node.nodeValue)
+    return
+  }
+  if (node.nodeType !== ELEMENT_NODE) return
+  const tag = node.tagName?.toLowerCase()
+  if (tag === 'math') {
+    const alttext = node.getAttribute?.('alttext')
+    out.push(alttext ? `$${alttext}$` : textWithMath(node))
+    return
+  }
+  const classAttr = node.getAttribute?.('class') ?? ''
+  if (tag === 'table' && /\bltx_tabular\b/.test(classAttr)) {
+    out.push(`\n${tableRowsAsText(node)}\n`)
+    return
+  }
+  for (const child of Array.from(node.childNodes)) walkLatexml(child, out)
+  if (tag && BLOCK_TAGS.has(tag)) out.push('\n')
+}
+
+function extractArxivHtml(document: LatexmlDocument): string | null {
+  const article = document.querySelector('article.ltx_document') ?? document.querySelector('.ltx_document')
+  if (!article) return null // not a LaTeXML page (a 404, or something else entirely)
+  const out: string[] = []
+  walkLatexml(article, out)
+  const text = out.join('')
+  return text.trim().length > 0 ? text : null
+}
+
+// arXiv: HTML before PDF, PDF as the fallback. `academicSearch`'s OpenAlex/arXiv results
+// mostly carry `arxiv.org/pdf/<id>` as the open-access URL, and a model routinely cites the
+// `/abs/<id>` landing page too — both are rewritten to `arxiv.org/html/<id>` (LaTeXML), the
+// version that keeps equations as exact LaTeX and tables as real markup rather than whatever
+// `pdftotext` can reconstruct from PDF glyphs (see `extractArxivHtml` below). Not every paper
+// has a LaTeXML build — arXiv started generating it only for papers submitted from
+// ~2018 onward, and it can 404 even for some newer ones — so `fallbackUrl` carries the PDF
+// address, and the fetch chain (fetch-chain.ts) retries there once when the HTML rewrite comes
+// back 404/410, landing on this module's PDF branch (agent/pdf.ts) instead.
+//
+// id shapes handled: modern (`2309.04452`, with or without a `v<n>` version suffix) and the
+// pre-2007 `archive/YYMMNNN` form (e.g. `physics/0601001`) — both are just "the rest of the
+// path after /abs/, /pdf/ or /pdf/…/.pdf", so one capture group covers both.
+const ARXIV_ID_RE = /^\/(?:abs|pdf)\/(.+?)(?:\.pdf)?\/?$/
+
+const arxivAdapter: SiteAdapter = {
+  plan: (parsed) => {
+    const match = ARXIV_ID_RE.exec(parsed.pathname)
+    if (!match?.[1]) return null // not an /abs/ or /pdf/ URL — e.g. already /html/<id>, or arxiv.org's homepage
+    const id = match[1]
+    return { fetchUrl: `https://arxiv.org/html/${id}`, skipToExtract: false, fallbackUrl: `https://arxiv.org/pdf/${id}` }
+  },
+  // Cast: extractArxivHtml's parameter is the richer LatexmlNode/LatexmlDocument view above,
+  // not extract-reddit.ts's flat MinimalDocument — linkedom's real document satisfies both at
+  // runtime, so this is a type-shape bridge, not an unsafe call.
+  extract: extractArxivHtml as unknown as (document: MinimalDocument) => string | null,
 }
 
 // One video URL can skip straight to Tavily Extract, bypassing the plain-fetch and
@@ -110,6 +226,7 @@ const ADAPTERS: Record<string, SiteAdapter> = {
   'youtu.be': youtubeAdapter,
   'dpreview.com': dpreviewAdapter,
   'www.dpreview.com': dpreviewAdapter,
+  'arxiv.org': arxivAdapter,
 }
 
 export interface ResolvedSite {
@@ -119,6 +236,8 @@ export interface ResolvedSite {
   extract: ((document: MinimalDocument) => string | null) | null
   /** True when the fetch chain should skip straight to Tavily Extract (see youtubeAdapter). */
   skipToExtract: boolean
+  /** A second URL to try if `fetchUrl` comes back 404/410 — currently only arXiv's PDF address behind its HTML rewrite. Absent for every other adapter and for unrewritten URLs. */
+  fallbackUrl?: string
 }
 
 export function resolveSite(raw: string): ResolvedSite {
@@ -136,7 +255,12 @@ export function resolveSite(raw: string): ResolvedSite {
     try {
       const planned = adapter.plan(parsed)
       if (planned) {
-        return { fetchUrl: planned.fetchUrl, extract: adapter.extract ?? null, skipToExtract: planned.skipToExtract }
+        return {
+          fetchUrl: planned.fetchUrl,
+          extract: adapter.extract ?? null,
+          skipToExtract: planned.skipToExtract,
+          ...(planned.fallbackUrl ? { fallbackUrl: planned.fallbackUrl } : {}),
+        }
       }
       // null = decline (e.g. a shorts/channel/playlist/results URL) — fall through to
       // rewriteHost/extract below exactly as if there were no `plan` at all.

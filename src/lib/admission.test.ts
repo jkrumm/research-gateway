@@ -58,7 +58,7 @@ describe('admit', () => {
 // submissions while the queue keeps handing freed slots to backlogged jobs replaces exactly
 // the memory a finishing job released, which is the failure the 2026-09-04 OOM kill was.
 describe('canDispatch', () => {
-  const idleDispatch = { memoryPressure: false, running: 0, queued: 1, maxConcurrency: 3 }
+  const idleDispatch = { memoryPressure: false, held: false, running: 0, queued: 1, maxConcurrency: 3 }
 
   it('dispatches when a slot is free and work is waiting', () => {
     expect(canDispatch(idleDispatch)).toBe(true)
@@ -77,8 +77,24 @@ describe('canDispatch', () => {
   })
 
   it('resumes the moment pressure clears, with the backlog untouched', () => {
-    const underPressure = { memoryPressure: true, running: 0, queued: 5, maxConcurrency: 3 }
+    const underPressure = { memoryPressure: true, held: false, running: 0, queued: 5, maxConcurrency: 3 }
     expect(canDispatch(underPressure)).toBe(false)
     expect(canDispatch({ ...underPressure, memoryPressure: false })).toBe(true)
+  })
+
+  // The softer, earlier threshold (brief: "admission by memory") — a queued job WAITS rather
+  // than being refused, so this only ever shows up here, never in `admit()`'s tests above.
+  it('holds dispatch below the shed threshold, even with a free slot and work waiting', () => {
+    expect(canDispatch({ ...idleDispatch, held: true })).toBe(false)
+  })
+
+  it('resumes the moment the hold releases, with the backlog untouched', () => {
+    const held = { memoryPressure: false, held: true, running: 0, queued: 5, maxConcurrency: 3 }
+    expect(canDispatch(held)).toBe(false)
+    expect(canDispatch({ ...held, held: false })).toBe(true)
+  })
+
+  it('memory pressure and the hold combine no differently than either alone', () => {
+    expect(canDispatch({ ...idleDispatch, memoryPressure: true, held: true })).toBe(false)
   })
 })

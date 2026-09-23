@@ -28,6 +28,15 @@ const CGROUP_DIR = '/sys/fs/cgroup'
 const SAMPLE_INTERVAL_MS = 5_000
 const PRESSURE_RATIO = 0.85
 const REARM_RATIO = 0.75
+// A softer, earlier signal than the 85% shed above: at 70% the process HOLDS dispatch — a
+// queued job waits for a free concurrency slot rather than starting one — without refusing
+// new submissions the way `admission()`'s 85% pressure does. The two are deliberately
+// different actions at different thresholds: shedding at 70% would refuse a caller's job for
+// load this process can still comfortably run once the backlog drains; holding dispatch at
+// 70% instead buys the memory watchdog headroom to re-arm before a burst of newly-STARTED
+// jobs (each with its own worker fan-out) pushes the cgroup the rest of the way to 85%.
+const HOLD_RATIO = 0.70
+const HOLD_REARM_RATIO = 0.65
 
 function readCgroupNumber(file: string): number | null {
   try {
@@ -72,15 +81,38 @@ export function memorySnapshot(): { currentBytes: number; limitBytes: number; ra
 // `false` when it re-arms below REARM_RATIO. Required, not optional: a watchdog that only
 // logs is the exact gap the 2026-09-04 OOM kill exposed (all 3 concurrent jobs died with the
 // process because nothing upstream ever stopped admitting more).
-export function startMemoryWatch(onPressureChange: (under: boolean) => void): void {
+//
+// `onHoldChange` is the same shape one threshold earlier (HOLD_RATIO/HOLD_REARM_RATIO above):
+// `index.ts` wires it to `job-store.ts`'s `setMemoryHold`, which `canDispatch`/`acquire` read.
+// Optional only so a caller that does not care about the hold signal (there is none today —
+// `index.ts` always wires both) is not forced to pass a no-op.
+export function startMemoryWatch(
+  onPressureChange: (under: boolean) => void,
+  onHoldChange?: (held: boolean) => void,
+): void {
   const limitBytes = readCgroupNumber('memory.max')
   if (limitBytes === null || limitBytes === 0) return
 
   let armed = true
+  let held = false
   const timer = setInterval(() => {
     const currentBytes = readCgroupNumber('memory.current')
     if (currentBytes === null) return
     const ratio = currentBytes / limitBytes
+
+    // Hold and shed are independent thresholds, checked independently — a ratio that jumps
+    // straight past both in one sample must still fire both transitions, not just the higher
+    // one, since job-store.ts tracks them as two separate flags.
+    if (!held && ratio >= HOLD_RATIO) {
+      held = true
+      log('process.memory_hold', { currentBytes, limitBytes, ratio: Number(ratio.toFixed(3)) })
+      onHoldChange?.(true)
+    } else if (held && ratio < HOLD_REARM_RATIO) {
+      held = false
+      log('process.memory_hold_released', { currentBytes, limitBytes, ratio: Number(ratio.toFixed(3)) })
+      onHoldChange?.(false)
+    }
+
     if (armed && ratio >= PRESSURE_RATIO) {
       armed = false
       const events = readCgroupEvents()

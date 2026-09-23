@@ -233,8 +233,9 @@ tile to read after any deploy or restart.
 SELECT Timestamp, SeverityText, Body, LogAttributes
 FROM otel_logs
 WHERE ServiceName='research-gateway'
-  AND Body IN ('process.draining','process.drained','job.drain_queued','job.reaped',
-               'job.reaped_on_read','process.memory_pressure','process.memory_recovered',
+  AND Body IN ('process.draining','process.drained','job.drain_handed_off','job.lease_lost',
+               'job.resumed','job.crash_loop_guard','process.memory_pressure',
+               'process.memory_hold','process.memory_recovered',
                'process.signal','process.uncaughtException','job.rejected')
   AND Timestamp > now() - INTERVAL 7 DAY
 ORDER BY Timestamp DESC LIMIT 200
@@ -245,10 +246,13 @@ How to read it:
 | Event | What it means |
 |-|-|
 | `process.draining` | SIGTERM arrived. `running`/`queued` are what was in flight, `drainMs` the configured window |
-| `process.drained` | The drain finished. `remaining: 0` is the good case; **`remaining > 0` is ERROR severity** and means the window elapsed with jobs still alive — the number that decides whether agent-loop checkpointing is worth building |
-| `job.drain_queued` | Jobs failed fast because they were still queued at shutdown. Expected, not a fault |
-| `job.reaped` / `job.reaped_on_read` | A job whose owner died without draining — a SIGKILL or an OOM kill. **Not** expected on a clean deploy any more |
+| `process.drained` | The drain finished. `remaining: 0` is the good case; **`remaining > 0` is ERROR severity** and means the window elapsed with jobs still running — job-store.ts's `releaseAllOwnedLeases` releases their leases right there so the next replica adopts them immediately instead of waiting out `HEARTBEAT_STALE_MS` |
+| `job.drain_handed_off` | Jobs still queued at shutdown had their lease released for another replica to adopt — not a failure, and not reflected as `status: 'error'` on the job |
+| `job.lease_lost` | This process's write to a job it thought it owned was fenced — another replica already adopted it (`claimStale`). The run is left to finish; its result is discarded |
+| `job.resumed` | A job was ADOPTED from a lost lease and resumed from its checkpoint (`fromRound`) — the replacement for the old `job.reaped`/`job.reaped_on_read`. Expected after an unclean restart, not a fault by itself |
+| `job.crash_loop_guard` | A job was given up on after `MAX_JOB_ATTEMPTS` restarts without finishing — it may itself be what keeps crashing the process. **Is** worth investigating |
 | `process.memory_pressure` / `process.memory_recovered` | Admission shed new work at 85% of the cgroup limit and released it below 75%. A pressure line with no recovery line is the shape to alert on |
+| `process.memory_hold` / `process.memory_hold_released` | The softer 70%/65% threshold — queued jobs simply wait for a free slot rather than being refused. Informational; not itself a shedding event |
 | `job.rejected` | Group by `reason`: `queue_full` \| `memory_pressure` \| `draining` |
 
 **11. Did one `job_wait` cover the job? (table)** — `job_wait` blocks for the whole job, so the
@@ -273,11 +277,22 @@ config is exported to `vps/observability/alerts/` — Mongo is not backed up, th
 
 | Alert | Tile | Fires at | What it means |
 |-|-|-|-|
-| `job.reaped >= 1 (15m)` | 10 | ≥1 | A job's owner died without draining — SIGKILL or OOM. Counts `job.reaped` *and* `job.reaped_on_read`: the 2026-09-04 OOM produced 1 of the first and 8 of the second, and the alert used to see only the one |
+| `job.crash_loop_guard >= 1 (15m)` | 10 | ≥1 | A job was given up on after `MAX_JOB_ATTEMPTS` restarts without finishing — it may itself be what keeps crashing the process. Replaces the old `job.reaped`/`job.reaped_on_read` alert, which fired on every ADOPTION, including the routine ones a clean rolling deploy now produces via `job.resumed` — this one fires only when adoption keeps failing the same job |
 | `job.error >= 1 (15m)` | 11 | ≥1 | A job ended terminal-`error`. Zero of these in the 14 days before 2026-09-11 — because a zero-evidence job used to report `done` + `partial` instead |
 | `LLM provider failures >= 3 (15m)` | 12 | ≥3 | `worker.failed` + `plan.fallback`. The **earlier** signal: a burst means the IU endpoint is down while individual jobs may still finish degraded. Threshold 3 so a lone worker timeout stays quiet |
 | `memory pressure >= 1 (15m)` | 13 | ≥1 | Admission shed at 85% of the cgroup limit. The only in-process warning a SIGKILL allows |
 | `drain cut live jobs >= 1 (1h)` | 14 | ≥1 | `process.drained` with `remaining > 0` — the drain window elapsed with jobs still running |
+
+`process.loop_lag` (event-loop lag over 1s, error level) is deliberately NOT an alert: it is a
+diagnostic that explains other signals, not one to page on. A starved loop announces itself
+through the alerts above — a `worker.failed` burst, the listener going quiet — and
+`GET /health`'s `eventLoopLagMs` / `eventLoopLagPeakMs` answer "is the loop slow right now"
+without a page. The 2026-09-20 incident (a live process's heartbeat starved long enough to look
+dead) is the shape it was built to explain; the structural fix is `MAX_BODY_BYTES` in
+`response-kind.ts` with the byte-counting reader in `fetch-chain.ts` (bounding what the chain
+downloads and decodes), `PARSE_INPUT_CAP` (bounding the parse itself), and moving that parse
+onto a Bun Worker pool (`agent/parse-pool.ts`) so a bounded-but-heavy document no longer blocks
+this loop at all.
 
 `thresholdType: "above"` is **inclusive** (`above_exclusive` is the strict one), so
 `threshold: 1` fires at 1.
