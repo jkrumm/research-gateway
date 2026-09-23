@@ -12,6 +12,7 @@ import { buildDirectSourceTools } from './direct-sources.js'
 import { sonarSearch, type SonarContextSize } from './sonar.js'
 import { runFetchChain, hostOf } from './fetch-chain.js'
 import { normalizeUrl, type RetrievalLedger } from './ledger.js'
+import { searchBrain } from './brain-search.js'
 
 const tvly = tavily({ apiKey: env.TAVILY_API_KEY })
 
@@ -631,6 +632,38 @@ function buildLibraryDocsTool(ledger: RetrievalLedger, jobId = '-'): AnyTool | n
   }) as AnyTool
 }
 
+// Mini-only: the owner's second brain (a git checkout of an Obsidian vault). Gated on BOTH
+// BRAIN_DIR (to read a note) and BRAIN_BASE_URL (to cite one) — a tool that could read a note
+// but never produce a citable URL for it is worse than absent, per the ledger lesson (every
+// finding needs a URL the ledger has actually seen). Unset either on the VPS/local dev/tests,
+// exactly like buildLibraryDocsTool above.
+function buildBrainNotesTool(ledger: RetrievalLedger, jobId = '-'): AnyTool | null {
+  if (!env.BRAIN_DIR || !env.BRAIN_BASE_URL) return null
+
+  return tool({
+    description:
+      "Search the owner's own curated notes — prior conclusions and decisions already reached, not general web content. Treat a match as a strong lead and cite it, but verify anything time- or version-sensitive (a price, a current version, a live status) against a primary source before asserting it. Cite the returned `url` field verbatim — never a file path or note title.",
+    inputSchema: z.object({
+      query: z.string().describe('What to look up, e.g. "model routing deepseek" or "research gateway grounding"'),
+    }),
+    execute: async ({ query }) => {
+      const result = await searchBrain(query, jobId)
+      if (!result.ok) return { error: result.error }
+      if (result.notes.length === 0) {
+        return { query, results: [], note: 'No matching notes in the brain vault for this query.' }
+      }
+      // The tool read the full note (not a snippet) — recordRetrieved, the "full text" tier,
+      // matching how fetchPage/libraryDocs record a page it actually read in full.
+      for (const n of result.notes) ledger.recordRetrieved(n.url)
+      return {
+        query,
+        results: result.notes,
+        note: "These are the owner's own prior notes. Cite the `url` field exactly as given — never a file path.",
+      }
+    },
+  }) as AnyTool
+}
+
 export function buildTools(args: {
   ledger: RetrievalLedger
   jobId?: string
@@ -670,6 +703,13 @@ export function buildTools(args: {
   const libraryDocsTool = buildLibraryDocsTool(ledger, jid)
   if (libraryDocsTool) {
     tools['libraryDocs'] = libraryDocsTool
+  }
+
+  // Also optional, also registered last — same tools/list-order-stability reasoning as
+  // libraryDocs above (mini-only, absent everywhere else).
+  const brainNotesTool = buildBrainNotesTool(ledger, jid)
+  if (brainNotesTool) {
+    tools['brainNotes'] = brainNotesTool
   }
 
   return Object.fromEntries(Object.entries(tools).map(([name, t]) => [name, instrument(name, t)]))

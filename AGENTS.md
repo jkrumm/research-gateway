@@ -68,8 +68,10 @@ regression against issue #1's case. Full model: README § Grounding.
 The mini runs this natively (LaunchAgents from a deploy clone at `~/.research-gateway/app`,
 `deploy/MINI.md`); the VPS container is the fallback. Every new env var needs a default that
 keeps the VPS unchanged — the mini opts in via `.env.mini.tpl` (`HOST`, `MACHINE`,
-`MEMORY_LIMIT_MB`, OTLP auth). A push reaches both: rollhook on the VPS, the idle-gated poller on
-the mini. `launchd/` template changes need `make launchd-install` by hand.
+`MEMORY_LIMIT_MB`, OTLP auth, `BRAIN_BASE_URL`) and `scripts/launch.sh` (`BRAIN_DIR`, which a
+template can't express since it needs `$HOME` expansion — same reasoning as `JOB_DB_PATH`/
+`YTDLP_PATH`). A push reaches both: rollhook on the VPS, the idle-gated poller on the mini.
+`launchd/` template changes need `make launchd-install` by hand.
 
 ## Deploy-on-push, and what it costs
 
@@ -115,7 +117,7 @@ bun test           # pure-function tests only — needs no secrets
 
 Anything importing `env.ts` is untested by design — factor pure logic out instead
 (`ledger`, `extract`, `archive`, `site-adapters`, `response-kind`, `youtube-captions`,
-`otel-format` are the pattern). Do not mock `env`. `scripts/smoke.ts` runs one
+`otel-format`, `brain` are the pattern). Do not mock `env`. `scripts/smoke.ts` runs one
 `runResearch()` end to end without the HTTP server.
 
 ## File map
@@ -124,9 +126,14 @@ Anything importing `env.ts` is untested by design — factor pure logic out inst
 - `src/agent/{plan,worker,synthesize,run}.ts` — the fan-out: lead plans → workers dig →
   lead synthesizes
 - `src/agent/ledger.ts` + `ground.ts` — the grounding invariant above
-- `src/agent/tools.ts` — the nine tools (source-of-truth lookups + `searchWeb`/`fetchPage`);
+- `src/agent/tools.ts` — the ten tools (source-of-truth lookups + `searchWeb`/`fetchPage`);
   adding a source to an existing tool is cheap, a new tool definition is not (README §
   Source-of-truth lookups)
+- `src/agent/brain.ts` + `brain-search.ts` — `brainNotes`, mini-only (`BRAIN_DIR` +
+  `BRAIN_BASE_URL`): ripgrep over `${BRAIN_DIR}/wiki/` only, realpath-checked against symlink
+  escape (a real case in this vault: a wiki note symlinked to a file outside the vault entirely
+  is dropped, not followed) — never Projects/Areas/Inbox, which carry private data. Ranking/
+  excerpting is pure (brain.ts); the spawn+fs boundary is brain-search.ts.
 - `src/agent/fetch-chain.ts` + `site-adapters.ts` + `lightpanda.ts` + `archive.ts` — the
   5-step `fetchPage` chain (Readability, or `pdftotext` for a PDF (`pdf.ts`) → site adapter →
   lightpanda sidecar → Tavily Extract → Wayback). Readability/site-adapter parsing runs off the event loop in a worker

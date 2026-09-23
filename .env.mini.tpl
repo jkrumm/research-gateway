@@ -33,3 +33,9 @@ OTEL_RESOURCE_ATTRIBUTES=host.name=mini
 # concurrency ceiling is a deliberate, visible choice rather than an
 # inherited default.
 RESEARCH_MAX_CONCURRENCY=3
+
+# brainNotes tool (agent/tools.ts, agent/brain-search.ts) — the second brain's reader app,
+# tailnet-only (dotfiles' Caddyfile: basalt-ui-obsidian demo, port 7733). BRAIN_DIR itself
+# can't live here — templates can't expand $HOME — so scripts/launch.sh exports it directly,
+# next to JOB_DB_PATH/YTDLP_PATH, only when the vault checkout exists.
+BRAIN_BASE_URL=https://brain.mini.jkrumm.com

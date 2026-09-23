@@ -214,8 +214,9 @@ as it decides to (there is no step cap since 2026-09-12), not as much as it is g
 | who published what, what year, how many citations | `academicSearch` + `openalex` / `pubmed` | api.openalex.org · eutils.ncbi.nlm.nih.gov (Semantic Scholar 429s unauthenticated) |
 | what a practitioner said, at length, out loud | `findVideos` | `yt-dlp` search, keyless; `fetchPage` on a watch URL returns the transcript |
 | current API surface of a library | `libraryDocs` | Context7 |
+| what the owner already concluded or decided | `brainNotes` (mini only — `BRAIN_DIR` + `BRAIN_BASE_URL`) | the second brain's `wiki/` tree via ripgrep, cited as brain-reader URLs; never `Projects`/`Areas`/`Inbox` (private) |
 
-**Nine tools, not twelve.** Definitions are re-sent every step, every worker, every job, so
+**Ten tools on the mini, nine elsewhere — not twelve.** Definitions are re-sent every step, every worker, every job, so
 new *ecosystems* go on existing tools (`packageInfo`,
 `academicSearch`) rather than becoming new definitions. Adding a source is cheap; adding a
 tool is not. Podcasts needed no code: episode pages are ordinary web pages Readability reads.

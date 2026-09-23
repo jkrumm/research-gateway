@@ -92,4 +92,12 @@ export RESEARCH_GATEWAY_DEGRADED="${(j:,:)DEGRADED}"
 export JOB_DB_PATH="$HOME/.research-gateway/data/jobs.sqlite"
 export YTDLP_PATH="$HOME/.research-gateway/bin/yt-dlp"
 
+# brainNotes tool (agent/brain-search.ts) — only when the owner's second-brain checkout is
+# actually present. Unset (not DEGRADED) when it's not: this is a mini-only capability, not a
+# thing every deploy of this repo is expected to have, so its absence is not a failure to
+# report — see buildBrainNotesTool's BRAIN_DIR/BRAIN_BASE_URL gate in tools.ts.
+if [[ -d "$HOME/SourceRoot/brain/wiki" ]]; then
+  export BRAIN_DIR="$HOME/SourceRoot/brain"
+fi
+
 exec "$SECRETS_RUN" run --env-file="$TPL_BASE" --env-file="$TPL_MINI" "${OTEL_ARGS[@]}" "${GITHUB_ARGS[@]}" -- bun run src/index.ts

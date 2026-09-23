@@ -66,6 +66,28 @@ const Env = z.object({
     .trim()
     .optional()
     .transform((v) => (v ? v : undefined)),
+  // Absolute path to the owner's second-brain vault (a git checkout of an Obsidian vault) —
+  // mini-only, native LaunchAgent host. Unset everywhere else (VPS, local dev, tests), which
+  // keeps the `brainNotes` tool unregistered entirely (agent/tools.ts), exactly like
+  // `libraryDocs` without CONTEXT7_API_KEY. Search is hard-scoped to `${BRAIN_DIR}/wiki/` in
+  // code (agent/brain-search.ts) — the vault's Projects/Areas/Inbox trees carry private data
+  // and must never be reachable from here, symlink escapes included.
+  //
+  // Empty-as-unset like GITHUB_TOKEN above: templates can't express "absent", only "".
+  BRAIN_DIR: z
+    .string()
+    .trim()
+    .optional()
+    .transform((v) => (v ? v : undefined)),
+  // Base URL of the brain reader app (basalt-ui-obsidian demo, mini-only, tailnet ACL'd — see
+  // dotfiles' Caddyfile). Building a citation URL requires both BRAIN_DIR (to read the note)
+  // and this (to cite it); either missing keeps `brainNotes` unregistered — see
+  // buildBrainNotesTool. `z.url()`, not empty-as-unset: this is a plain config value, not an
+  // `op://` secret ref that could render as `""`.
+  BRAIN_BASE_URL: z.url().optional(),
+  // `rg` resolves via PATH (Homebrew's ripgrep on the mini, /opt/homebrew/bin) — same pattern
+  // as PDFTOTEXT_PATH below. Only meaningful when BRAIN_DIR is set.
+  RG_PATH: z.string().default('rg'),
   // The JavaScript-rendering sidecar — a self-hosted browser engine, and the step that
   // replaced Jina Reader as fetchPage's renderer (see agent/lightpanda.ts, lightpanda/).
   //

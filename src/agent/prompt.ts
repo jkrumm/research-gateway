@@ -67,6 +67,7 @@ get in:
 | Current API surface of a library | \`libraryDocs\` (when available) | search snippets |
 | Who published what, in what year, with how many citations; is there a paper on X | \`academicSearch\` (\`openalex\`, or \`pubmed\` for biomedical) | a summary of the abstract |
 | What a practitioner said in a talk, interview or podcast episode | \`findVideos\` then \`fetchPage\` on the result url | a blog post summarising the talk |
+| Has the owner already looked into this / decided something about it | \`brainNotes\` (when available) | re-deriving a conclusion from scratch |
 
 Three of those have a trap in them. A Docker image has **no single current version** —
 \`latest\` is a moving tag its maintainer can repoint at any time, so read the tag list and the
