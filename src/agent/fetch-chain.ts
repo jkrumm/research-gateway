@@ -6,7 +6,7 @@ import { getActiveSpan } from '../lib/otel.js'
 import { normalizeText, capText, TEXT_CAP } from './extract.js'
 import { resolveSite } from './site-adapters.js'
 import { extractText, readabilityText } from './html-parse.js'
-import { isRawContentType, isDefinitivelyMissing, isPdf, looksBinary } from './response-kind.js'
+import { isRawContentType, isDefinitivelyMissing, isPdf, isPdfContentType, looksBinary } from './response-kind.js'
 import { extractPdfText } from './pdf.js'
 import { MAX_PDF_BYTES } from './pdf-extract.js'
 import { readBoundedBytes, readBoundedText, MAX_BODY_BYTES } from './bounded-read.js'
@@ -367,11 +367,16 @@ export async function runFetchChain(url: string, opts: FetchChainOptions): Promi
         // decoding. This is what closes the bug this whole change fixes: the VPS fetched
         // arxiv.org/pdf/1706.03762, `res.text()` decoded 1,984,323 bytes of PDF binary as
         // UTF-8 "text", and Readability/normalizeText handed that back as a `retrieved`
-        // success. Bounded by MAX_PDF_BYTES so a pathological body is never downloaded in
-        // full before a decision can be made — a truncated read is treated as a miss, same as
-        // any other step-1 failure, and falls through to rendering/Tavily.
+        // success. Bounded by the content-type-specific cap below so a pathological body is
+        // never downloaded in full before a decision can be made — a truncated read is treated
+        // as a miss, same as any other step-1 failure, and falls through to rendering/Tavily.
         const contentType = res.headers.get('content-type')
-        const { bytes, truncated } = await readBoundedBytes(res.body, MAX_PDF_BYTES)
+        // A PDF is the one body read at MAX_PDF_BYTES (poppler needs the whole document); every
+        // non-PDF body is bounded at MAX_BODY_BYTES. The cap is chosen from the DECLARED type
+        // before a single byte is pulled, and isPdf below still runs its magic-byte check on the
+        // read bytes to catch a PDF served under a wrong or absent Content-Type.
+        const capBytes = isPdfContentType(contentType) ? MAX_PDF_BYTES : MAX_BODY_BYTES
+        const { bytes, truncated } = await readBoundedBytes(res.body, capBytes)
 
         if (isPdf(contentType, bytes)) {
           isPdfBody = true
@@ -379,7 +384,7 @@ export async function runFetchChain(url: string, opts: FetchChainOptions): Promi
             // A cut PDF is still a PDF — the renderer has nothing to add to a document with
             // no DOM, so skip it here exactly like the identified-PDF branch below, even though
             // pdftotext never runs against these truncated bytes.
-            attempt(attempts, step1, t1, { ok: false, error: `body exceeds ${MAX_PDF_BYTES} byte cap` })
+            attempt(attempts, step1, t1, { ok: false, error: `body exceeds ${capBytes} byte cap` })
           } else {
             const pdf = await extractPdfText(bytes, { jobId })
             if (pdf.ok) {
@@ -396,11 +401,16 @@ export async function runFetchChain(url: string, opts: FetchChainOptions): Promi
         } else {
           const body = new TextDecoder().decode(bytes)
 
-          // A non-HTML body IS the answer — hand it back verbatim rather than asking an HTML
-          // parser to find an article in it. A cut raw body is still handed back: the first
-          // bytes of a large JSON/CSV dump are exactly what a citation names, and `done` caps
-          // what a worker receives at TEXT_CAP with the notice that says so.
-          if (isRawContentType(contentType)) {
+          // A cut body has no complete document to hand ANY reader — a miss like any other, and
+          // it falls through to the renderer, which is the right reader for a page too heavy to
+          // parse here (or a JSON/CSV endpoint that serves a full answer to a browser but a cut
+          // one to this crawler). Never a reason to hand a parser or a citation a truncated body.
+          if (truncated) {
+            rdReason = 'oversized'
+            attempt(attempts, step1, t1, { ok: false, error: `body exceeds ${capBytes} byte cap` })
+          } else if (isRawContentType(contentType)) {
+            // A non-HTML body IS the answer — hand it back verbatim rather than asking an HTML
+            // parser to find an article in it.
             const raw = normalizeText(body)
             if (raw.length > 0 && !looksBinary(raw)) {
               attempt(attempts, 'raw', t1, { ok: true, chars: raw.length })
@@ -414,12 +424,6 @@ export async function runFetchChain(url: string, opts: FetchChainOptions): Promi
             // otherwise treats as raw text, and that isPdf's magic-byte check didn't own.
             const error = raw.length === 0 ? 'empty body' : 'binary content'
             attempt(attempts, 'raw', t1, { ok: false, chars: raw.length, error })
-          } else if (truncated) {
-            // HTML with no complete document to parse — a miss like any other, and it falls
-            // through to the renderer, which is the right reader for a page too heavy to parse
-            // here. Never a reason to hand the parser a cut DOM.
-            rdReason = 'oversized'
-            attempt(attempts, step1, t1, { ok: false, error: `body exceeds ${MAX_PDF_BYTES} byte cap` })
           } else {
             // Parsing runs in a worker pool (html-parse.ts), off the event loop — linkedom +
             // Readability are synchronous CPU work that would otherwise block /health (issue #21).

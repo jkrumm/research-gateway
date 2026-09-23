@@ -93,7 +93,9 @@ export async function sonarSearch(args: {
   // JSON.parse on that throws a decoder error that says nothing about what went wrong. Bounded
   // like every other network body; a cut response is a throw so the caller's Tavily fallback
   // engages, same as a non-JSON body.
-  const { text: body, truncated } = await readBoundedText(res, MAX_BODY_BYTES)
+  const { text: body, truncated } = await readBoundedText(res, MAX_BODY_BYTES, (info) =>
+    log('tool.sonar', { query: args.query, via: 'oversized', ...info }),
+  )
   if (!res.ok) {
     throw new Error(`sonar HTTP ${res.status}: ${body.slice(0, 300)}`)
   }

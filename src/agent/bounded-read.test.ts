@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test'
-import { readBoundedBytes, readBoundedText } from './bounded-read.js'
+import { readBoundedBytes, readBoundedText, readCappedText, type OversizedInfo } from './bounded-read.js'
 
 function byteStream(chunks: number[][]): ReadableStream<Uint8Array> {
   return new ReadableStream({
@@ -76,9 +76,21 @@ describe('readBoundedText', () => {
   })
 
   it('reports the numbers to onOversized the moment the cap trips', async () => {
-    const calls: Array<{ declaredBytes?: number; readBytes?: number; capBytes: number }> = []
+    const calls: OversizedInfo[] = []
     const res = new Response(textStream(['hello', ' world', ' extra']), {})
     await readBoundedText(res, 11, (info) => calls.push(info))
     expect(calls).toEqual([{ capBytes: 11, readBytes: 17 }])
+  })
+})
+
+describe('readCappedText', () => {
+  it('decodes a stream up to the cap and drops the rest', async () => {
+    const text = await readCappedText(textStream(['hello', ' world', ' extra']), 11)
+    expect(text).toBe('hello world')
+  })
+
+  it('returns an empty string for a null stream', async () => {
+    const text = await readCappedText(null, 100)
+    expect(text).toBe('')
   })
 })

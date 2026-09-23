@@ -104,7 +104,9 @@ async function getJson<T>(url: string, headers: Record<string, string>): Promise
     // Bounded like every other network body — a registry answer is a small JSON document (the
     // largest measured is a full PyPI JSON at ~3.7 MB), so a cut body is a failed lookup, not
     // a partial answer to parse.
-    const { text, truncated } = await readBoundedText(res, MAX_BODY_BYTES)
+    const { text, truncated } = await readBoundedText(res, MAX_BODY_BYTES, (info) =>
+      log('tool.fetchJson', { url, via: 'oversized', ...info }),
+    )
     if (truncated) return { ok: false, error: `response exceeds ${MAX_BODY_BYTES} byte cap` }
     return { ok: true, data: JSON.parse(text) as T }
   } catch (err) {
@@ -486,7 +488,9 @@ function buildGithubFileTool(ledger: RetrievalLedger, jobId: string): AnyTool {
         // Bounded like every other network body — a cut file is not verbatim, so it is a failed
         // read, not a partial answer to quote. (capText already caps what a worker receives at
         // TEXT_CAP; this bounds the download itself.)
-        const { text, truncated } = await readBoundedText(res, MAX_BODY_BYTES)
+        const { text, truncated } = await readBoundedText(res, MAX_BODY_BYTES, (info) =>
+          log('tool.githubFile', { jobId, owner, repo, path, ref: effectiveRef, via: 'oversized', ...info }),
+        )
         if (truncated) {
           const reason = `file exceeds ${MAX_BODY_BYTES} byte cap`
           ledger.recordFailed(blobUrl, reason)

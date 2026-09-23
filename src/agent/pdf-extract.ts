@@ -23,21 +23,6 @@ export const MIN_PDF_TEXT_CHARS = 200
 // guaranteed string on the failure branch — matches html-parse.ts's ParseResponse shape.
 export type PdfExtractResult = { ok: true; text: string } | { ok: false; text: string; error: string }
 
-/** Same cap-and-decode shape as ytdlp.ts's readCapped, duplicated rather than imported so this
- * module stays env-free (ytdlp.ts imports env.js at its top). */
-export async function readCappedText(stream: ReadableStream<Uint8Array> | null, capBytes: number): Promise<string> {
-  if (!stream) return ''
-  const decoder = new TextDecoder()
-  let text = ''
-  let bytes = 0
-  for await (const chunk of stream) {
-    bytes += chunk.length
-    if (bytes > capBytes) break
-    text += decoder.decode(chunk, { stream: true })
-  }
-  return text + decoder.decode()
-}
-
 /**
  * Maps a finished `pdftotext` spawn (exit code, kill signal, both streams) to a step result.
  * Factored out of pdf.ts's `extractPdfText` so the mapping is testable without spawning a

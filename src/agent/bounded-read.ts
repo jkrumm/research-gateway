@@ -80,6 +80,18 @@ export async function readBoundedBytes(
 }
 
 /**
+ * Reads a byte stream up to `capBytes`, decoded to text, discarding whatever comes past the
+ * cap. The shared reader behind the spawned-process streams (pdf.ts's pdftotext, ytdlp.ts's
+ * yt-dlp, brain-search.ts's ripgrep) — kept here, not hand-copied in each spawn wrapper, so
+ * the "read up to a cap, never buffer past it" logic has one home. Built on readBoundedBytes
+ * rather than a second loop.
+ */
+export async function readCappedText(stream: ReadableStream<Uint8Array> | null, capBytes: number): Promise<string> {
+  const { bytes } = await readBoundedBytes(stream, capBytes)
+  return new TextDecoder().decode(bytes)
+}
+
+/**
  * Reads a response body as text under `capBytes`, with a `content-length` early-out so an
  * over-cap body the origin declared up front is never pulled a single byte. Partial text is
  * kept on truncation, same contract as readBoundedBytes. `onOversized` fires with the numbers

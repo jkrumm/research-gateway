@@ -30,7 +30,7 @@ import { log } from '../lib/log.js'
 import { createSemaphore } from '../lib/semaphore.js'
 import { assertPublicHttpUrl } from '../lib/ssrf.js'
 import { pickCaptionTrack, parseJson3, buildTranscriptText, type YtdlpInfo } from './youtube-captions.js'
-import { readBoundedText, MAX_BODY_BYTES } from './bounded-read.js'
+import { readBoundedText, readCappedText, MAX_BODY_BYTES } from './bounded-read.js'
 
 // YouTube rate-limits this datacenter IP under burst (see the module header above) —
 // bounded on purpose, shared by both functions below since both spawn the same binary
@@ -45,19 +45,6 @@ const BROWSER_UA =
 // real video and only guards against a pathological response (a huge search result set, a
 // binary gone wrong).
 const MAX_OUTPUT_BYTES = 8 * 1024 * 1024
-
-async function readCapped(stream: ReadableStream<Uint8Array> | null, cap: number): Promise<string> {
-  if (!stream) return ''
-  const decoder = new TextDecoder()
-  let text = ''
-  let bytes = 0
-  for await (const chunk of stream) {
-    bytes += chunk.length
-    if (bytes > cap) break
-    text += decoder.decode(chunk, { stream: true })
-  }
-  return text + decoder.decode()
-}
 
 function firstErrorLine(stderr: string): string {
   const line = stderr.split('\n').find((l) => l.trim().length > 0)
@@ -84,8 +71,8 @@ async function runYtdlp(args: string[], jobId: string): Promise<SpawnResult> {
     })
 
     const [stdout, stderr] = await Promise.all([
-      readCapped(proc.stdout, MAX_OUTPUT_BYTES),
-      readCapped(proc.stderr, MAX_OUTPUT_BYTES),
+      readCappedText(proc.stdout, MAX_OUTPUT_BYTES),
+      readCappedText(proc.stderr, MAX_OUTPUT_BYTES),
     ])
     const code = await proc.exited
 
@@ -168,7 +155,9 @@ export async function fetchYoutubeTranscript(
       }
       // Bounded like every other network body — a cut caption track is not a transcript, so it
       // is a miss (return null), never a reason to hand parseJson3 a truncated document.
-      const bounded = await readBoundedText(res, MAX_BODY_BYTES)
+      const bounded = await readBoundedText(res, MAX_BODY_BYTES, (info) =>
+        log('tool.ytdlp', { jobId, url: watchUrl, via: 'oversized', ...info }),
+      )
       if (bounded.truncated) {
         log('tool.ytdlp', { jobId, url: watchUrl, ok: false, error: `caption track exceeds ${MAX_BODY_BYTES} byte cap`, extractMs })
         return null

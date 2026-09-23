@@ -11,7 +11,7 @@ import { readFile, realpath, stat } from 'node:fs/promises'
 import { isAbsolute, join, relative } from 'node:path'
 import { env } from '../env.js'
 import { log } from '../lib/log.js'
-import { readCappedText } from './pdf-extract.js'
+import { readCappedText } from './bounded-read.js'
 import { rankAndBuildNotes, parseQueryTerms, buildCorpusStats } from './brain.js'
 import type { BrainCandidate, BrainNoteResult, CorpusStats } from './brain.js'
 

@@ -15,8 +15,9 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { env } from '../env.js'
 import { log } from '../lib/log.js'
-import { mapPdftotextResult, readCappedText, MAX_PDFTOTEXT_OUTPUT_BYTES } from './pdf-extract.js'
+import { mapPdftotextResult, MAX_PDFTOTEXT_OUTPUT_BYTES } from './pdf-extract.js'
 import type { PdfExtractResult } from './pdf-extract.js'
+import { readCappedText } from './bounded-read.js'
 
 // A process.exited hang guard, not a tuning default — mirrors YTDLP_TIMEOUT_MS's role.
 // pdftotext is a CPU-bound parse with no network wait, so 60s is generous headroom over any
