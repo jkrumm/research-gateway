@@ -27,6 +27,7 @@
 // (no imports at all), so pulling it in costs nothing this file doesn't already pay.
 
 import { createIdleWatchdog } from '../lib/idle-watchdog.js'
+import { pdfExtractionSemaphore } from './pdf-semaphore.js'
 
 /** The largest PDF this chain will download and feed to pdftotext. */
 export const PDF_MAX_BYTES = 25 * 1024 * 1024
@@ -36,6 +37,29 @@ export const PDF_MAX_OUTPUT_BYTES = 2 * 1024 * 1024
 
 /** How long `pdftotext` (or the body feeding it) may go with NO progress before it is killed — an idle watchdog on this ONE subprocess's unit of work, not a job-level or wall-clock budget (see ~/.claude/rules/agent-limits.md). "Progress" is any of: a chunk read off the caller's body reader, a chunk written to pdftotext's stdin, a chunk read off its stdout — so a large-but-actively-streaming paper is never punished, only real silence is. A killed extraction is a miss the fetch chain falls through from, exactly like a thrown parse error already is. */
 export const PDF_HANG_GUARD_MS = 60_000
+
+// A per-CHILD virtual-memory ceiling, Linux only — the container's own cgroup limit (2 GiB,
+// shared by the whole process, every job, every worker) cannot express a per-subprocess cap,
+// and nothing else bounds one `pdftotext` invocation's memory. 256 MB against a MEASURED
+// 12-22 MB RSS on real papers (this file's header) is ample headroom for a pathological PDF
+// without letting one runaway extraction pressure the shared container. Not applied on macOS
+// (dev): there is no shared container to protect there, and `sh`'s `ulimit -v` support differs
+// across BSD/macOS in ways not worth chasing for a guard production never needs locally.
+export const PDFTOTEXT_MEMORY_LIMIT_KB = 256 * 1024
+
+// `ulimit -v <kb> && exec "$0" "$@"` sets the limit in a tiny `sh` that then REPLACES itself
+// with pdftotext via `exec` — so `proc.pid`, `proc.kill()`, and `proc.signalCode` all still
+// target pdftotext directly, not a wrapper shell sitting in front of it. A child killed by the
+// limit (an mmap/malloc failure, however poppler surfaces it) is indistinguishable here from
+// any other crashed extraction: it falls through the SAME `proc.signalCode`/`code !== 0`
+// checks below as a corrupt PDF would, which is exactly right — a memory-capped extraction is
+// an ordinary extraction failure (the caller falls through to Tavily Extract), never an
+// over-cap/negative claim about the paper (ground.ts's rule).
+function buildPdftotextCommand(pdftotextPath: string): string[] {
+  const base = [pdftotextPath, '-enc', 'UTF-8', '-nopgbrk', '-', '-']
+  if (process.platform !== 'linux') return base
+  return ['sh', '-c', `ulimit -v ${PDFTOTEXT_MEMORY_LIMIT_KB} && exec "$0" "$@"`, ...base]
+}
 
 const PDF_MAGIC = '%PDF-'
 // A magic sniff is only meaningful within the leading bytes of a response — a real PDF's
@@ -195,30 +219,60 @@ export async function extractPdfText(opts: ExtractPdfTextOptions): Promise<PdfEx
     return { ok: false, overCap: true, reason: `pdf over ${maxBytes} byte cap (declared ${opts.declaredLength})` }
   }
 
-  const proc = Bun.spawn([opts.pdftotextPath, '-enc', 'UTF-8', '-nopgbrk', '-', '-'], {
-    stdin: 'pipe',
-    stdout: 'pipe',
-    stderr: 'pipe',
-  })
+  // Bounded process-wide: nothing else caps how many pdftotext subprocesses run at once across
+  // every job's worker fan-out (pdf-semaphore.ts's header). A waiter here just WAITS — no
+  // timeout, no rejection — for the same reason the agent loop itself has no step/turn/
+  // wall-clock ceiling (~/.claude/rules/agent-limits.md).
+  await pdfExtractionSemaphore.acquire()
+  try {
+    const proc = Bun.spawn(buildPdftotextCommand(opts.pdftotextPath), {
+      stdin: 'pipe',
+      stdout: 'pipe',
+      stderr: 'pipe',
+    })
 
-  // Idle watchdog, armed from the moment the process spawns and reset by every unit of
-  // progress this call can observe (a chunk read off the caller's body, a chunk written to
-  // pdftotext's stdin, a chunk read off its stdout) — see `PDF_HANG_GUARD_MS`'s doc comment for
-  // why this replaced a guard that only armed after the whole body was already piped in.
-  const watchdog = createIdleWatchdog(idleMs)
-  let idleFired = false
-  watchdog.signal.addEventListener('abort', () => {
-    idleFired = true
-    try {
-      proc.kill('SIGKILL')
-    } catch {
-      // already gone
-    }
-  })
-  watchdog.arm()
+    // Idle watchdog, armed from the moment the process spawns and reset by every unit of
+    // progress this call can observe (a chunk read off the caller's body, a chunk written to
+    // pdftotext's stdin, a chunk read off its stdout) — see `PDF_HANG_GUARD_MS`'s doc comment
+    // for why this replaced a guard that only armed after the whole body was already piped in.
+    const watchdog = createIdleWatchdog(idleMs)
+    let idleFired = false
+    watchdog.signal.addEventListener('abort', () => {
+      idleFired = true
+      try {
+        proc.kill('SIGKILL')
+      } catch {
+        // already gone
+      }
+    })
+    watchdog.arm()
 
-  const stdoutPromise = readCapped(proc.stdout, maxOutputBytes, { onChunk: watchdog.arm, idleSignal: watchdog.signal })
-  const stderrPromise = readCapped(proc.stderr, 8_192, { idleSignal: watchdog.signal }).then((r) => r.text)
+    const stdoutPromise = readCapped(proc.stdout, maxOutputBytes, { onChunk: watchdog.arm, idleSignal: watchdog.signal })
+    const stderrPromise = readCapped(proc.stderr, 8_192, { idleSignal: watchdog.signal }).then((r) => r.text)
+
+    return await runPdftotext(proc, opts, { maxBytes, idleMs, watchdog, idleFiredRef: () => idleFired, stdoutPromise, stderrPromise })
+  } finally {
+    pdfExtractionSemaphore.release()
+  }
+}
+
+// The rest of one extraction's lifecycle — writing the body in, ending stdin, and reading the
+// result back out — split into its own function purely so `extractPdfText` above reads as
+// "acquire a slot, spawn, run it, release the slot" with the release in a `finally` that covers
+// every return path below without re-indenting the whole thing under the semaphore's own try.
+async function runPdftotext(
+  proc: Bun.Subprocess<'pipe', 'pipe', 'pipe'>,
+  opts: ExtractPdfTextOptions,
+  ctx: {
+    maxBytes: number
+    idleMs: number
+    watchdog: ReturnType<typeof createIdleWatchdog>
+    idleFiredRef: () => boolean
+    stdoutPromise: Promise<{ text: string; truncated: boolean }>
+    stderrPromise: Promise<string>
+  },
+): Promise<PdfExtractResult> {
+  const { maxBytes, idleMs, watchdog, idleFiredRef, stdoutPromise, stderrPromise } = ctx
 
   let bytes = 0
   let overCap = false
@@ -259,7 +313,7 @@ export async function extractPdfText(opts: ExtractPdfTextOptions): Promise<PdfEx
     await opts.reader.cancel().catch(() => {})
     await stdoutPromise.catch(() => {})
     await stderrPromise.catch(() => {})
-    if (idleFired || err instanceof PdfIdleError) {
+    if (idleFiredRef() || err instanceof PdfIdleError) {
       return { ok: false, overCap: false, reason: `pdftotext idle for ${idleMs}ms` }
     }
     return { ok: false, overCap: false, reason: `pdf stream error: ${String(err)}` }
@@ -291,7 +345,7 @@ export async function extractPdfText(opts: ExtractPdfTextOptions): Promise<PdfEx
   const code = await proc.exited
   watchdog.clear()
 
-  if (idleFired) {
+  if (idleFiredRef()) {
     return { ok: false, overCap: false, reason: `pdftotext idle for ${idleMs}ms` }
   }
   // `proc.signalCode`, not `proc.killed` — measured true on Bun for both a SIGKILL and a

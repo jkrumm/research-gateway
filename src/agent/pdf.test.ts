@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'bun:test'
 import { isPdf, extractPdfText, PDF_MAX_BYTES, pdfTruncationNotice } from './pdf.js'
+import { pdfExtractionSemaphore, PDF_EXTRACTION_CONCURRENCY } from './pdf-semaphore.js'
 
 // Bun.file, not node:fs — importing a `node:*` module here pulls @types/node's OWN global
 // ReadableStream/ReadableStreamDefaultReader declarations into this file's type-checking,
@@ -214,5 +215,26 @@ describe('extractPdfText idle watchdog', () => {
     const reader = streamOf(VALID_PDF).getReader()
     const result = await extractPdfText({ reader, pdftotextPath: PDFTOTEXT_PATH!, hangGuardMs: 50 })
     expect(result.ok).toBe(true)
+  })
+
+  it('bounds concurrent extractions process-wide, queuing the rest rather than running unbounded', async () => {
+    expect(pdfExtractionSemaphore.active).toBe(0) // clean slate — no leaked slot from an earlier test
+
+    // Every one of these stalls (never reads/writes) for ~150ms, long enough to observe the
+    // queue mid-flight; PDF_EXTRACTION_CONCURRENCY + 2 calls guarantees at least 2 are queued.
+    const calls = Array.from({ length: PDF_EXTRACTION_CONCURRENCY + 2 }, () => {
+      const reader = streamOf(new Uint8Array([1, 2, 3])).getReader()
+      return extractPdfText({ reader, pdftotextPath: `${FIXTURES}/stall.sh`, hangGuardMs: 150 })
+    })
+
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(pdfExtractionSemaphore.active).toBeLessThanOrEqual(PDF_EXTRACTION_CONCURRENCY)
+    expect(pdfExtractionSemaphore.queued).toBeGreaterThan(0)
+
+    const results = await Promise.all(calls)
+    expect(results.every((r) => r.ok === false)).toBe(true)
+    // Every acquired slot was released — no leak past the end of the batch.
+    expect(pdfExtractionSemaphore.active).toBe(0)
+    expect(pdfExtractionSemaphore.queued).toBe(0)
   })
 })
