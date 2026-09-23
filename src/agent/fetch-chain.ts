@@ -8,7 +8,7 @@ import { resolveSite } from './site-adapters.js'
 import { isRawContentType, isDefinitivelyMissing, MAX_BODY_BYTES, parseInputOverflow } from './response-kind.js'
 import type { BoundedBody } from './response-kind.js'
 import { getParsePool } from './parse-pool.js'
-import { isPdf, extractPdfText, PDF_MAX_BYTES } from './pdf.js'
+import { isPdf, extractPdfText, PDF_MAX_BYTES, pdfTruncationNotice } from './pdf.js'
 import type { PdfBodyReader } from './pdf.js'
 import { parseRenderResponse, renderUrl } from './lightpanda.js'
 import { fetchYoutubeTranscript } from './ytdlp.js'
@@ -133,6 +133,13 @@ export interface FetchChainOptions {
    * `Memento-Datetime`/path date carries a number.
    */
   onArchive?: (r: { ok: boolean; ms: number; snapshotAgeDays: number | null }) => void
+  /**
+   * Overrides `pdf.ts`'s `PDF_MAX_OUTPUT_BYTES` for this call. Exists purely for testability —
+   * so a test can force a truncated PDF extraction deterministically with a tiny fixture
+   * instead of fabricating a multi-megabyte one — same convention as `renderBaseUrl` above.
+   * Defaults to `pdf.ts`'s own constant, which is what production wants.
+   */
+  pdfMaxOutputBytes?: number
 }
 
 const tvly = tavily({ apiKey: env.TAVILY_API_KEY })
@@ -328,7 +335,7 @@ function attempt(
 }
 
 export async function runFetchChain(url: string, opts: FetchChainOptions): Promise<FetchChainResult> {
-  const { ledger, onTavilyCredits, onRender, onYtdlp, onArchive } = opts
+  const { ledger, onTavilyCredits, onRender, onYtdlp, onArchive, pdfMaxOutputBytes } = opts
   const jobId = opts.jobId ?? '-'
   const renderBaseUrl = opts.renderBaseUrl ?? env.LIGHTPANDA_URL
   const attempts: FetchAttempt[] = []
@@ -543,18 +550,23 @@ export async function runFetchChain(url: string, opts: FetchChainOptions): Promi
                 pdftotextPath: env.PDFTOTEXT_PATH,
                 ...(!definiteByHeader && sniffedHead ? { head: sniffedHead } : {}),
                 ...(Number.isFinite(declared) ? { declaredLength: declared } : {}),
+                ...(pdfMaxOutputBytes !== undefined ? { maxOutputBytes: pdfMaxOutputBytes } : {}),
               })
               if (pdfResult.ok) {
-                const text = normalizeText(pdfResult.text)
-                if (text.length >= MIN_USABLE_CHARS) {
+                const rawText = normalizeText(pdfResult.text)
+                if (rawText.length >= MIN_USABLE_CHARS) {
+                  // A truncated extraction is still `ok: true` (real, usable text) — but never
+                  // handed to a worker without the explicit notice, so a cut paper is never
+                  // mistaken for the whole paper (pdf.ts's own header comment / issue this fixes).
+                  const text = pdfResult.truncated ? rawText + pdfTruncationNotice(pdfMaxOutputBytes) : rawText
                   attempt(attempts, 'pdf', t1, { ok: true, chars: text.length })
-                  log('tool.fetchPage', { jobId, url, via: 'pdf', chars: text.length })
+                  log('tool.fetchPage', { jobId, url, via: 'pdf', chars: text.length, truncated: pdfResult.truncated })
                   return done('pdf', text)
                 }
                 rdReason = 'thin'
-                rdChars = text.length
+                rdChars = rawText.length
                 skipLightpandaForPdf = true // a browser cannot read a PDF any better
-                attempt(attempts, 'pdf', t1, { ok: false, chars: text.length, error: `thin (${text.length} chars)` })
+                attempt(attempts, 'pdf', t1, { ok: false, chars: rawText.length, error: `thin (${rawText.length} chars)` })
               } else if (pdfResult.overCap) {
                 // Never a negative claim about the paper — the caller falls through to
                 // `fail`, and this is `recordFailed`, not `recordMissing` (ground.ts).

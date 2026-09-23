@@ -191,6 +191,22 @@ describe('the PDF step', () => {
     expect(result.attempts.some((a) => a.step === 'lightpanda')).toBe(false)
   })
 
+  it.skipIf(!PDFTOTEXT_PATH)('appends an explicit truncation notice when pdftotext\'s output was cut, and reports it', async () => {
+    stubFetch(() => new Response(PAPER_PDF, { status: 200, headers: { 'content-type': 'application/pdf' } }))
+    const ledger = createLedger()
+
+    // paper.pdf extracts to 223 chars — a cap between MIN_USABLE_CHARS (200) and that forces a
+    // real, deterministic truncation without a multi-megabyte fixture.
+    const result = await runFetchChain(PAGE, { ledger, pdfMaxOutputBytes: 210 })
+
+    expect(result.via).toBe('pdf')
+    expect(result.text).toContain('[truncated:')
+    expect(result.text).toContain('210-byte output cap')
+    expect(result.attempts.find((a) => a.step === 'pdf')).toMatchObject({ ok: true })
+    // Still `retrieved` — a truncated read is a real, if incomplete, read of the paper.
+    expect(ledger.tierOf(PAGE)).toBe('retrieved')
+  })
+
   it('records a failure, never a negative claim, when the PDF is declared over the 25 MB cap', async () => {
     stubFetch(() => new Response(PAPER_PDF, {
       status: 200,

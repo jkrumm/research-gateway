@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test'
-import { isPdf, extractPdfText, PDF_MAX_BYTES } from './pdf.js'
+import { isPdf, extractPdfText, PDF_MAX_BYTES, pdfTruncationNotice } from './pdf.js'
 
 // Bun.file, not node:fs — importing a `node:*` module here pulls @types/node's OWN global
 // ReadableStream/ReadableStreamDefaultReader declarations into this file's type-checking,
@@ -139,6 +139,33 @@ describe('extractPdfText', () => {
     }
     // Cut a few chunks past the cap, nowhere near "pulled forever".
     expect(pulled).toBeLessThan(10)
+  })
+
+  it.skipIf(!PDFTOTEXT_PATH)('reports a real extraction whose OUTPUT was cut as ok:true with truncated:true, keeping the part that fit', async () => {
+    const reader = streamOf(VALID_PDF).getReader()
+    const result = await extractPdfText({ reader, pdftotextPath: PDFTOTEXT_PATH!, maxOutputBytes: 5 })
+    expect(result.ok).toBe(true)
+    if (result.ok) {
+      expect(result.truncated).toBe(true)
+      expect(result.text.length).toBeGreaterThan(0)
+      expect(result.text.length).toBeLessThanOrEqual(5)
+    }
+  })
+
+  it.skipIf(!PDFTOTEXT_PATH)('reports truncated:false for an extraction that never hit the output cap', async () => {
+    const reader = streamOf(VALID_PDF).getReader()
+    const result = await extractPdfText({ reader, pdftotextPath: PDFTOTEXT_PATH! })
+    expect(result.ok).toBe(true)
+    if (result.ok) expect(result.truncated).toBe(false)
+  })
+})
+
+describe('pdfTruncationNotice', () => {
+  it('names the byte cap and reads as an actionable notice, not a bare marker', () => {
+    const notice = pdfTruncationNotice(12345)
+    expect(notice).toContain('12345')
+    expect(notice).toContain('truncated')
+    expect(notice.startsWith('\n\n')).toBe(true)
   })
 })
 

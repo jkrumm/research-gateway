@@ -59,7 +59,19 @@ export function isPdf(input: { contentType?: string | null; head?: Uint8Array })
   return text.includes(PDF_MAGIC)
 }
 
-export type PdfExtractResult = { ok: true; text: string } | { ok: false; reason: string; overCap: boolean }
+export type PdfExtractResult =
+  | { ok: true; text: string; truncated: boolean }
+  | { ok: false; reason: string; overCap: boolean }
+
+// Mirrors extract.ts's `capText` notice — an honest, actionable marker rather than a bare
+// `[truncated]` flag, worded for what actually happened HERE: pdftotext's OUTPUT was cut at
+// the byte cap while it was still being read, not the source PDF itself, so there is no
+// total-length figure to report the way `capText`'s does (the cap stopped the read before the
+// true length was ever known). Exported so both `extractPdfText`'s own truncation and
+// `fetch-chain.ts`'s consumption of it stay worded identically.
+export function pdfTruncationNotice(maxOutputBytes: number = PDF_MAX_OUTPUT_BYTES): string {
+  return `\n\n[truncated: this PDF's extracted text exceeded pdftotext's ${maxOutputBytes}-byte output cap and was cut short. The remainder was not included — if the information you need is not above, it may be further down this paper.]`
+}
 
 // The two `ReadableStreamDefaultReader` members this module actually calls, named
 // structurally rather than as the ambient global type: without `lib.dom` in this project's
@@ -133,15 +145,24 @@ function readCapped(
         const { done, value } = opts?.idleSignal ? await withIdle(reader.read(), opts.idleSignal) : await reader.read()
         if (done || !value) break
         opts?.onChunk?.()
-        bytes += value.byteLength
         // Past the cap, keep DRAINING without keeping: stopping the read would leave pdftotext
         // blocked on a full pipe until the idle watchdog killed it, turning a long paper into a miss.
-        if (truncated) continue
-        if (bytes > cap) {
-          truncated = true
+        if (truncated) {
+          bytes += value.byteLength
           continue
         }
-        text += decoder.decode(value, { stream: true })
+        const room = cap - bytes
+        if (value.byteLength <= room) {
+          bytes += value.byteLength
+          text += decoder.decode(value, { stream: true })
+          continue
+        }
+        // This chunk crosses the cap — keep the part that still fits rather than discarding the
+        // whole chunk, so a cap that lands mid-write still returns real (if incomplete) text
+        // instead of silently going empty.
+        truncated = true
+        bytes += value.byteLength
+        if (room > 0) text += decoder.decode(value.subarray(0, room), { stream: true })
       }
     } catch {
       // An idle-aborted read, or the stream genuinely erroring (the process was SIGKILLed out
@@ -266,7 +287,7 @@ export async function extractPdfText(opts: ExtractPdfTextOptions): Promise<PdfEx
     return { ok: false, overCap: true, reason: `pdf over ${maxBytes} byte cap (read ${bytes} bytes)` }
   }
 
-  const [{ text: stdout }, stderrText] = await Promise.all([stdoutPromise, stderrPromise])
+  const [{ text: stdout, truncated: stdoutTruncated }, stderrText] = await Promise.all([stdoutPromise, stderrPromise])
   const code = await proc.exited
   watchdog.clear()
 
@@ -283,5 +304,11 @@ export async function extractPdfText(opts: ExtractPdfTextOptions): Promise<PdfEx
     return { ok: false, overCap: false, reason: `pdftotext exited ${code}: ${stderrSlice}` }
   }
 
-  return { ok: true, text: stdout }
+  // `stdoutTruncated` (readCapped's own flag, previously discarded here) means the OUTPUT was
+  // cut at `maxOutputBytes` while pdftotext was still writing — a real, complete extraction
+  // that ran long, not a failure. Still `ok: true` (this is usable text), but the caller MUST
+  // see that it is incomplete: fetch-chain.ts's PDF branch is what turns this into the
+  // explicit notice a worker actually reads (`pdfTruncationNotice`), so a cut paper can never
+  // be treated as the whole paper downstream.
+  return { ok: true, text: stdout, truncated: stdoutTruncated }
 }
