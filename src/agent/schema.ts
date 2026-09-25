@@ -98,7 +98,7 @@ export const Grounding = z.object({
   citationsDegraded: z
     .number()
     .describe(
-      'Of the capped citations, those whose claim names the subject of an `unverified` entry. Any value above 0 marks the run `partial`.',
+      'Of the capped citations, those whose claim names the subject of an `unverified` entry. A cap is not lost evidence, so this alone does not make a run `partial`; it is the transparency signal for why a citation sits at `low`.',
     ),
 })
 export type Grounding = z.infer<typeof Grounding>

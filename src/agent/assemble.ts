@@ -10,13 +10,28 @@ import type { SubmittedReport, SubQuestion, WorkerDigest } from './schema.js'
 // guards on `allDigests.length > 0`, but this function must not itself be a trap.
 export function assembleReport(digests: WorkerDigest[]): SubmittedReport {
   return {
-    report: digests.map((d) => `## ${d.subQuestion}\n\n${d.summary}`).join('\n\n'),
+    report: digests.map((d) => `## ${headingFor(d.subQuestion)}\n\n${d.summary}`).join('\n\n'),
     citations: digests.flatMap((d) =>
       d.findings.map((f) => ({ claim: f.claim, url: f.url, confidence: f.confidence })),
     ),
     sources: [...new Set(digests.flatMap((d) => d.sourcesRead))],
     unverified: digests.flatMap((d) => d.blockedSources),
   }
+}
+
+// A worker's `subQuestion` is the full research prompt, not a title: "(a) how does X work;
+// (b) what does Y cost; (c) …" can run to 400+ characters, and used verbatim as an H2 it
+// produces an unreadable table of contents in the assembled (fallback) report. Reduce it to
+// its first clause — up to the first ':', '(' or '?' — and cap it, since that clause is the
+// part naming the topic. Pure and total: an empty or delimiter-first question falls back to
+// the trimmed original, and the cap never yields a bare ellipsis.
+const MAX_HEADING_CHARS = 80
+
+export function headingFor(subQuestion: string): string {
+  const trimmed = subQuestion.trim()
+  const clause = trimmed.split(/[:?(]/, 1)[0]?.trim() ?? ''
+  const base = clause.length > 0 ? clause : trimmed
+  return base.length > MAX_HEADING_CHARS ? `${base.slice(0, MAX_HEADING_CHARS - 1).trimEnd()}…` : base
 }
 
 // Gap-filling rounds (deep only): dedup a round's openGaps against every sub-question
