@@ -210,6 +210,39 @@ export function isTerminalStatus(status: JobStatus): boolean {
   return status === 'done' || status === 'error' || status === 'cancelled'
 }
 
+// Where a running job is, reported live by `runResearch` — held in memory by the process that
+// runs the job, so it is only present while that process is running it. Worker counts are
+// cumulative across rounds: a gap round adds to `total`, so done === total means "no worker
+// is still out", not "the job is nearly finished".
+export const JobProgress = z.object({
+  phase: z
+    .enum(['planning', 'researching', 'synthesizing', 'reviewing'])
+    .describe(
+      'planning = lead model decomposing the query; researching = workers out; synthesizing = writing the report; reviewing = the consistency pass (last LLM call).',
+    ),
+  round: z.number().describe('Research round, 1-based; > 1 means a gap-filling round.'),
+  workers: z.object({ done: z.number(), total: z.number() }),
+})
+export type JobProgress = z.infer<typeof JobProgress>
+
+// The live-status fields both status doors (REST GET /research/:jobId, MCP job_status /
+// job_wait) add to a job, so a caller with many jobs in flight can tell "queued behind others"
+// from "running, workers 5 of 8" from "stuck".
+export const JobLiveFields = {
+  depth: Depth,
+  submittedAt: z.string().describe('ISO time the job was created.'),
+  startedAt: z.string().nullable().describe('ISO time it got a slot and started running; null while queued.'),
+  finishedAt: z.string().nullable().describe('ISO time it reached a terminal status.'),
+  queuePosition: z
+    .number()
+    .nullable()
+    .describe('1-based place in the line while queued (1 = starts next); null otherwise.'),
+  progress: JobProgress.nullable().describe('Live phase while running; null when queued or terminal.'),
+  typicalDurationMs: z
+    .object({ p50: z.number(), p90: z.number() })
+    .describe('Measured run time for this depth (docs/measurements.md) — a range to judge "stuck" against, not an ETA.'),
+}
+
 // Returned by the `research` submit tool — a handle, not the report.
 export const JobHandle = z.object({
   jobId: z
@@ -225,6 +258,7 @@ export type JobHandle = z.infer<typeof JobHandle>
 // Returned by job_wait / job_status — the live state of a research job.
 export const JobState = z.object({
   jobId: z.string(),
+  ...JobLiveFields,
   status: JobStatus.describe('queued=waiting, running=executing, done/error/cancelled=terminal.'),
   stillRunning: z
     .boolean()

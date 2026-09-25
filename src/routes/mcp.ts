@@ -8,6 +8,7 @@ import {
   createJob,
   findActiveJobByIdempotencyKey,
   getJob,
+  liveFields,
   type Job,
 } from '../lib/job-store.js'
 import { POLL_INTERVAL_MS, shouldKeepWaiting, waitDeadline } from '../lib/wait.js'
@@ -64,12 +65,23 @@ function toState(job: Job): z.infer<typeof JobState> {
   const end = job.finishedAt ?? Date.now()
   return {
     jobId: job.jobId,
+    ...liveFields(job),
     status: job.status,
     stillRunning: !terminal,
     elapsedMs: Math.max(0, end - start),
     result: job.status === 'done' ? (job.result ?? null) : null,
     error: job.status === 'error' || job.status === 'cancelled' ? (job.error ?? null) : null,
   }
+}
+
+// One line for the human watching a job_wait: where the job is, not just that it is alive.
+function progressMessage(job: Job): string {
+  const live = liveFields(job)
+  if (live.queuePosition !== null) return `Queued, position ${live.queuePosition}…`
+  if (live.progress === null) return 'Researching…'
+  const { phase, round, workers } = live.progress
+  if (phase !== 'researching') return `${phase[0]?.toUpperCase()}${phase.slice(1)}…`
+  return `Researching, round ${round}: ${workers.done}/${workers.total} workers done…`
 }
 
 function stateResult(job: Job): CallToolResult {
@@ -212,7 +224,7 @@ function buildMcpServer(): McpServer {
           try {
             await ctx.mcpReq.notify({
               method: 'notifications/progress',
-              params: { progressToken, progress: tick, message: `Researching… (${secs}s)` },
+              params: { progressToken, progress: tick, message: `${progressMessage(job)} (${secs}s)` },
             })
           } catch {
             // ignore — progress is best-effort

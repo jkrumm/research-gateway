@@ -7,7 +7,7 @@ import { applyConsistencyGate, CONSISTENCY_WARNING } from './extract.js'
 import { assembleReport, nextRoundQuestions } from './assemble.js'
 import { mergeLedgers, type LedgerSnapshot } from './ledger.js'
 import { groundReport } from './ground.js'
-import type { Depth, ResearchReport, SubmittedReport, SubQuestion, WorkerDigest } from './schema.js'
+import type { Depth, JobProgress, ResearchReport, SubmittedReport, SubQuestion, WorkerDigest } from './schema.js'
 import { log } from '../lib/log.js'
 import { chooseCost, emptyUsage, addUsage } from '../lib/usage.js'
 import { readSearchSpend, readRenderStats } from './tools.js'
@@ -79,11 +79,14 @@ async function dispatchRound(
   round: number,
   context?: string,
   signal?: AbortSignal,
+  onWorkerDone?: () => void,
 ): Promise<RoundResult> {
   const sem = new Semaphore(env.WORKER_MAX_CONCURRENCY)
   const settled = await Promise.allSettled<WorkerOutcome>(
     subQuestions.map((sq) =>
-      withLimit(sem, () => runWorker({ subQuestion: sq.question, context, depth, jobId, round, signal })),
+      withLimit(sem, () =>
+        runWorker({ subQuestion: sq.question, context, depth, jobId, round, signal }).finally(() => onWorkerDone?.()),
+      ),
     ),
   )
 
@@ -101,6 +104,7 @@ function tracedRound(args: {
   retry: boolean
   context?: string | undefined
   signal?: AbortSignal | undefined
+  onWorkerDone?: (() => void) | undefined
 }): Promise<RoundResult> {
   return withSpan(
     'research.round',
@@ -118,6 +122,7 @@ function tracedRound(args: {
         args.round,
         args.context,
         args.signal,
+        args.onWorkerDone,
       )
       s.setAttributes({ 'research.digests_returned': result.digests.length })
       return result
@@ -136,12 +141,23 @@ export async function runResearch(
     // consistency all degrade instead of throwing, so without these checks an aborted job would
     // fall through to the fallback plan / assembled report and "finish".
     signal?: AbortSignal | undefined
+    // Live phase for status reads (job-store.ts holds the latest). Worker counts are cumulative
+    // across rounds and the retry, so a caller sees the job's whole fan-out, not one round's.
+    onProgress?: ((progress: JobProgress) => void) | undefined
   },
   onUsage?: (stats: JobUsage) => void,
 ): Promise<ResearchReport> {
   const depth = input.depth ?? 'standard'
   const jobId = input.jobId ?? '-'
   const signal = input.signal
+  const workers = { done: 0, total: 0 }
+  let progressRound = 1
+  const setPhase = (phase: JobProgress['phase']): void =>
+    input.onProgress?.({ phase, round: progressRound, workers: { ...workers } })
+  const onWorkerDone = (): void => {
+    workers.done++
+    setPhase('researching')
+  }
 
   // The whole job is one trace, and its id is derived from the jobId — so a job id from the
   // REST/MCP surface is enough to find the trace, with no lookup table in between.
@@ -157,6 +173,7 @@ export async function runResearch(
       const start = Date.now()
 
       log('research.start', { jobId, depth, queryPreview: input.query.slice(0, 200) })
+      setPhase('planning')
 
       let leadUsage = emptyUsage()
       let workerUsage = emptyUsage()
@@ -204,7 +221,11 @@ export async function runResearch(
           allFailures.push(...result.failures)
         }
 
+        progressRound = round
+        workers.total += currentQuestions.length
+        setPhase('researching')
         const first = await tracedRound({
+          onWorkerDone,
           subQuestions: currentQuestions,
           depth,
           jobId,
@@ -235,8 +256,11 @@ export async function runResearch(
           })
           await new Promise((resolve) => setTimeout(resolve, ROUND_RETRY_BACKOFF_MS))
           alreadyRetried = true
+          workers.total += currentQuestions.length
+          setPhase('researching')
           absorb(
             await tracedRound({
+              onWorkerDone,
               subQuestions: currentQuestions,
               depth,
               jobId,
@@ -320,6 +344,7 @@ export async function runResearch(
         throw new Error(`Research produced no evidence: ${describeFailures(allFailures)}`)
       }
 
+      setPhase('synthesizing')
       const { report: synthesized, usage: synthesisUsage } = await synthesize({
         query: input.query,
         context: input.context,
@@ -356,6 +381,7 @@ export async function runResearch(
       // stays at report assembly: the gate runs before groundReport, so grounded.warnings
       // does not exist yet. The outcome returns whole from the callback rather than being
       // written into a closure variable, so it is a const — no nullable bookkeeping.
+      setPhase('reviewing')
       const gateOutcome = await withSpan(
         'research.consistency_gate',
         { 'report.reason': reason },

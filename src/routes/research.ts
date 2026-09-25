@@ -1,7 +1,7 @@
 import { Elysia } from 'elysia'
 import { z } from 'zod'
-import { ResearchInput, ResearchReport } from '../agent/schema.js'
-import { admission, cancelJob, createJob, findActiveJobByIdempotencyKey, getJob } from '../lib/job-store.js'
+import { JobLiveFields, ResearchInput, ResearchReport } from '../agent/schema.js'
+import { admission, cancelJob, createJob, findActiveJobByIdempotencyKey, getJob, liveFields } from '../lib/job-store.js'
 import { startResearchJob } from '../lib/run-job.js'
 import { log } from '../lib/log.js'
 import { env } from '../env.js'
@@ -93,6 +93,7 @@ export const researchRoutes = new Elysia({ prefix: '/research' })
       }
       return {
         status: job.status,
+        ...liveFields(job),
         result: job.result,
         error: job.error,
       }
@@ -101,6 +102,7 @@ export const researchRoutes = new Elysia({ prefix: '/research' })
       response: {
         200: z.object({
           status: z.string(),
+          ...JobLiveFields,
           result: ResearchReport.optional(),
           error: z.string().optional(),
         }),
@@ -110,7 +112,7 @@ export const researchRoutes = new Elysia({ prefix: '/research' })
         tags: ['Research'],
         summary: 'Poll a research job',
         description:
-          'Returns the current status of a research job. When `status` is `done`, `result` contains the research report. When `status` is `error`, `error` contains the failure message.',
+          'Returns the current status of a research job, plus live fields: `queuePosition` while queued, `progress` (phase, round, workers done/total) while running, timestamps, and the measured p50/p90 duration for its depth. When `status` is `done`, `result` contains the research report. When `status` is `error` or `cancelled`, `error` says why.',
         security: [{ BearerAuth: [] }],
       },
     },

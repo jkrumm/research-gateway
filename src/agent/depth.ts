@@ -57,6 +57,15 @@ export interface DepthProfile {
 // `RESEARCH_IDLE_TIMEOUT_MS` in env.ts, and worker.ts/plan.ts/synthesize.ts). `quick` is
 // "fewer workers, fewer sources, a narrower directive", not "fastest" — a quick job with an
 // unusually stubborn source can still take longer than a lucky standard one.
+// Measured wall time per depth — docs/measurements.md § Job duration (the 30-day span record,
+// 2026-08-09..09-08). Surfaced on every status read so a caller can tell slow from stuck;
+// re-derive it together with that table, never from one run.
+export const TYPICAL_DURATION_MS: Record<Depth, { p50: number; p90: number }> = {
+  quick: { p50: 38_000, p90: 55_000 },
+  standard: { p50: 111_000, p90: 259_000 },
+  deep: { p50: 366_000, p90: 1_133_000 },
+}
+
 export const profiles: Record<Depth, DepthProfile> = {
   quick: {
     workers: 1,

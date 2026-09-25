@@ -1,4 +1,4 @@
-import { updateJob, withSlot, startHeartbeat, registerCancel, type Job } from './job-store.js'
+import { updateJob, withSlot, startHeartbeat, registerCancel, setJobProgress, type Job } from './job-store.js'
 import { runResearch, type JobUsage } from '../agent/run.js'
 import { reportUsage } from './usage.js'
 import { env } from '../env.js'
@@ -61,7 +61,14 @@ export function startResearchJob(job: Job): void {
 
     try {
       const result = await runResearch(
-        { query: job.query, context: job.context, depth: job.depth, jobId: job.jobId, signal: controller.signal },
+        {
+          query: job.query,
+          context: job.context,
+          depth: job.depth,
+          jobId: job.jobId,
+          signal: controller.signal,
+          onProgress: (progress) => setJobProgress(job.jobId, progress),
+        },
         (stats) => {
           lastStats = stats
           emit(stats, 'ok')

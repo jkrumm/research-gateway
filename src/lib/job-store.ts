@@ -1,5 +1,14 @@
 import { env } from '../env.js'
-import { isTerminalStatus, type ResearchReport, type Depth, type JobStatus } from '../agent/schema.js'
+import {
+  isTerminalStatus,
+  type ResearchReport,
+  type Depth,
+  type JobLiveFields,
+  type JobProgress,
+  type JobStatus,
+} from '../agent/schema.js'
+import { TYPICAL_DURATION_MS } from '../agent/depth.js'
+import type { z } from 'zod'
 import { openJobDb } from './job-db.js'
 import { log } from './log.js'
 import { admit, canDispatch, type AdmissionRefusal } from './admission.js'
@@ -119,6 +128,7 @@ function sweep(): void {
     if (!isTerminalStatus(job.status)) continue
     jobs.delete(id)
     owned.delete(id)
+    progress.delete(id)
   }
   // Only the sqlite row is held to the retention window. One DELETE, so a backlog of finished
   // jobs is pruned without walking them into memory.
@@ -364,6 +374,36 @@ export function cancelJob(jobId: string): CancelOutcome {
   waiter?.reject(reason)
   log('job.cancelled', { jobId, wasStatus: job.status })
   return { kind: 'cancelled', job: cancelled }
+}
+
+// ── Live status ─────────────────────────────────────────────────────────────
+
+// Latest phase per running job, fed by runResearch's onProgress through run-job.ts. Memory
+// only, deliberately: it changes every worker completion, is worthless once the job ends, and
+// a job whose process died is reaped to 'error' anyway — so nothing here needs to survive.
+const progress = new Map<string, JobProgress>()
+
+export function setJobProgress(jobId: string, value: JobProgress): void {
+  progress.set(jobId, value)
+}
+
+type LiveFields = { [K in keyof typeof JobLiveFields]: z.infer<(typeof JobLiveFields)[K]> }
+
+const iso = (ms: number | undefined): string | null => (ms === undefined ? null : new Date(ms).toISOString())
+
+// What both status doors add to a job. `queuePosition` and `progress` are only known to the
+// process running the job; a job owned by the sibling replica of a rolling deploy reads null.
+export function liveFields(job: Job): LiveFields {
+  const index = job.status === 'queued' ? queue.findIndex((waiter) => waiter.jobId === job.jobId) : -1
+  return {
+    depth: job.depth,
+    submittedAt: new Date(job.createdAt).toISOString(),
+    startedAt: iso(job.startedAt),
+    finishedAt: iso(job.finishedAt),
+    queuePosition: index === -1 ? null : index + 1,
+    progress: job.status === 'running' ? (progress.get(job.jobId) ?? null) : null,
+    typicalDurationMs: TYPICAL_DURATION_MS[job.depth],
+  }
 }
 
 export function jobCounts(): { running: number; queued: number } {

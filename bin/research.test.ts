@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'bun:test'
 import {
   exitCodeFor,
+  liveStatusLine,
   parseArgs,
   reportSummaryLines,
   resolveContextText,
@@ -339,5 +340,49 @@ describe('run — cancel', () => {
     const { io, err } = makeIo()
     expect(await run(['wait', 'job-21'], makeCtx({ fetchFn }), io)).toBe(1)
     expect(err.join('')).toContain('cancelled')
+  })
+})
+
+describe('liveStatusLine', () => {
+  const now = Date.parse('2026-09-25T07:10:00.000Z')
+
+  it('shows queue position and wait time for a queued job', () => {
+    const line = liveStatusLine(
+      {
+        status: 'queued',
+        result: null,
+        error: null,
+        submittedAt: '2026-09-25T07:08:00.000Z',
+        startedAt: null,
+        queuePosition: 4,
+        progress: null,
+        typicalDurationMs: { p50: 111_000, p90: 259_000 },
+      },
+      now,
+    )
+    expect(line).toBe('status: queued · queue position 4 · waiting 120s')
+  })
+
+  it('shows phase, worker counts and run time against the typical range for a running job', () => {
+    const line = liveStatusLine(
+      {
+        status: 'running',
+        result: null,
+        error: null,
+        submittedAt: '2026-09-25T07:00:00.000Z',
+        startedAt: '2026-09-25T07:09:15.000Z',
+        queuePosition: null,
+        progress: { phase: 'researching', round: 2, workers: { done: 5, total: 8 } },
+        typicalDurationMs: { p50: 111_000, p90: 259_000 },
+      },
+      now,
+    )
+    expect(line).toBe(
+      'status: running · researching round 2, workers 5/8 · running 45s (typical p50 111s, p90 259s)',
+    )
+  })
+
+  it('degrades to the bare status against a server without live fields', () => {
+    expect(liveStatusLine({ status: 'running', result: null, error: null }, now)).toBe('status: running')
   })
 })

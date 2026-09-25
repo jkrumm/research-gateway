@@ -12,7 +12,7 @@
 // failure is retried with backoff rather than aborting the wait.
 
 import { readFileSync } from 'node:fs'
-import type { Depth, JobStatus, ResearchReport } from '../src/agent/schema.js'
+import type { Depth, JobProgress, JobStatus, ResearchReport } from '../src/agent/schema.js'
 
 const DEFAULT_URL = 'http://127.0.0.1:7780'
 const POLL_MS = 2_000
@@ -292,7 +292,31 @@ function renderJobHuman(job: JobView): string {
   if (job.status === 'done' && job.result) {
     return [`status: done`, ...reportSummaryLines(job.result), '', job.result.report].join('\n')
   }
-  return `status: ${job.status}`
+  return liveStatusLine(job, Date.now())
+}
+
+const secs = (ms: number): string => `${Math.round(ms / 1000)}s`
+
+/** One line for a queued/running job: where it is and how long it has been there, against the
+ *  measured p50/p90 for its depth — enough to tell "queued behind others" from "stuck". */
+export function liveStatusLine(job: JobView, now: number): string {
+  const parts = [`status: ${job.status}`]
+  if (job.queuePosition != null) parts.push(`queue position ${job.queuePosition}`)
+  if (job.progress != null) {
+    const { phase, round, workers } = job.progress
+    parts.push(phase === 'researching' ? `researching round ${round}, workers ${workers.done}/${workers.total}` : phase)
+  }
+  const since = job.status === 'running' ? job.startedAt : job.submittedAt
+  if (since != null) {
+    const elapsed = `${job.status === 'running' ? 'running' : 'waiting'} ${secs(now - Date.parse(since))}`
+    const typical = job.typicalDurationMs
+    parts.push(
+      typical && job.status === 'running'
+        ? `${elapsed} (typical p50 ${secs(typical.p50)}, p90 ${secs(typical.p90)})`
+        : elapsed,
+    )
+  }
+  return parts.join(' · ')
 }
 
 // ── HTTP client (the only I/O against the server) ────────────────────────────────
@@ -335,6 +359,12 @@ export interface JobView {
   status: JobStatus
   result: ResearchReport | null
   error: string | null
+  // Live fields (GET /research/:jobId). Optional so an older server's response still parses.
+  submittedAt?: string
+  startedAt?: string | null
+  queuePosition?: number | null
+  progress?: JobProgress | null
+  typicalDurationMs?: { p50: number; p90: number }
 }
 
 interface SubmitResult {
