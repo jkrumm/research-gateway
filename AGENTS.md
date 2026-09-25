@@ -12,6 +12,7 @@ agent needs before touching code; don't restate what README already owns.
 | `docs/decisions.md` | Why AI SDK not Mastra, the model history (DeepSeek → Luna → DeepSeek), the fan-out shape |
 | `docs/measurements.md` | Every number, with the run it came from (search backend, fetch chain, cost) |
 | `docs/field-notes.md` | Consumer-side observations, open backlog (now GitHub issues) |
+| `docs/architecture-review-2026-09.md` | End-to-end architecture challenge: the nine-point verdict and the phased plan in flight |
 | `docs/hyperdx-dashboard.md` | Span model + dashboard SQL |
 | `deploy/DEPLOY.md` | VPS deploy steps; **the vps repo owns compose + `.env.tpl`, this repo has no copy** |
 | `deploy/MINI.md` | The mini's native instance: layout, secrets overlays, the deploy poller, operating targets |
