@@ -3,6 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "bin": {
+    "research": "bin/research.ts"
+  },
   "scripts": {
     "start": "bun run src/index.ts",
     "dev": "secrets-run run --env-file=.env.local.tpl -- bun run --hot src/index.ts",

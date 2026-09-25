@@ -112,7 +112,13 @@ const Env = z.object({
   ARGO_API_SECRET: z.string().optional(),
   RESEARCH_MAX_CONCURRENCY: z.coerce.number().default(3),
   RESEARCH_MAX_QUEUE: z.coerce.number().default(50),
-  JOB_TTL_MINUTES: z.coerce.number().default(30),
+  // Result retention. A finished job's status and result stay readable from sqlite for this
+  // long, so the `jobId` is a durable handle: a client whose wait was cut (a closed session, a
+  // restart, a dropped stream) can still fetch the result later. The in-memory map holds only
+  // queued/running jobs (plus a terminal one for the ~60s until the next sweep), so a week of
+  // finished jobs costs no memory; the sweep deletes rows older than this. Default 10080
+  // (7 days). SQLite growth is roughly 50-100 KB per finished job — trivial.
+  JOB_TTL_MINUTES: z.coerce.number().default(10080),
   // How long index.ts's shutdown path waits for RUNNING jobs to finish before force-exiting
   // (see `drainThenExit`, `waitForDrain`).
   //

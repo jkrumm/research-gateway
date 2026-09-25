@@ -101,6 +101,16 @@ deploy: ## Run the app clone's mini-deploy.sh once, now (same script the poller 
 	@"$(APP_DIR)/scripts/mini-deploy.sh"
 
 # ==============================================================================
+# CLI
+# ==============================================================================
+
+.PHONY: install-cli
+install-cli: ## Symlink the research CLI into ~/.local/bin
+	@mkdir -p ~/.local/bin
+	@ln -sf "$(CURDIR)/bin/research.ts" ~/.local/bin/research
+	@echo "research CLI symlinked to ~/.local/bin/research (edit: make install-cli, run: research --help)"
+
+# ==============================================================================
 # Validation
 # ==============================================================================
 
@@ -127,6 +137,8 @@ help:
 	@echo "  make launchd-restart    Kickstart (restart) the gateway (FORCE=1 skips the busy-job guard)"
 	@echo "  make launchd-logs       Tail all research-gateway LaunchAgent logs"
 	@echo "  make deploy             Run the app clone's mini-deploy.sh once, now"
+	@echo ""
+	@echo "  make install-cli        Symlink the research CLI into ~/.local/bin"
 	@echo ""
 
 .DEFAULT_GOAL := help

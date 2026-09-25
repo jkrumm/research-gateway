@@ -329,6 +329,39 @@ describe('openJobDb — schema migration', () => {
     expect(db?.get('legacy-absent')?.context).toBeUndefined()
     db?.close()
   })
+
+  it('opens a database created before idempotency_key existed, migrates it, and the key lookup works', () => {
+    const dbPath = tmpDbPath()
+
+    // The heartbeat-era schema lacked idempotency_key.
+    const legacy = new Database(dbPath, { create: true })
+    legacy.exec(`
+      CREATE TABLE job (
+        job_id      TEXT PRIMARY KEY,
+        status      TEXT NOT NULL,
+        query       TEXT NOT NULL,
+        depth       TEXT NOT NULL,
+        context     TEXT,
+        result_json TEXT,
+        error       TEXT,
+        created_at  INTEGER NOT NULL,
+        started_at  INTEGER,
+        finished_at INTEGER,
+        heartbeat_at INTEGER
+      );
+    `)
+    legacy.close()
+
+    let db: ReturnType<typeof openJobDb> | undefined
+    expect(() => {
+      db = openJobDb(dbPath)
+    }).not.toThrow()
+
+    const carried = job({ jobId: 'carried-key', status: 'queued', idempotencyKey: 'retry-1' })
+    expect(() => db?.put(carried)).not.toThrow()
+    expect(db?.findByIdempotencyKey('retry-1', Date.now())?.jobId).toBe('carried-key')
+    db?.close()
+  })
 })
 
 describe('openJobDb — context column', () => {
@@ -347,6 +380,122 @@ describe('openJobDb — context column', () => {
     const reloaded = db.get(withoutContext.jobId)
     expect(reloaded).toEqual(withoutContext)
     expect('context' in (reloaded ?? {})).toBe(false)
+    db.close()
+  })
+})
+
+describe('openJobDb — idempotency key', () => {
+  it('round-trips an optional idempotencyKey through put/all/get, and omits it when absent', () => {
+    const db = openJobDb(':memory:')
+
+    const keyed = job({ idempotencyKey: 'submit-abc' })
+    db.put(keyed)
+    expect(db.all().find((j) => j.jobId === keyed.jobId)?.idempotencyKey).toBe('submit-abc')
+    expect(db.get(keyed.jobId)?.idempotencyKey).toBe('submit-abc')
+
+    const unkeyed = job()
+    db.put(unkeyed)
+    const reloaded = db.get(unkeyed.jobId)
+    expect('idempotencyKey' in (reloaded ?? {})).toBe(false)
+    db.close()
+  })
+})
+
+// The submit dedupe path (job-store.ts's findActiveJobByIdempotencyKey, surfaced on POST
+// /research and the MCP research tool) resolves a retried submit to the original job. It
+// reads sqlite rather than the in-memory map, so these pin the query's freshness rule.
+describe('openJobDb — idempotency key lookup', () => {
+  it('finds a queued job by key regardless of the cutoff', () => {
+    const db = openJobDb(':memory:')
+    const record = job({ status: 'queued', idempotencyKey: 'k-queued', createdAt: 1 })
+    db.put(record)
+    // Even a cutoff far in the future must not hide an un-finished job.
+    expect(db.findByIdempotencyKey('k-queued', Date.now() + 10_000_000)?.jobId).toBe(record.jobId)
+    db.close()
+  })
+
+  it('finds a terminal job whose finish time is at or after the cutoff', () => {
+    const db = openJobDb(':memory:')
+    const now = Date.now()
+    const record = job({ status: 'done', idempotencyKey: 'k-done', result: report(), finishedAt: now - 1_000 })
+    db.put(record)
+    expect(db.findByIdempotencyKey('k-done', now - 5_000)?.jobId).toBe(record.jobId)
+    db.close()
+  })
+
+  it('does not return a terminal job that has aged out of retention', () => {
+    const db = openJobDb(':memory:')
+    const now = Date.now()
+    db.put(job({ status: 'done', idempotencyKey: 'k-old', result: report(), finishedAt: now - 10_000 }))
+    expect(db.findByIdempotencyKey('k-old', now - 5_000)).toBeUndefined()
+    db.close()
+  })
+
+  it('returns the most recent of several jobs sharing a key, and undefined for an unknown key', () => {
+    const db = openJobDb(':memory:')
+    const now = Date.now()
+    const older = job({
+      status: 'done',
+      idempotencyKey: 'k-shared',
+      result: report(),
+      createdAt: now - 3_000,
+      finishedAt: now - 2_000,
+    })
+    const newer = job({
+      status: 'done',
+      idempotencyKey: 'k-shared',
+      result: report(),
+      createdAt: now - 2_000,
+      finishedAt: now - 1_000,
+    })
+    db.put(older)
+    db.put(newer)
+    expect(db.findByIdempotencyKey('k-shared', now - 5_000)?.jobId).toBe(newer.jobId)
+    expect(db.findByIdempotencyKey('never-used', now - 5_000)).toBeUndefined()
+    db.close()
+  })
+})
+
+// The retention sweep. `job-store.ts` evicts terminal jobs from its in-memory map and calls
+// this to prune the durable rows; the two together are what keep a 7-day window from loading
+// finished jobs into memory or growing sqlite without bound.
+describe('openJobDb — retention sweep (deleteFinishedBefore)', () => {
+  it('deletes terminal jobs older than the cutoff and keeps recent ones', () => {
+    const db = openJobDb(':memory:')
+    const now = Date.now()
+    const old = job({ status: 'done', result: report(), finishedAt: now - 10_000 })
+    const recent = job({ status: 'error', error: 'boom', finishedAt: now - 1_000 })
+    db.put(old)
+    db.put(recent)
+
+    db.deleteFinishedBefore(now - 5_000)
+
+    const all = db.all()
+    expect(all.some((j) => j.jobId === old.jobId)).toBe(false)
+    expect(all.some((j) => j.jobId === recent.jobId)).toBe(true)
+    db.close()
+  })
+
+  it('never deletes a queued or running job, however old', () => {
+    const db = openJobDb(':memory:')
+    const now = Date.now()
+    db.put(job({ status: 'queued', createdAt: now - 10_000_000 }))
+    db.put(job({ status: 'running', createdAt: now - 10_000_000, startedAt: now - 10_000_000 }))
+
+    db.deleteFinishedBefore(now)
+
+    expect(db.all()).toHaveLength(2)
+    db.close()
+  })
+
+  it('falls back to created_at for a terminal row with no finished_at', () => {
+    const db = openJobDb(':memory:')
+    const now = Date.now()
+    db.put(job({ status: 'error', error: 'legacy', createdAt: now - 10_000 }))
+
+    db.deleteFinishedBefore(now - 5_000)
+
+    expect(db.all()).toEqual([])
     db.close()
   })
 })

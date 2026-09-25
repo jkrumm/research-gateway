@@ -59,7 +59,7 @@ talk to — and plain bearer HTTP for everything else (Hermes, scripts, curl).
 | `GET /health/tavily` | public | — | live account state from `api.tavily.com/usage` incl. `overPlan` — crossing into pay-as-you-go was otherwise silent |
 | `GET /health/ytdlp` | public | — | `{ ytdlp, version, error }` — `yt-dlp --version` inside the container |
 | `GET /openapi`, `/openapi/json` | public | — | Scalar UI, raw spec |
-| `POST /research` | bearer | `{ query, depth?, context? }` (`quick \| standard \| deep`; `context` = free-text background treated as given — not re-searched, never cited) | `{ jobId, status }` (async) |
+| `POST /research` | bearer | `{ query, depth?, context?, idempotencyKey? }` (`quick \| standard \| deep`; `context` = free-text background treated as given — not re-searched, never cited; `idempotencyKey` = optional 1..200-char key — a retried submit with the same key returns the original job) | `{ jobId, status }` (async) |
 | `GET /research/:jobId` | bearer | — | `{ status, result?, error? }` — a **poll**: returns current state at once, never blocks |
 | `POST /mcp` | bearer | streamable-http (stateless, 2026-07-28) | tools `research`, `job_wait`, `job_status` — same engine. `job_wait` blocks for the whole job, so one call is normally the whole interaction |
 | `POST /probe/fetch` | bearer | `{ url }` | one URL through the real fetch chain, no LLM — which step terminated it, chars and ms per step. Drives `scripts/fetch-bench.ts` |
@@ -77,6 +77,12 @@ Runs are **async**: submit returns a `jobId` immediately (measured p50: quick 38
 111s, deep 366s —
 [full distribution](./docs/measurements.md#job-duration-by-depth--the-30-day-span-record)).
 `RESEARCH_MAX_CONCURRENCY` caps concurrent jobs and `RESEARCH_MAX_QUEUE` the backlog.
+
+A finished job is retained **7 days** (`JOB_TTL_MINUTES`, default 10080) in sqlite, so the
+`jobId` is a durable handle: a client whose wait was cut — a closed session, a restart, a
+dropped stream — can still fetch the result later, and a retried submit carrying an
+`idempotencyKey` resolves to the original job. The in-memory store holds queued/running jobs
+only, so the long window costs no memory.
 
 **How you then wait differs per door, and only one of them blocks:**
 
@@ -328,11 +334,21 @@ the `vps` repo** (`apps/research-gateway/`); this repo has no copy. [`deploy/DEP
 | Client | Path |
 |-|-|
 | Claude Code `/research` (every session, both Macs) | the `research-gateway` MCP at `/mcp`, registered at user scope by dotfiles `make setup` |
+| Codex, OpenCode, Hermes, cron, scripts | the `research` CLI (`bin/research.ts`, `make install-cli`) — submits over REST and polls; no MCP client and no session state |
 | Hermes | direct bearer HTTP — `POST /research` then poll `GET /research/{jobId}`; not an MCP client |
 | anything else on the tailnet | bearer HTTP, or the MCP endpoint |
 
 This service replaced the sideclaw `research` tool; the MCP facade that was once "deferred, only
 if an MCP-only client needs it" became the main door the moment Claude Code was the main client.
+
+The CLI is also the fallback when the MCP tools are missing: a session whose MCP connection
+failed at **startup** has no `research`/`job_wait` for its whole lifetime, while
+`research "<query>"` reaches the same REST door with no session state to lose. It reads
+`RESEARCH_GATEWAY_URL` (default `http://127.0.0.1:7780`) and `RESEARCH_GATEWAY_TOKEN` (falling
+back to the macOS Keychain generic password `research-gateway-token`). `research wait <jobId>`
+resumes a job submitted earlier — the id is a durable handle, not a session token. The report
+markdown goes to stdout, `status`/`warnings`/`unverified` to stderr; `--json` prints the full
+job, `--no-wait` the id alone.
 
 ### What an MCP client has to configure
 

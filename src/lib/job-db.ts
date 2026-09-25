@@ -44,6 +44,9 @@ export interface JobRecord {
   query: string
   depth: Depth
   context?: string
+  // Set once at create when a caller supplies one (job-store.ts's createJob). Retained with
+  // the row so a retried submit can find the original job by key — see `findByIdempotencyKey`.
+  idempotencyKey?: string
   result?: ResearchReport
   error?: string
   createdAt: number
@@ -73,6 +76,20 @@ export interface JobDb {
    * alive. Call once at boot, before hydrating an in-memory cache from `all()`.
    */
   reapInterrupted(message: string, staleBefore: number): JobRecord[]
+  /**
+   * Delete terminal jobs whose finish time (or create time, for a legacy row without one) is
+   * older than `cutoff` — the retention sweep. A queued/running job is never touched. One
+   * statement, so a store with many finished jobs is pruned without walking them into memory.
+   */
+  deleteFinishedBefore(cutoff: number): void
+  /**
+   * The most recent non-expired job carrying an idempotency key: a queued/running job, or a
+   * terminal one whose finish time is at or after `cutoff`. Undefined when the key was never
+   * used or every job that used it has aged out. Consulted by the submit dedupe path
+   * (job-store.ts's `findActiveJobByIdempotencyKey`) — never the in-memory map, because the
+   * job it wants back may be a terminal result retained only in sqlite.
+   */
+  findByIdempotencyKey(key: string, cutoff: number): JobRecord | undefined
   close(): void
 }
 
@@ -82,6 +99,7 @@ interface JobRow {
   query: string
   depth: string
   context: string | null
+  idempotency_key: string | null
   result_json: string | null
   error: string | null
   created_at: number
@@ -97,6 +115,7 @@ function toRecord(row: JobRow): JobRecord {
     query: row.query,
     depth: row.depth as Depth,
     ...(row.context !== null ? { context: row.context } : {}),
+    ...(row.idempotency_key !== null ? { idempotencyKey: row.idempotency_key } : {}),
     ...(row.result_json !== null ? { result: JSON.parse(row.result_json) as ResearchReport } : {}),
     ...(row.error !== null ? { error: row.error } : {}),
     createdAt: row.created_at,
@@ -118,6 +137,7 @@ export function openJobDb(dbPath: string): JobDb {
       query       TEXT NOT NULL,
       depth       TEXT NOT NULL,
       context     TEXT,
+      idempotency_key TEXT,
       result_json TEXT,
       error       TEXT,
       created_at  INTEGER NOT NULL,
@@ -138,15 +158,25 @@ export function openJobDb(dbPath: string): JobDb {
   if (!cols.some((c) => c.name === 'heartbeat_at')) {
     db.exec('ALTER TABLE job ADD COLUMN heartbeat_at INTEGER')
   }
+  if (!cols.some((c) => c.name === 'idempotency_key')) {
+    db.exec('ALTER TABLE job ADD COLUMN idempotency_key TEXT')
+  }
+
+  // Partial — only rows that actually carry a key are indexed. Must run AFTER the migration
+  // above, or opening a pre-idempotency file would fail on the missing column.
+  db.exec(
+    'CREATE INDEX IF NOT EXISTS job_idempotency_key ON job (idempotency_key) WHERE idempotency_key IS NOT NULL',
+  )
 
   const putStmt = db.prepare(`
-    INSERT INTO job (job_id, status, query, depth, context, result_json, error, created_at, started_at, finished_at, heartbeat_at)
-    VALUES ($jobId, $status, $query, $depth, $context, $resultJson, $error, $createdAt, $startedAt, $finishedAt, $heartbeatAt)
+    INSERT INTO job (job_id, status, query, depth, context, idempotency_key, result_json, error, created_at, started_at, finished_at, heartbeat_at)
+    VALUES ($jobId, $status, $query, $depth, $context, $idempotencyKey, $resultJson, $error, $createdAt, $startedAt, $finishedAt, $heartbeatAt)
     ON CONFLICT(job_id) DO UPDATE SET
       status = excluded.status,
       query = excluded.query,
       depth = excluded.depth,
       context = excluded.context,
+      idempotency_key = excluded.idempotency_key,
       result_json = excluded.result_json,
       error = excluded.error,
       created_at = excluded.created_at,
@@ -166,6 +196,22 @@ export function openJobDb(dbPath: string): JobDb {
   // saw once (at boot) while the owner keeps writing to it. See job-store.ts's `getJob`.
   const getStmt = db.prepare('SELECT * FROM job WHERE job_id = ?')
 
+  const deleteFinishedStmt = db.prepare(`
+    DELETE FROM job
+    WHERE status IN ('done', 'error')
+      AND COALESCE(finished_at, created_at) < $cutoff
+  `)
+
+  // A queued/running job never expires (it has not finished yet), so it is always a valid
+  // dedupe hit; a terminal one only while its finish time is inside the retention window.
+  const findByIdempotencyStmt = db.prepare(`
+    SELECT * FROM job
+    WHERE idempotency_key = $key
+      AND (status IN ('queued', 'running') OR COALESCE(finished_at, created_at) >= $cutoff)
+    ORDER BY created_at DESC
+    LIMIT 1
+  `)
+
   const reapStmt = db.prepare(`
     UPDATE job SET status = 'error', error = $error, finished_at = $finishedAt
     WHERE status IN ('queued', 'running')
@@ -180,6 +226,7 @@ export function openJobDb(dbPath: string): JobDb {
         $query: job.query,
         $depth: job.depth,
         $context: job.context ?? null,
+        $idempotencyKey: job.idempotencyKey ?? null,
         $resultJson: job.result ? JSON.stringify(job.result) : null,
         $error: job.error ?? null,
         $createdAt: job.createdAt,
@@ -220,6 +267,15 @@ export function openJobDb(dbPath: string): JobDb {
       const finishedAt = Date.now()
       reapStmt.run({ $error: message, $finishedAt: finishedAt, $staleBefore: staleBefore })
       return stale.map((job) => ({ ...job, status: 'error' as JobStatus, error: message, finishedAt }))
+    },
+
+    deleteFinishedBefore(cutoff: number): void {
+      deleteFinishedStmt.run({ $cutoff: cutoff })
+    },
+
+    findByIdempotencyKey(key: string, cutoff: number): JobRecord | undefined {
+      const row = findByIdempotencyStmt.get({ $key: key, $cutoff: cutoff }) as JobRow | null
+      return row === null ? undefined : toRecord(row)
     },
 
     close(): void {
