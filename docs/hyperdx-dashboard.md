@@ -268,7 +268,7 @@ ORDER BY Timestamp DESC LIMIT 100
 
 ## Alerts
 
-Five, all tile-backed on this dashboard, all firing into the Slack `#alerts` webhook. The
+Six, all tile-backed on this dashboard, all firing into the Slack `#alerts` webhook. The
 config is exported to `vps/observability/alerts/` — Mongo is not backed up, the repo is.
 
 | Alert | Tile | Fires at | What it means |
@@ -278,6 +278,7 @@ config is exported to `vps/observability/alerts/` — Mongo is not backed up, th
 | `LLM provider failures >= 3 (15m)` | 12 | ≥3 | `worker.failed` + `plan.fallback`. The **earlier** signal: a burst means the IU endpoint is down while individual jobs may still finish degraded. Threshold 3 so a lone worker timeout stays quiet |
 | `memory pressure >= 1 (15m)` | 13 | ≥1 | Admission shed at 85% of the cgroup limit. The only in-process warning a SIGKILL allows |
 | `drain cut live jobs >= 1 (1h)` | 14 | ≥1 | `process.drained` with `remaining > 0` — the drain window elapsed with jobs still running |
+| `partial rate too high (>30% over 24h, n>=5)` | 15 | ≥1 | A raw-SQL number tile with its own hardcoded rolling 24h window (`TimestampTime > now() - INTERVAL 24 HOUR`, independent of the alert's own hourly check cadence): counts `research.done` rows by `LogAttributes['status']`, and emits the partial count only when `partial/total > 0.3` **and** `total >= 5` (else 0) — the volume gate keeps one partial out of two jobs quiet. Catches the class of regression that produced 66-92% partial for two days (2026-09-23/24, fixed in 07b3a36) same-day instead of unnoticed |
 
 `thresholdType: "above"` is **inclusive** (`above_exclusive` is the strict one), so
 `threshold: 1` fires at 1.
