@@ -9,7 +9,22 @@ export function normalizeModel(raw: string): string {
 
 // DeepSeek rates USD per 1M tokens — matches argo's ai-usage.ts DEEPSEEK_RATES.
 // cachedInput is the cache-read rate; the endpoint bills a cache hit far below a miss.
-const RATES: Record<string, { input: number; cachedInput: number; output: number }> = {
+type Rate = { input: number; cachedInput: number; output: number }
+
+// Off-peak confirmed 2026-09-25 17:17Z against the gateway's usage.cost: exactly half the
+// 06:46Z peak rate. Window assumed to be DeepSeek's published 16:30-00:30 UTC (measured
+// inside at 17:17Z/~18:50Z and outside at 06:46Z; boundaries not probed). Mirrors
+// usage-tracker's pricing.ts offPeak schedule.
+const OFF_PEAK: Record<string, { fromMin: number; toMin: number; rate: Rate }> = {
+  'deepseek-v4.1-flash': { fromMin: 16 * 60 + 30, toMin: 30, rate: { input: 0.15, cachedInput: 0.003, output: 0.6 } },
+}
+
+export function isOffPeak(at: Date, fromMin: number, toMin: number): boolean {
+  const t = at.getUTCHours() * 60 + at.getUTCMinutes()
+  return fromMin <= toMin ? t >= fromMin && t < toMin : t >= fromMin || t < toMin
+}
+
+const RATES: Record<string, Rate> = {
   // Retired ids. Kept for history only — 'deepseek-v4-flash'/'deepseek-v4-pro' predate the
   // 2026-09-13 rollout to deepseek-v4.1-flash below and are not billed on any live route in
   // this repo; nothing here re-derives cost for old usage_record rows (argo stores the
@@ -61,9 +76,11 @@ const RATES: Record<string, { input: number; cachedInput: number; output: number
 export function computeCost(
   model: string,
   args: { inputTokens: number; cachedInputTokens: number; outputTokens: number },
+  at: Date = new Date(),
 ): { costUsd: number | null; costSource: 'computed' | 'none' } {
   const modelNorm = normalizeModel(model)
-  const rates = RATES[modelNorm]
+  const offPeak = OFF_PEAK[modelNorm]
+  const rates = offPeak && isOffPeak(at, offPeak.fromMin, offPeak.toMin) ? offPeak.rate : RATES[modelNorm]
   if (!rates) return { costUsd: null, costSource: 'none' }
 
   const uncachedInputTokens = Math.max(0, args.inputTokens - args.cachedInputTokens)
@@ -105,13 +122,14 @@ export function chooseCost(
     reportedCostUsd: number
     unreportedCalls: number
   },
+  at: Date = new Date(),
 ): { costUsd: number | null; costSource: 'computed' | 'reported' | 'none' } {
   const madeCall =
     usage.inputTokens > 0 || usage.outputTokens > 0 || usage.reportedCostUsd > 0 || usage.unreportedCalls > 0
   if (madeCall && usage.unreportedCalls === 0) {
     return { costUsd: usage.reportedCostUsd, costSource: 'reported' }
   }
-  return computeCost(model, usage)
+  return computeCost(model, usage, at)
 }
 
 // Shape of an argo `usage_record` row, built here (not usage.ts) for the same reason as

@@ -92,9 +92,9 @@ describe('chooseCost, fed from toUsageStats', () => {
       0,
     )
     const combined = addUsage(reported, unreported)
-    const result = chooseCost('deepseek-v4.1-flash', combined)
+    const result = chooseCost('deepseek-v4.1-flash', combined, new Date('2026-09-25T06:46:00Z'))
     expect(result.costSource).toBe('computed')
-    // 1,000,000 uncached input tokens at the RATES fallback (0.30/1M) — see cost.ts.
+    // 1,000,000 uncached input tokens at the peak RATES fallback (0.30/1M) — see cost.ts.
     expect(result.costUsd).toBeCloseTo(0.3, 6)
   })
 

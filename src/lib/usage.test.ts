@@ -15,7 +15,18 @@ import {
   formatUsageJsonlLine,
 } from './cost.js'
 
+const PEAK = new Date('2026-09-25T06:46:00Z')
+const OFF_PEAK = new Date('2026-09-25T17:17:00Z')
+
 describe('computeCost', () => {
+  it('bills deepseek-v4.1-flash at half rate inside 16:30-00:30 UTC (off-peak, measured 2026-09-25 17:17Z)', () => {
+    const args = { inputTokens: 1_000_000, cachedInputTokens: 0, outputTokens: 1_000_000 }
+    expect(computeCost('deepseek-v4.1-flash', args, OFF_PEAK).costUsd).toBeCloseTo(0.15 + 0.6, 6)
+    expect(computeCost('deepseek-v4.1-flash', args, new Date('2026-09-26T00:29:00Z')).costUsd).toBeCloseTo(0.75, 6)
+    expect(computeCost('deepseek-v4.1-flash', args, new Date('2026-09-26T00:30:00Z')).costUsd).toBeCloseTo(1.5, 6)
+    expect(computeCost('deepseek-v4.1-flash', args, PEAK).costUsd).toBeCloseTo(1.5, 6)
+  })
+
   it('bills uncached input at the miss rate and cached input at the cache-read rate (deepseek-v4-pro)', () => {
     const { costUsd, costSource } = computeCost('deepseek-v4-pro', {
       inputTokens: 1_000_000,
@@ -93,21 +104,21 @@ describe('computeCost', () => {
       inputTokens: 1_000_000,
       cachedInputTokens: 0,
       outputTokens: 0,
-    })
+    }, PEAK)
     expect(uncached.costUsd).toBeCloseTo(0.3, 6)
 
     const cached = computeCost('deepseek-v4.1-flash', {
       inputTokens: 1_000_000,
       cachedInputTokens: 1_000_000,
       outputTokens: 0,
-    })
+    }, PEAK)
     expect(cached.costUsd).toBeCloseTo(0.006, 6)
 
     const output = computeCost('deepseek-v4.1-flash', {
       inputTokens: 0,
       cachedInputTokens: 0,
       outputTokens: 1_000_000,
-    })
+    }, PEAK)
     expect(output.costUsd).toBeCloseTo(1.2, 6)
   })
 
