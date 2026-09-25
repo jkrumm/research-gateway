@@ -93,6 +93,12 @@ if overlay_args karakeep "$DIR/.env.mini.karakeep.tpl" "op://hermes/karakeep/api
 export JOB_DB_PATH="$HOME/.research-gateway/data/jobs.sqlite"
 export YTDLP_PATH="$HOME/.research-gateway/bin/yt-dlp"
 
+# Usage records go to the local usage-tracker's JSONL instead of straight to argo: on the mini
+# the tracker owns the argo sync (posting to both would duplicate rows). Same $HOME-expansion
+# reason as the two paths above — the tracker reads this file on its own schedule.
+export USAGE_SINK=jsonl
+export USAGE_JSONL_PATH="$HOME/.local/share/usage-tracker/research-gateway.jsonl"
+
 # brainNotes tool (agent/brain-search.ts) — only when the owner's second-brain checkout is
 # actually present. `.env.mini.tpl` sets BRAIN_BASE_URL unconditionally, which means this mini
 # instance IS expected to have the vault checked out — a missing `wiki/` here is therefore a

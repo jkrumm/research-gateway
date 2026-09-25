@@ -12,6 +12,7 @@ import {
   buildTavilyAccountRecord,
   buildYtdlpRecord,
   buildArchiveRecord,
+  formatUsageJsonlLine,
 } from './cost.js'
 
 describe('computeCost', () => {
@@ -87,27 +88,27 @@ describe('computeCost', () => {
     expect(dated.costUsd).toBeCloseTo(bare.costUsd as number, 9)
   })
 
-  it('bills deepseek-v4.1-flash at the 2026-09-13 measured rate (0.50/0.05/1.50 per 1M)', () => {
+  it('bills deepseek-v4.1-flash at the 2026-09-24 shared-table rate (0.15/0.003/0.60 per 1M)', () => {
     const uncached = computeCost('deepseek-v4.1-flash', {
       inputTokens: 1_000_000,
       cachedInputTokens: 0,
       outputTokens: 0,
     })
-    expect(uncached.costUsd).toBeCloseTo(0.5, 6)
+    expect(uncached.costUsd).toBeCloseTo(0.15, 6)
 
     const cached = computeCost('deepseek-v4.1-flash', {
       inputTokens: 1_000_000,
       cachedInputTokens: 1_000_000,
       outputTokens: 0,
     })
-    expect(cached.costUsd).toBeCloseTo(0.05, 6)
+    expect(cached.costUsd).toBeCloseTo(0.003, 6)
 
     const output = computeCost('deepseek-v4.1-flash', {
       inputTokens: 0,
       cachedInputTokens: 0,
       outputTokens: 1_000_000,
     })
-    expect(output.costUsd).toBeCloseTo(1.5, 6)
+    expect(output.costUsd).toBeCloseTo(0.6, 6)
   })
 
   it('bills glm-5.3-flash at the 2026-09-13 measured rate (0.15/0.03/0.50 per 1M)', () => {
@@ -137,6 +138,20 @@ describe('computeCost', () => {
     const tokens = { inputTokens: 1_000_000, cachedInputTokens: 400_000, outputTokens: 1_000_000 }
     expect(computeCost('gpt-6-luna', tokens).costUsd).toBeCloseTo(0.6 * 0.1 + 0.4 * 0.01 + 0.5, 6)
     expect(computeCost('gpt-5.6-luna', tokens).costUsd).toBeCloseTo(0.6 * 0.2 + 0.4 * 0.02 + 1.2, 6)
+  })
+})
+
+describe('formatUsageJsonlLine', () => {
+  it('renders one newline-terminated JSON object, preserving every field verbatim', () => {
+    const record = { source: 'research-gateway', source_id: 'job-1:worker', cost_usd: 0.003 }
+    expect(formatUsageJsonlLine(record)).toBe(
+      '{"source":"research-gateway","source_id":"job-1:worker","cost_usd":0.003}\n',
+    )
+  })
+
+  it('round-trips an arbitrary record without loss', () => {
+    const record = { raw: { renders: 8, tags: ['a', 'b'] }, duration_ms: null }
+    expect(JSON.parse(formatUsageJsonlLine(record))).toEqual(record)
   })
 })
 

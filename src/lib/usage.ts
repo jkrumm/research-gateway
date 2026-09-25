@@ -1,5 +1,8 @@
+import { appendFile, mkdir } from 'node:fs/promises'
+import { dirname } from 'node:path'
 import type { LanguageModelUsage } from 'ai'
 import { env } from '../env.js'
+import { log } from './log.js'
 import {
   buildLlmUsageRecord,
   buildTavilyCreditRecord,
@@ -7,6 +10,7 @@ import {
   buildRenderRecord,
   buildYtdlpRecord,
   buildArchiveRecord,
+  formatUsageJsonlLine,
 } from './cost.js'
 
 // Re-exported for compatibility — callers importing `computeCost` from `usage.ts` keep
@@ -14,16 +18,54 @@ import {
 // so can be unit-tested without booting the env-parsing chain.
 export { computeCost } from './cost.js'
 
-// Shared POST, used by every reporter in this file — reportUsage (LLM/token records),
+// Shared sink, used by every reporter in this file — reportUsage (LLM/token records),
 // reportTavilyUsage/reportSonarUsage/reportRenderUsage (credit/cost/render records) — same
-// endpoint, same idempotent upsert, same "never throw" contract. No-ops when telemetry isn't
-// configured, same as the individual reporters used to.
+// "never throw" contract, same record object either way. Dispatches on USAGE_SINK:
 //
-// Exported (not just used internally) so `lib/tavily-account.ts` can post its own record
+//   argo  (default) — POST to ARGO_USAGE_URL, same idempotent upsert as before; no-ops when
+//                     telemetry isn't configured.
+//   jsonl           — append one JSON line to USAGE_JSONL_PATH for the mini's local
+//                     usage-tracker, which owns the argo sync there; deliberately does NOT
+//                     also POST, or both sinks would duplicate rows on argo.
+//
+// Exported (not just used internally) so `lib/tavily-account.ts` can sink its own record
 // through the same path rather than duplicating this fetch — that file needs `env.js` for the
 // Tavily bearer key anyway, so importing this from `usage.ts` (which already needs env.js for
-// ARGO_USAGE_URL/ARGO_API_SECRET) costs it nothing new.
+// the sink config) costs it nothing new.
+//
+// Resolved once at module load (boot). `jsonl` without a path is a misconfiguration: log it
+// once and fall back to argo rather than silently dropping every record.
+const JSONL_PATH = env.USAGE_SINK === 'jsonl' ? env.USAGE_JSONL_PATH : undefined
+if (env.USAGE_SINK === 'jsonl' && !JSONL_PATH) {
+  log('usage.sink_failed', {
+    error: 'USAGE_SINK=jsonl but USAGE_JSONL_PATH is unset — falling back to argo',
+  })
+}
+
+// Parent dirs are created on the first append and remembered; a failed mkdir leaves the flag
+// unset so the next append retries rather than wedging the sink.
+let jsonlDirReady = false
+
+async function appendUsageJsonl(path: string, record: Record<string, unknown>): Promise<void> {
+  if (!jsonlDirReady) {
+    await mkdir(dirname(path), { recursive: true })
+    jsonlDirReady = true
+  }
+  // Single-line appends are atomic enough for the one process that writes this file.
+  await appendFile(path, formatUsageJsonlLine(record))
+}
+
 export async function postUsageRecord(record: Record<string, unknown>): Promise<void> {
+  if (JSONL_PATH) {
+    try {
+      await appendUsageJsonl(JSONL_PATH, record)
+    } catch (err) {
+      // Telemetry failure must never fail a research job
+      log('usage.sink_failed', { error: String(err), path: JSONL_PATH })
+    }
+    return
+  }
+
   if (!env.ARGO_USAGE_URL || !env.ARGO_API_SECRET) return
 
   try {

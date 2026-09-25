@@ -132,6 +132,20 @@ const Env = z.object({
   ),
   ARGO_USAGE_URL: z.url().optional(),
   ARGO_API_SECRET: z.string().optional(),
+  // Where per-job usage records go. `argo` (default) POSTs straight to ARGO_USAGE_URL above —
+  // the VPS container and local dev are unchanged. `jsonl` appends one JSON line per record to
+  // USAGE_JSONL_PATH instead: the mini's local usage-tracker owns the argo sync there, and
+  // posting to both would duplicate rows (its collector upserts on (source, source_id)).
+  USAGE_SINK: z.enum(['argo', 'jsonl']).default('argo'),
+  // Absolute JSONL path for USAGE_SINK=jsonl. Deliberately no default in code: the mini's
+  // launcher (scripts/launch.sh) sets it, because templates can't expand $HOME — same reason
+  // as JOB_DB_PATH/YTDLP_PATH. `jsonl` with this unset logs one error-level usage.sink_failed
+  // and falls back to argo. Empty-as-unset like GITHUB_TOKEN/BRAIN_DIR above.
+  USAGE_JSONL_PATH: z
+    .string()
+    .trim()
+    .optional()
+    .transform((v) => (v ? v : undefined)),
   RESEARCH_MAX_CONCURRENCY: z.coerce.number().default(3),
   RESEARCH_MAX_QUEUE: z.coerce.number().default(50),
   // Result retention. A finished job's status and result stay readable from sqlite for this

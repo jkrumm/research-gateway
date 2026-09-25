@@ -80,7 +80,9 @@ keeps the VPS unchanged — the mini opts in via `.env.mini.tpl` (`HOST`, `MACHI
 `MEMORY_LIMIT_MB`, OTLP auth, `BRAIN_BASE_URL`) and `scripts/launch.sh` (`BRAIN_DIR`, which a
 template can't express since it needs `$HOME` expansion — same reasoning as `JOB_DB_PATH`/
 `YTDLP_PATH`). A push reaches both: rollhook on the VPS, the idle-gated poller on the mini.
-`launchd/` template changes need `make launchd-install` by hand.
+`launchd/` template changes need `make launchd-install` by hand. On the mini usage goes to the
+local usage-tracker via JSONL (`USAGE_SINK=jsonl` + `USAGE_JSONL_PATH` in `scripts/launch.sh`);
+the VPS still posts straight to argo.
 
 ## Deploy-on-push, and what it costs
 
