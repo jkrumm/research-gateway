@@ -187,13 +187,26 @@ export function groundDigest(digest: WorkerDigest, ledger: RetrievalLedger): Wor
 // textual: a citation whose claim names the subject of an `unverified` entry cannot rest on
 // evidence this run never had, whatever URL it points at.
 //
-// The heuristic is deliberately conservative: ≥2 distinctive tokens (≥3 chars, not in
-// NON_DISTINCTIVE) of the entry's topic or URL path must appear in the claim. One shared
-// token is how every claim in an Immich report mentions Immich; two is a subject match.
+// The heuristic is deliberately conservative: a claim matches a subject when it shares
+// enough distinctive tokens (≥3 chars, not in NON_DISTINCTIVE) with the entry's topic or URL
+// path. One shared token is how every claim in an Immich report mentions Immich.
+//
+// "Enough" scales with the subject. It used to be a flat ≥2, written for short topics
+// ("Module:Items wiki page"). The current model writes long, ENUMERATING `unverified` topics
+// with `url: null` — e.g. "Cross-project citation-grounding mechanics … for GPT Researcher,
+// STORM, smolagents, Jina, dzhng, Together and Tongyi" (30 distinctive tokens) — and any claim
+// naming two of the enumerated projects matched. A flat floor cannot tell a subject from a
+// list of subjects; a coverage ratio can. The threshold is `max(2, ceil(subject.size / 3))`,
+// so a short subject behaves exactly as before (≥2 shared) and a 30-token enumeration needs
+// ~10. Measured 2026-09-23..25: 148/182, 30/37 and 16/38 citations capped in three live jobs,
+// every one correctly retrieved (docs/architecture-review-2026-09.md §2b).
+//
 // The action is a cap to `low`, not a drop — a wrong cap makes a report cautious, a wrong
 // drop loses a possibly-correct claim (the 2026-07-31 npm regression in miniature). Misses
 // stay possible — a prose claim citing nothing is invisible to any citation-side rule —
-// which is why the synthesis prompt carries the auxiliary rule against them.
+// which is why the synthesis prompt carries the auxiliary rule against them. A cap alone is
+// not lost evidence: it keeps its warning line and no longer flips `status` (see
+// `degradedRun`).
 
 const NON_DISTINCTIVE = new Set([
   'the', 'and', 'for', 'with', 'from', 'this', 'that', 'official', 'page', 'site',
@@ -229,9 +242,13 @@ export function degradeClaimsOnUnverifiedSources(
     if (claim.confidence === 'low') return claim
     const words = distinctiveTokens(claim.claim)
     const rests = subjects.some((subject) => {
+      // A subject is matched only when the claim covers it, not merely overlaps it: the
+      // required share scales with the subject's size (a flat floor again once the subject
+      // is short). See the comment above.
+      const needed = Math.max(2, Math.ceil(subject.size / 3))
       let shared = 0
       for (const token of subject) if (words.has(token)) shared++
-      return shared >= 2
+      return shared >= needed
     })
     if (!rests) return claim
     degraded.add(index)
@@ -350,12 +367,15 @@ export function groundReport(
     }
   })
 
-  // A subject-degraded citation asserts facts about a document the run never read — the
-  // report may still say it as fact in prose a text-only client takes at face value, so it
-  // counts as demonstrably degraded evidence and flips the status, like a dropped citation.
+  // A `partial` report is one where evidence was demonstrably LOST — a citation dropped for
+  // lack of a retrieved source, nothing retrievable at all, or failures outnumbering the
+  // pages that were read. A subject-degraded citation is a confidence cap, not lost evidence:
+  // it keeps its citation, its `low` cap and its warning line and still counts in
+  // `confidenceCapped` / `citationsDegraded`, but it must not flip `status` or banner a run
+  // whose evidence is intact — which is exactly what the 2026-09-23..25 over-firing did
+  // (docs/architecture-review-2026-09.md §2b).
   const degradedRun =
     grounding.citationsDropped > 0 ||
-    degraded.size > 0 ||
     (grounding.pagesRetrieved === 0 && grounding.pagesMissing === 0) ||
     grounding.pagesFailed > grounding.pagesRetrieved
 

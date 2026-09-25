@@ -713,10 +713,10 @@ describe('groundReport — the job boundary', () => {
       expect(report.grounding.citationsDegraded).toBe(1)
     })
 
-    // A subject-matched citation asserts facts about a document the run never read. The
-    // degradation must reach a text-only client that reads ONLY the prose — status flips
-    // and the banner prepends, not just a warnings[] entry.
-    it('flips status to partial and prepends the banner when a subject match degrades a citation', () => {
+    // A confidence cap is not lost evidence. A subject-matched citation keeps its `low` cap
+    // and its warning line, but the run's citations were all retrieved — `status` stays `ok`
+    // and no "evidence was lost" banner is prepended (the 2026-09-23..25 over-firing, §2b).
+    it('caps a subject match at low WITHOUT flipping status or bannering the run', () => {
       const ledger = createLedger()
       ledger.recordRetrieved('https://mirror.example/Module:Items?action=raw')
       ledger.recordFailed('https://wiki.example/Module:Items?action=raw', 'too large to fetch — 121 KB')
@@ -740,11 +740,104 @@ describe('groundReport — the job boundary', () => {
         }),
         ledger,
       )
-      expect(report.status).toBe('partial')
-      expect(report.report.startsWith('> **Partial result')).toBe(true)
-      expect(report.report).toContain('confidence lowered to match the evidence actually retrieved')
+      expect(report.status).toBe('ok')
+      expect(report.report).toBe('The item module is stale and unusable for the current patch.')
+      expect(report.citations[0]?.confidence).toBe('low')
+      expect(report.grounding.citationsDegraded).toBe(1)
+      expect(report.grounding.confidenceCapped).toBe(1)
       expect(report.warnings.some((w) => w.includes('capped at low'))).toBe(true)
     })
+  })
+})
+
+// ── Regression for the 2026-09-23..25 subject-degrade over-firing (review §2b) ──
+// The model now writes long, ENUMERATING `unverified` topics with `url: null`. Under the old
+// flat ≥2-token rule any claim naming two of the enumerated projects was capped to `low` —
+// 148/182, 30/37 and 16/38 citations in three live jobs, every one correctly retrieved. The
+// threshold now scales with the subject (max(2, ceil(size / 3))), so an enumeration is not a
+// subject. These are the review's actual entries and claims.
+describe('groundReport — a long enumeration is not a subject (review §2b)', () => {
+  const enumeratedTopics = [
+    {
+      topic:
+        'Cross-project citation-grounding mechanics (source collection/storage, inline citation attachment, post-hoc verification, acknowledged failure modes, borrowed patterns and exact function/config names) for GPT Researcher, STORM, smolagents, Jina, dzhng, Together and Tongyi',
+      url: null,
+      reason: 'unverified topic',
+    },
+    {
+      topic:
+        'Live GitHub metadata (stars, archived flag, latest release) for huggingface/smolagents and togethercomputer/open_deep_research via the GitHub API',
+      url: null,
+      reason: 'unverified topic',
+    },
+    {
+      topic:
+        "LLM provider support: whether pi supports arbitrary OpenAI-compatible chat-completions endpoints (custom base URL + API key + model id); which named providers are first-class; exact config keys/env vars for provider/base URL/API key/model; the module implementing provider adapters and whether an 'openai-completions' adapter is explicitly listed",
+      url: null,
+      reason: 'unverified topic',
+    },
+  ]
+
+  const realRetrievedClaims = [
+    {
+      claim: 'assafelovic/gpt-researcher (Apache-2.0) is actively maintained; latest release v3.6.1 (2026-08-24); ~29.6k stars; last push 2026-08-27.',
+      url: 'https://github.com/assafelovic/gpt-researcher',
+      confidence: 'high' as const,
+    },
+    {
+      claim: 'stanford-oval/storm (MIT) latest release v1.1.0 (2025-01-23); ~31.5k stars; last push 2025-09-30; not archived.',
+      url: 'https://github.com/stanford-oval/storm',
+      confidence: 'high' as const,
+    },
+    {
+      claim: 'jina-ai/node-DeepResearch (Apache-2.0) latest release v1.4.0 (2025-02-12); ~5.2k stars; last push 2026-05-01; not archived.',
+      url: 'https://github.com/jina-ai/node-DeepResearch',
+      confidence: 'high' as const,
+    },
+    {
+      claim: '@earendil-works/pi-coding-agent latest is 0.87.1 (2026-09-22T19:42:48.664Z); dist-tags latest=0.87.1, legacy-node20=0.74.2.',
+      url: 'https://www.npmjs.com/package/@earendil-works/pi-coding-agent',
+      confidence: 'high' as const,
+    },
+    {
+      claim: 'The agent-core package exposes the `Agent` class: `import { Agent } from "@earendil-works/pi-agent-core"; new Agent({ initialState: { systemPrompt, model }, streamFn })`.',
+      url: 'https://github.com/earendil-works/pi/blob/HEAD/packages/agent/README.md',
+      confidence: 'high' as const,
+    },
+  ]
+
+  const ledgerWithRealClaims = () => {
+    const ledger = createLedger()
+    for (const claim of realRetrievedClaims) ledger.recordRetrieved(claim.url)
+    return ledger
+  }
+
+  it('leaves real retrieved claims un-degraded against the enumerating topics', () => {
+    const report = groundReport(
+      submitted({ report: 'Body.', citations: realRetrievedClaims, unverified: enumeratedTopics }),
+      ledgerWithRealClaims(),
+    )
+    expect(report.citations.map((c) => c.confidence)).toEqual(['high', 'high', 'high', 'high', 'high'])
+    expect(report.grounding.citationsDegraded).toBe(0)
+    expect(report.grounding.confidenceCapped).toBe(0)
+    expect(report.status).toBe('ok')
+    expect(report.report).toBe('Body.')
+  })
+
+  it('still degrades a claim that genuinely covers an enumerating topic', () => {
+    const { kept, degraded } = degradeClaimsOnUnverifiedSources(
+      [
+        {
+          claim:
+            'huggingface/smolagents has ~25k stars and is not archived, per the live GitHub API metadata; its latest release is v1.20',
+          url: 'https://github.com/huggingface/smolagents',
+          confidence: 'high',
+        },
+      ],
+      enumeratedTopics,
+    )
+    expect(kept[0]?.confidence).toBe('low')
+    expect(degraded.size).toBe(1)
   })
 })
 

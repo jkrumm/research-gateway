@@ -3,7 +3,7 @@ import { describe, it, expect } from 'bun:test'
 // compatibility but its own import graph (worker.ts/synthesize.ts/plan.ts -> llm.ts)
 // pulls in `env.ts`, which parses `process.env` at import time and throws without secrets.
 // `assemble.ts` has no such chain, so these pure helpers are testable with zero env vars.
-import { assembleReport, nextRoundQuestions } from './assemble.js'
+import { assembleReport, headingFor, nextRoundQuestions } from './assemble.js'
 import type { WorkerDigest } from './schema.js'
 
 function digest(overrides: Partial<WorkerDigest> = {}): WorkerDigest {
@@ -90,6 +90,44 @@ describe('assembleReport', () => {
       digest({ findings: [{ claim: 'load-bearing claim', url: 'https://x.example', confidence: 'high' }] }),
     ])
     expect(report.citations.length).toBeGreaterThan(0)
+  })
+
+  // The 2026-09 deep fallback shipped with each worker's full sub-question prompt (400+
+  // chars, "(a) … (b) …") as an H2. The heading must be the topic, not the prompt.
+  it('uses a concise topic heading, not the full sub-question prompt', () => {
+    const long =
+      'Research DBOS Transact for TypeScript/Node.js: (a) which durable-execution primitives it exposes; (b) how it compares to Temporal'
+    const report = assembleReport([digest({ subQuestion: long, summary: 'A1' })])
+    expect(report.report).toBe('## Research DBOS Transact for TypeScript/Node.js\n\nA1')
+  })
+})
+
+describe('headingFor', () => {
+  it('keeps a short question as-is, minus its trailing delimiter', () => {
+    expect(headingFor('What is DBOS Transact?')).toBe('What is DBOS Transact')
+  })
+
+  it('cuts at the first clause delimiter so the enumerated sub-parts are dropped', () => {
+    const long =
+      'Research DBOS Transact for TypeScript/Node.js: (a) which durable-execution primitives it exposes; (b) how it compares to Temporal'
+    expect(headingFor(long)).toBe('Research DBOS Transact for TypeScript/Node.js')
+  })
+
+  it('splits on a parenthesis or question mark as well as a colon', () => {
+    expect(headingFor('Which package manager (npm/pnpm/bun) does it use?')).toBe('Which package manager')
+    expect(headingFor('Is it maintained? Check the release history')).toBe('Is it maintained')
+  })
+
+  it('caps a long delimiter-free first clause at ~80 chars with an ellipsis', () => {
+    const long =
+      'Compare the durable execution runtimes across every framework that offers workflows as code and also offers scheduled retries'
+    const heading = headingFor(long)
+    expect(heading.length).toBeLessThanOrEqual(80)
+    expect(heading.endsWith('…')).toBe(true)
+  })
+
+  it('falls back to the trimmed question when it starts with a delimiter', () => {
+    expect(headingFor('  ? unexplained  ')).toBe('? unexplained')
   })
 })
 
