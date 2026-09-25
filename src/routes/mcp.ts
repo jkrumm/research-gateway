@@ -2,7 +2,13 @@ import { Elysia } from 'elysia'
 import { createMcpHandler, McpServer } from '@modelcontextprotocol/server'
 import { z } from 'zod'
 import { Depth, JobHandle, JobState, type ResearchReport } from '../agent/schema.js'
-import { admission, createJob, getJob, type Job } from '../lib/job-store.js'
+import {
+  admission,
+  createJob,
+  findActiveJobByIdempotencyKey,
+  getJob,
+  type Job,
+} from '../lib/job-store.js'
 import { POLL_INTERVAL_MS, shouldKeepWaiting, waitDeadline } from '../lib/wait.js'
 import { startResearchJob } from '../lib/run-job.js'
 import { env } from '../env.js'
@@ -77,7 +83,7 @@ function notFound(jobId: string): CallToolResult {
     content: [
       {
         type: 'text',
-        text: `Job not found: ${jobId} — it may have expired (jobs are retained ${env.JOB_TTL_MINUTES} min after completion). Submit a new research job.`,
+        text: `Job not found: ${jobId} — it may have expired (jobs are retained ${env.JOB_TTL_MINUTES} minutes after completion). Submit a new research job.`,
       },
     ],
     isError: true,
@@ -109,10 +115,32 @@ function buildMcpServer(): McpServer {
           .describe(
             'Optional free-text background you already know (earlier findings, versions, decisions). Treated as established: the plan and workers will NOT re-search or re-verify it, and it is never cited. Use it to skip re-deriving facts a previous job already established.',
           ),
+        idempotencyKey: z
+          .string()
+          .min(1)
+          .max(200)
+          .optional()
+          .describe(
+            'Optional caller-supplied key (1..200 chars). Retrying a submit with the same key returns the original job instead of starting a second one.',
+          ),
       }),
       outputSchema: JobHandle,
     },
     async (args): Promise<CallToolResult> => {
+      // Dedupe BEFORE admission: a retried submit whose job already exists returns that job,
+      // never a refusal — the work is already accounted for.
+      if (args.idempotencyKey !== undefined) {
+        const existing = findActiveJobByIdempotencyKey(args.idempotencyKey)
+        if (existing) {
+          const handle: z.infer<typeof JobHandle> = {
+            jobId: existing.jobId,
+            status: existing.status,
+            message: `This idempotencyKey already has a job (status: ${existing.status}). Call job_wait({ jobId: "${existing.jobId}" }) to get its result, or job_status({ jobId: "${existing.jobId}" }) for a one-shot check.`,
+          }
+          return { content: [{ type: 'text', text: JSON.stringify(handle) }], structuredContent: handle }
+        }
+      }
+
       const refusal = admission()
       if (refusal) {
         return {
@@ -122,7 +150,12 @@ function buildMcpServer(): McpServer {
       }
 
       const depth = args.depth ?? 'standard'
-      const job = createJob({ query: args.query, depth, context: args.context })
+      const job = createJob({
+        query: args.query,
+        depth,
+        context: args.context,
+        idempotencyKey: args.idempotencyKey,
+      })
       startResearchJob(job)
 
       const handle: z.infer<typeof JobHandle> = {

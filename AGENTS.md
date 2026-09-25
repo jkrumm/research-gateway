@@ -37,6 +37,14 @@ Everything is submit-then-poll — never expect a synchronous result.
   A text-only MCP client sees only the prose, so **always surface `unverified` and a
   non-`ok` status to the human**, never just the `report` string.
 - `RESEARCH_MAX_CONCURRENCY` / `RESEARCH_MAX_QUEUE` cap jobs; past it, submit returns 429.
+- A finished job is retained 7 days in sqlite (`JOB_TTL_MINUTES`, default 10080) — the `jobId`
+  is the durable handle a client comes back to, not a session token. Memory holds queued/running
+  jobs only (plus a terminal one until the next sweep). `POST /research` and the MCP `research`
+  tool accept an optional `idempotencyKey` (1..200 chars): a retried submit with the same key
+  returns the original job, and the dedupe runs before admission so it is never shed.
+- The CLI (`bin/research.ts`, `make install-cli`) talks the same REST door with no session
+  state: `research "<query>"` submits and polls, `research wait <jobId>` resumes a known id. It
+  is the door for Codex/OpenCode/Hermes/cron and the fallback when the MCP tools are missing.
 
 ## Models
 
@@ -124,6 +132,8 @@ Anything importing `env.ts` is untested by design — factor pure logic out inst
 ## File map
 
 - `src/routes/{research,mcp,health,probe}.ts` — the four surfaces, one engine
+- `bin/research.ts` — the REST-door CLI (`research` / `research wait|status`); pure argv→request
+  and exit-code mapping, only fetch (plus the Keychain read) is I/O — see `bin/research.test.ts`
 - `src/agent/{plan,worker,synthesize,run}.ts` — the fan-out: lead plans → workers dig →
   lead synthesizes
 - `src/agent/ledger.ts` + `ground.ts` — the grounding invariant above

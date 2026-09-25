@@ -14,6 +14,10 @@ export interface Job {
   // Optional caller-supplied background (issue #6). Persisted only so it survives a restart
   // between create and run — the agent itself reads it once, at the start of the run.
   context?: string
+  // Optional caller-supplied dedupe key. Set once at create and immutable thereafter; the
+  // submit path looks it up (findActiveJobByIdempotencyKey) to return the original job
+  // instead of starting a second one.
+  idempotencyKey?: string
   result?: ResearchReport
   error?: string
   createdAt: number
@@ -78,7 +82,10 @@ if (reaped.length > 0) {
   log('job.reaped', { count: reaped.length, jobIds: reaped.map((job) => job.jobId) })
 }
 for (const job of db.all()) {
-  jobs.set(job.jobId, job)
+  // Hydrate only non-terminal jobs. A terminal job's full result is durable in sqlite and is
+  // read lazily by `getJob`; loading a 7-day retention window of finished jobs into the map
+  // at boot (and keeping them there) is exactly what the retention split avoids.
+  if (job.status === 'running' || job.status === 'queued') jobs.set(job.jobId, job)
 }
 
 // Surfaced on GET /health so a keyword monitor can see an unclean restart without log access.
@@ -93,18 +100,17 @@ export function restartStats(): { lastRestartAt: string; reaped: number; interru
 const JOB_TTL_MS = env.JOB_TTL_MINUTES * 60_000
 
 function sweep(): void {
-  const now = Date.now()
+  // The map holds queued/running jobs, plus a terminal one for the ~60s until the next sweep
+  // sees it. A terminal job is durable in sqlite and read from there, so its map entry can go
+  // as soon as the sweep notices — it must never sit in memory for the 7-day retention window.
   for (const [id, job] of jobs) {
-    // Only evict terminal jobs — never reap one that is still queued or running
-    // (a queued job under sustained backlog could otherwise be deleted before it runs).
     if (job.status !== 'done' && job.status !== 'error') continue
-    const age = now - (job.finishedAt ?? job.createdAt)
-    if (age > JOB_TTL_MS) {
-      jobs.delete(id)
-      owned.delete(id)
-      db.delete(id)
-    }
+    jobs.delete(id)
+    owned.delete(id)
   }
+  // Only the sqlite row is held to the retention window. One DELETE, so a backlog of finished
+  // jobs is pruned without walking them into memory.
+  db.deleteFinishedBefore(Date.now() - JOB_TTL_MS)
 }
 
 // Run sweep on an interval so the map doesn't grow unboundedly.
@@ -112,7 +118,12 @@ function sweep(): void {
 const _sweepTimer = setInterval(sweep, 60_000)
 if (typeof _sweepTimer.unref === 'function') _sweepTimer.unref()
 
-export function createJob(input: { query: string; depth: Depth; context?: string | undefined }): Job {
+export function createJob(input: {
+  query: string
+  depth: Depth
+  context?: string | undefined
+  idempotencyKey?: string | undefined
+}): Job {
   sweep()
   const job: Job = {
     jobId: crypto.randomUUID(),
@@ -120,6 +131,7 @@ export function createJob(input: { query: string; depth: Depth; context?: string
     query: input.query,
     depth: input.depth,
     ...(input.context !== undefined ? { context: input.context } : {}),
+    ...(input.idempotencyKey !== undefined ? { idempotencyKey: input.idempotencyKey } : {}),
     createdAt: Date.now(),
   }
   jobs.set(job.jobId, job)
@@ -127,27 +139,43 @@ export function createJob(input: { query: string; depth: Depth; context?: string
   return job
 }
 
-export function getJob(jobId: string): Job | undefined {
-  let job = jobs.get(jobId)
-  if (!job || (job.status !== 'running' && job.status !== 'queued')) return job
+// The submit dedupe lookup: the most recent job created with this key that has not yet aged
+// out of retention. Never consults the in-memory map — the job a retried submit wants back may
+// be a terminal result retained only in sqlite, and a queued/running sibling-replica job is in
+// the file, not this process's map. A caller checks this BEFORE admission so a duplicate is
+// never shed by a full queue or a busy process.
+export function findActiveJobByIdempotencyKey(idempotencyKey: string): Job | undefined {
+  return db.findByIdempotencyKey(idempotencyKey, Date.now() - JOB_TTL_MS)
+}
 
-  // A non-terminal job this process does NOT own is being executed by the sibling replica of a
-  // rolling deploy, which heartbeats it into the shared sqlite file this process never re-reads.
-  // Trusting the boot-time snapshot here reaped a LIVE job ~90s after this replica booted and
-  // wrote 'error' over the owner's row — the precise failure the drain exists to prevent,
-  // reintroduced from the other side, and made far more likely by the drain itself: the old
-  // replica now outlives the new one's boot by up to SHUTDOWN_DRAIN_MS instead of 2 seconds.
-  if (!owned.has(jobId)) {
+export function getJob(jobId: string): Job | undefined {
+  const cached = jobs.get(jobId)
+
+  // Terminal jobs are not retained in memory (sweep evicts them shortly after they finish);
+  // they live in sqlite for the whole retention window. A cached terminal job is the hot path
+  // for one that just finished — its snapshot is final, so hand it back directly.
+  if (cached && cached.status !== 'running' && cached.status !== 'queued') return cached
+
+  // For a non-terminal job the map is only authoritative when this process owns it. A job this
+  // process does NOT own may be executed by the sibling replica of a rolling deploy, which
+  // heartbeats it into the shared sqlite file this process never re-reads. Trusting the
+  // boot-time snapshot there reaped a LIVE job ~90s after this replica booted and wrote 'error'
+  // over the owner's row — the precise failure the drain exists to prevent, reintroduced from
+  // the other side, and made far more likely by the drain itself: the old replica now outlives
+  // the new one's boot by up to SHUTDOWN_DRAIN_MS instead of 2 seconds.
+  let job = cached
+  if (!job || !owned.has(jobId)) {
     const fresh = db.get(jobId)
-    // A missing row means the cached snapshot is all there is (sweep only ever deletes terminal
-    // jobs, so this is not reachable in practice) — fall through to the staleness check below
-    // rather than hand back a 'running' job nothing is proving alive.
     if (fresh) {
       job = fresh
       jobs.set(jobId, fresh)
-      if (fresh.status !== 'running' && fresh.status !== 'queued') return fresh
     }
   }
+  // Neither the map nor the file has it: it never existed, or aged out of retention.
+  if (!job) return undefined
+  // The fresh read may already be terminal (the sibling replica finished it, or a reap wrote
+  // 'error'). Its snapshot is final.
+  if (job.status !== 'running' && job.status !== 'queued') return job
 
   // Read-time half of the heartbeat guarantee: a job hydrated at boot as 'queued'/'running'
   // (owned by whichever replica actually created or started it) can go stale between boot and
