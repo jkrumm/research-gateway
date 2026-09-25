@@ -164,6 +164,7 @@ export function consistencyPrompt(): string {
 - A statement in one section that contradicts a statement in another (e.g. an item is described as removed in one place and recommended as an upgrade two sections later).
 - A claim presented as established fact in the prose that the report elsewhere calls unverifiable (or vice versa).
 - The same entity, version, or date reported differently in two places.
+- A negative about a source — not retrieved, not verified, unreachable, "JS-only", "SPA shell" — in one section, while another section reports content read from that same source. Resolve it in favour of the section that read the source.
 
 ## Rules
 
@@ -195,6 +196,10 @@ export function synthesisPrompt(depth: Depth): string {
 - Tie each key claim to a source URL drawn from the digests.
 - Do not invent facts that are not present in the digests — synthesize only from what they contain. The one exception is the "Given background" section: facts stated there may be woven into the report as established, but they carry NO citation (they have no URL) and must not be dressed up as if a source backed them.
 - If digests disagree or leave gaps, state that explicitly in the report.
+- The "Given background" is established by the caller. When a digest's source gives a different value for something the background states, the background wins: state the background value as established and say in ONE line that the source is out of date on it — that is a staleness signal about the source, not a disagreement to adjudicate or tabulate.
+- Retrieved evidence beats a negative. When one digest says a source could not be read, was unavailable, or a fact is unverified, and another digest retrieved that source or established that fact, report the retrieved finding and drop the negative — the report must not say both.
+- Never describe the research process's tools, fetches or budgets ("the page-retrieval tool became unavailable", "the fetch failed") as a finding. What could not be checked goes in \`unverified\`, stated as the topic that remains open.
+- Do not write confidence labels ("(high)", "*(medium)*", "low confidence") into the report prose. Confidence lives only in \`citations\`; a prose label with no citation behind it is an unbacked claim.
 - Carry each finding's \`confidence\` through to the matching citation — do not drop it, upgrade it, or default it. A claim that rests on a \`low\`-confidence finding MUST be worded in the report prose as provisional (e.g. "appears to be", "one source suggests") and MUST NOT be asserted as an established fact.
 - Aggregate every digest's \`blockedSources\` into the report's \`unverified\` field, carrying \`topic\`, \`url\`, and \`reason\` through unchanged. This is how the caller learns what could not be verified — do not paraphrase it away into prose only.
 

@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'bun:test'
 import {
+  stripInlineConfidenceTags,
   normalizeText,
   capText,
   isValidReport,
@@ -256,3 +257,19 @@ describe('isValidReport — schema-echo guard (unchanged behaviour)', () => {
     ).toBe(true)
   })
 })
+
+describe('stripInlineConfidenceTags', () => {
+  it('removes bare confidence labels from prose, in the forms models write them', () => {
+    const { report, removed } = stripInlineConfidenceTags(
+      'Skill order Q > E > W *(high)*. Sunfire first (medium confidence). Thornmail **(Low)** late.',
+    )
+    expect(report).toBe('Skill order Q > E > W. Sunfire first. Thornmail late.')
+    expect(removed).toBe(3)
+  })
+
+  it('leaves other parentheticals and words alone', () => {
+    const text = 'A high-damage build (high AP ratio) with low cooldowns (see [1]).'
+    expect(stripInlineConfidenceTags(text)).toEqual({ report: text, removed: 0 })
+  })
+})
+

@@ -35,6 +35,22 @@ export function capText(text: string, cap: number): string {
   )
 }
 
+// A confidence label in report PROSE ("Q > E > W *(high)*") is a claim of evidence with no
+// citation behind it — measured 2026-09-25, a skill order tagged (high) that no citation
+// backed and the owner's own note contradicted. Confidence lives in `citations` only, where
+// the ledger checks it, so a bare parenthesised label is removed from the prose. Only a whole
+// parenthetical of exactly the label (optionally "… confidence", optionally italic/bold).
+const INLINE_CONFIDENCE_RE = /[ \t]*[*_]{0,2}\((?:high|medium|low)(?:[ -]confidence)?\)[*_]{0,2}/gi
+
+export function stripInlineConfidenceTags(report: string): { report: string; removed: number } {
+  let removed = 0
+  const out = report.replace(INLINE_CONFIDENCE_RE, () => {
+    removed++
+    return ''
+  })
+  return { report: out, removed }
+}
+
 // ── Synthesis output guard ────────────────────────────────────────────────────
 //
 // Lives here (not in synthesize.ts) so it is unit-testable without booting the env/LLM

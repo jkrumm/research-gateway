@@ -3,7 +3,7 @@ import { planResearch } from './plan.js'
 import { runWorker } from './worker.js'
 import { synthesize } from './synthesize.js'
 import { reviewConsistency } from './consistency.js'
-import { applyConsistencyGate, CONSISTENCY_WARNING } from './extract.js'
+import { applyConsistencyGate, CONSISTENCY_WARNING, stripInlineConfidenceTags } from './extract.js'
 import { assembleReport, nextRoundQuestions } from './assemble.js'
 import { mergeLedgers, type LedgerSnapshot } from './ledger.js'
 import { groundReport } from './ground.js'
@@ -419,6 +419,13 @@ export async function runResearch(
       submitted = gateOutcome.reviewed
       const gate = gateOutcome.gate
       signal?.throwIfAborted()
+
+      // After the consistency pass (which must see the report as written), before grounding.
+      const stripped = stripInlineConfidenceTags(submitted.report)
+      if (stripped.removed > 0) {
+        log('report.inline_confidence_stripped', { jobId, count: stripped.removed })
+        submitted = { ...submitted, report: stripped.report }
+      }
 
       // The job-level gate. Every citation the synthesis model asserted is checked against the
       // union of what the workers' tools actually retrieved, `sources` is replaced by the pages
