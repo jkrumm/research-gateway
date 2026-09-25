@@ -16,11 +16,13 @@ const RATES: Record<string, { input: number; cachedInput: number; output: number
   // computed cost_usd at report time, it does not re-price from this table later).
   'deepseek-v4-flash': { input: 0.14, cachedInput: 0.0028, output: 0.28 },
   'deepseek-v4-pro': { input: 0.435, cachedInput: 0.0145, output: 0.87 },
-  // 2026-09-13 estate-wide model rollout: this repo's lead + worker model. Rates measured
-  // 2026-09-13 against the IU unified endpoint's own `usage.cost` (USD per 1M tokens) —
-  // supersedes the earlier $0.30/$0.30/$1.20 placeholder, which had no cache discount.
-  // Prompt caching is confirmed live on this route (`prompt_tokens_details.cached_tokens`).
-  'deepseek-v4.1-flash': { input: 0.5, cachedInput: 0.05, output: 1.5 },
+  // 2026-09-13 estate-wide model rollout: this repo's lead + worker model. Rates re-measured
+  // 2026-09-24 into the estate's shared price table (usage-tracker `src/pricing.ts`, whose
+  // comment says it covers research-gateway): input 0.15 / cache read 0.003 / output 0.6 USD
+  // per 1M tokens. **That shared table is the source of truth for this id — keep the two in
+  // step.** Supersedes the 2026-09-13 figures (0.50/0.05/1.50) measured here off the IU
+  // endpoint's own `usage.cost`; prompt caching remains live on this route.
+  'deepseek-v4.1-flash': { input: 0.15, cachedInput: 0.003, output: 0.6 },
   // Measured 2026-09-13 against the IU unified endpoint's own `usage.cost`, same method as
   // deepseek-v4.1-flash above.
   'glm-5.3-flash': { input: 0.15, cachedInput: 0.03, output: 0.5 },
@@ -55,6 +57,14 @@ export function computeCost(
       args.outputTokens * rates.output) /
     1_000_000
   return { costUsd, costSource: 'computed' }
+}
+
+// One JSON object per line, newline-terminated — the JSONL sink the mini's local
+// usage-tracker reads (src/env.ts's USAGE_SINK=jsonl). Pure and env-free like computeCost,
+// so it is unit-testable without booting the env-parsing chain; usage.ts only owns the
+// appendFile/mkdir boundary.
+export function formatUsageJsonlLine(record: Record<string, unknown>): string {
+  return `${JSON.stringify(record)}\n`
 }
 
 // Shape of an argo `usage_record` row, built here (not usage.ts) for the same reason as

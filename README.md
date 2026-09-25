@@ -179,6 +179,8 @@ do not mock env. `scripts/smoke.ts` runs one `runResearch()` end to end without 
 | `CONTEXT7_API_KEY` | no | enables `libraryDocs` |
 | `GITHUB_TOKEN` | no | anonymous GitHub is **60 req/h per IP** shared across all jobs; a no-scope token raises it to 5000/h. Empty is treated as unset |
 | `ARGO_USAGE_URL` / `ARGO_API_SECRET` | no | spend telemetry → argo `POST /usage/records`; no-op if either is unset |
+| `USAGE_SINK` | no (`argo`) | `argo` \| `jsonl` — `jsonl` appends each record to `USAGE_JSONL_PATH` for the mini's local usage-tracker instead of POSTing (it syncs to argo; posting to both duplicates rows) |
+| `USAGE_JSONL_PATH` | for `jsonl` | absolute JSONL path; no code default — the mini's launcher sets it. Unset with `USAGE_SINK=jsonl` logs `usage.sink_failed` and falls back to argo |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | no (off) | ClickStack collector, e.g. `http://clickstack:4319` (the unauthed receiver). Unset keeps `log()` console-only and exports no traces |
 | `OTEL_SERVICE_NAME` | no (`research-gateway`) | `service.name` on exported spans and logs |
 | `RESEARCH_MAX_CONCURRENCY` / `RESEARCH_MAX_QUEUE` | no (3 / 50) | concurrent *jobs* / accepted backlog |
@@ -249,8 +251,11 @@ renderer was retired: [measurements](./docs/measurements.md#fetching-pages).
 
 ## Telemetry
 
-Each job reports spend to argo `POST /usage/records` as `source: "research-gateway"`, up to
-seven records per job, `source_id` scoped `${jobId}:<sub_tool>`:
+Each job reports spend as `source: "research-gateway"`, up to seven records per job,
+`source_id` scoped `${jobId}:<sub_tool>`. The default sink is argo `POST /usage/records`; on
+the mini (`USAGE_SINK=jsonl`) the same records go to the local usage-tracker's JSONL file
+instead — the tracker prices and syncs them to argo itself, so the gateway does not POST there
+(doing both would duplicate rows). The record set:
 
 | `sub_tool` | `cost_source` | Why |
 |-|-|-|
