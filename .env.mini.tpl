@@ -29,10 +29,14 @@ MEMORY_LIMIT_MB=4096
 OTEL_SERVICE_NAME=research-gateway
 OTEL_RESOURCE_ATTRIBUTES=host.name=mini
 
-# Matches .env.local.tpl's own default — repeated here so the mini's
-# concurrency ceiling is a deliberate, visible choice rather than an
-# inherited default.
-RESEARCH_MAX_CONCURRENCY=3
+# Raised 3 → 5 on 2026-09-25, measured during a 14-job burst at 3-way: RSS
+# 1.42 GB of 4096 MB (34%, ~2.8 GB extrapolated at 6), zero LLM or search 429s
+# in two days of logs, and no wall-clock slowdown for overlapping jobs. The one
+# metric near a ceiling is Sonar: 51 searches in the peak minute at 3 jobs
+# against a documented 50 RPM on IU's shared account (a 429 retries once, then
+# falls back to Tavily). 5, not 6, for that reason — watch tool.searchWeb
+# errors before going higher. The memory watchdog still brakes dispatch at 85%.
+RESEARCH_MAX_CONCURRENCY=5
 
 # brainNotes tool (agent/tools.ts, agent/brain-search.ts) — the second brain's reader app,
 # tailnet-only (dotfiles' Caddyfile: basalt-ui-obsidian demo, port 7733). BRAIN_DIR itself
