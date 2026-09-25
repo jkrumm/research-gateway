@@ -84,6 +84,26 @@ in the order they bit:
 - **Never promote a fetch failure to a negative claim** (field notes, 2026-08-06) — the
   pipeline must not treat "we couldn't get it" as "it isn't there".
 
+## Fetch etiquette: robots.txt and proxies (2026-09-25)
+
+`fetchPage` is a user-initiated read — one question from the owner, a few dozen pages, never
+a crawl — so it does not fetch or evaluate robots.txt per request (the same category as a
+browser, or Anthropic's `Claude-User` agent). Two rules hold anyway:
+
+- **No proxies.** Reader and CORS proxies (r.jina.ai, microlink, allorigins, corsproxy, …)
+  are refused in code (`src/agent/fetch-guard.ts`). They were the model's workaround for a
+  page it could not read, and a way around the site's own rules; the chain already renders
+  JavaScript and falls back to Tavily Extract and Wayback. Measured: ~31 of one job's 42 failed
+  fetches were invented proxy URLs.
+- **Never recommend a disallowed path to the caller.** A report may read a site's HTML pages,
+  but it does not present a path the site's robots.txt disallows for `*` (wrchina.gg's `/api/`)
+  as the source a caller should use — it names the allowed HTML route instead. This is a
+  synthesis rule, not an enforcement engine: fetching robots.txt per host on every read buys
+  little for user-initiated reads, and it would have to exempt the Reddit mirror route
+  (`site-adapters.ts`) anyway.
+
+Revisit if the service ever does anything crawl-shaped (scheduled refreshes, bulk fetches).
+
 ## Non-goals, still
 
 No deterministic pipeline, no per-client tokens, no query caching, no streaming, no
