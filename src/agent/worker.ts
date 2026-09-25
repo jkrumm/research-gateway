@@ -130,7 +130,7 @@ export async function runWorker(args: {
           onToolExecutionEnd: () => idle.arm(),
         })
 
-        let usage = toUsageStats(result.usage, Date.now() - start)
+        let usage = toUsageStats(result.usage, Date.now() - start, result.steps)
         let raw = extractDigest(result.toolCalls)
 
         // Salvage: the loop ended (contextGuard's stopWhen, or the model simply stopping)
@@ -180,7 +180,7 @@ export async function runWorker(args: {
               onToolExecutionEnd: () => idle.arm(),
             })
             const salvageRaw = extractDigest(salvageResult.toolCalls)
-            usage = { ...addUsage(usage, toUsageStats(salvageResult.usage, 0)), durationMs: Date.now() - start }
+            usage = { ...addUsage(usage, toUsageStats(salvageResult.usage, 0, salvageResult.steps)), durationMs: Date.now() - start }
             if (salvageRaw) {
               raw = salvageRaw
               salvaged = true

@@ -93,7 +93,7 @@ export async function synthesize(args: {
       idle.arm()
       try {
         let result = await callSynthesis(synthesisModel, idle)
-        let usage = toUsageStats(result.usage, 0)
+        let usage = toUsageStats(result.usage, 0, result.steps)
 
         // The report is written entirely inside the tool call's arguments, so a starved call
         // (finishReason: 'length') looks exactly like "no valid submit_report call" unless
@@ -102,7 +102,7 @@ export async function synthesize(args: {
         if (result.finishReason === 'length') {
           log('synthesis.length', { jobId, outputTokens: usage.outputTokens, budget: ROLE_BUDGETS.synthesis })
           result = await callSynthesis(leadModelWithDoubledBudget('synthesis'), idle)
-          usage = addUsage(usage, toUsageStats(result.usage, 0))
+          usage = addUsage(usage, toUsageStats(result.usage, 0, result.steps))
           if (result.finishReason === 'length') {
             log('synthesis.length', { jobId, outputTokens: usage.outputTokens, retried: true })
           }

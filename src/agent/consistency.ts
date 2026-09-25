@@ -86,7 +86,7 @@ export async function reviewConsistency(args: {
           onToolExecutionEnd: () => idle.arm(),
         })
 
-        const usage = toUsageStats(result.usage, Date.now() - start)
+        const usage = toUsageStats(result.usage, Date.now() - start, result.steps)
         const resolution = resolveConsistencyReview(report, extractReview(result.toolCalls))
         // An accepted edit is never silent: the spans land on the span and the done log,
         // where the trace can show exactly what the review pass changed in the body.

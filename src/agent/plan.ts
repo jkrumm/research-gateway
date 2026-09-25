@@ -79,7 +79,7 @@ export async function planResearch(args: {
       idle.arm()
       try {
         let result = await callPlan(planModel, idle)
-        let usage = toUsageStats(result.usage, 0)
+        let usage = toUsageStats(result.usage, 0, result.steps)
 
         // A starved call (empty/truncated tool args) reads identically to "the model chose
         // not to call the tool" unless finishReason is checked — log it distinctly so the two
@@ -88,7 +88,7 @@ export async function planResearch(args: {
         if (result.finishReason === 'length') {
           log('plan.length', { jobId, outputTokens: usage.outputTokens, budget: ROLE_BUDGETS.plan })
           result = await callPlan(leadModelWithDoubledBudget('plan'), idle)
-          usage = addUsage(usage, toUsageStats(result.usage, 0))
+          usage = addUsage(usage, toUsageStats(result.usage, 0, result.steps))
           if (result.finishReason === 'length') {
             log('plan.length', { jobId, outputTokens: usage.outputTokens, retried: true })
           }

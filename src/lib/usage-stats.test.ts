@@ -102,3 +102,18 @@ describe('chooseCost, fed from toUsageStats', () => {
     expect(chooseCost('deepseek-v4.1-flash', emptyUsage())).toEqual({ costUsd: 0, costSource: 'computed' })
   })
 })
+
+describe('toUsageStats with steps (the SDK drops raw from summed totalUsage)', () => {
+  it('sums raw.cost per step and counts steps without one', () => {
+    const summed = fakeUsage() // no raw, as addLanguageModelUsage returns it
+    const steps = [
+      { usage: fakeUsage({ raw: { cost: 0.001 } }) },
+      { usage: fakeUsage({ raw: { cost: 0.002 } }) },
+    ]
+    const stats = toUsageStats(summed, 0, steps)
+    expect(stats.reportedCostUsd).toBeCloseTo(0.003, 10)
+    expect(stats.unreportedCalls).toBe(0)
+    const mixed = toUsageStats(summed, 0, [...steps, { usage: fakeUsage() }])
+    expect(mixed.unreportedCalls).toBe(1)
+  })
+})

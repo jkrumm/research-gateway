@@ -122,14 +122,36 @@ export function emptyUsage(): UsageStats {
   }
 }
 
-export function toUsageStats(usage: LanguageModelUsage, durationMs: number): UsageStats {
+function rawCostOf(usage: LanguageModelUsage): number | null {
+  const c = usage.raw?.['cost']
+  return typeof c === 'number' && Number.isFinite(c) ? c : null
+}
+
+/** Pass `steps` (a generateText/streamText result's `steps`) whenever the call can run more
+ *  than one step: the SDK's `result.usage` is `totalUsage`, rebuilt by
+ *  `addLanguageModelUsage`, which drops `raw` — so the gateway's per-call `cost` survives only
+ *  on each step's own `usage.raw`. Tokens still come from the summed `usage`. */
+export function toUsageStats(
+  usage: LanguageModelUsage,
+  durationMs: number,
+  steps?: ReadonlyArray<{ usage: LanguageModelUsage }>,
+): UsageStats {
+  if (steps && steps.length > 0) {
+    const perStep = steps.map((st) => rawCostOf(st.usage))
+    const reported = perStep.filter((c): c is number => c !== null)
+    return {
+      ...toUsageStats(usage, durationMs),
+      reportedCostUsd: reported.reduce((a, c) => a + c, 0),
+      unreportedCalls: perStep.length - reported.length,
+    }
+  }
   // `usage.raw` is the provider's own usage object verbatim (`@ai-sdk/openai-compatible`'s
   // `convertOpenAICompatibleChatUsage` sets `raw: usage` from the response body) — checked
   // defensively for a numeric `cost` rather than trusted, since a GPT/Gemini call's `raw`
   // carries no such field at all and a malformed one should fall through to `unreportedCalls`,
   // not throw or silently coerce a non-number.
-  const rawCost = usage.raw?.['cost']
-  const hasReportedCost = typeof rawCost === 'number' && Number.isFinite(rawCost)
+  const rawCost = rawCostOf(usage)
+  const hasReportedCost = rawCost !== null
   return {
     inputTokens: usage.inputTokens ?? 0,
     outputTokens: usage.outputTokens ?? 0,
@@ -137,7 +159,7 @@ export function toUsageStats(usage: LanguageModelUsage, durationMs: number): Usa
     reasoningTokens: usage.outputTokenDetails?.reasoningTokens ?? 0,
     cachedInputTokens: usage.inputTokenDetails?.cacheReadTokens ?? 0,
     durationMs,
-    reportedCostUsd: hasReportedCost ? rawCost : 0,
+    reportedCostUsd: rawCost ?? 0,
     unreportedCalls: hasReportedCost ? 0 : 1,
   }
 }
