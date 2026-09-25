@@ -13,9 +13,9 @@ import { buildDirectSourceTools } from './direct-sources.js'
 import { sonarSearch, type SonarContextSize } from './sonar.js'
 import { runFetchChain, hostOf } from './fetch-chain.js'
 import { normalizeUrl, type RetrievalLedger } from './ledger.js'
-import { searchBrain } from './brain-search.js'
+import { readBrainNote, searchBrain } from './brain-search.js'
 import { searchKarakeep } from './karakeep-search.js'
-import { parseQueryTerms, createBrainCallGuard } from './brain.js'
+import { parseQueryTerms, createBrainCallGuard, isNoteRef } from './brain.js'
 import type { BrainNoteResult } from './brain.js'
 import type { KarakeepBookmarkResult } from './karakeep.js'
 
@@ -547,6 +547,19 @@ function buildFetchPageTool(ledger: RetrievalLedger, pageBudget: PageBudget, job
         return { url, text: 'Already fetched earlier in this conversation — reuse the previous result for this URL.' }
       }
 
+      // The owner's brain reader is tailnet-only and not a web page to scrape: a reader URL
+      // (typically copied out of a brainNotes result) is read straight from the vault, under
+      // brainNotes' own scope rules. Measured 2026-09-25: workers fetchPage'd reader URLs and
+      // got "private address" refusals, then reported the owner's note as unreadable.
+      if (env.BRAIN_BASE_URL && isNoteRef(url, env.BRAIN_BASE_URL)) {
+        if (!pageBudget.hasRoom()) return { url, error: PAGE_BUDGET_SPENT }
+        const read = await readBrainNote(url, jobId)
+        if (!read.ok) return { url, error: read.error }
+        ledger.recordRetrieved(read.note.url)
+        fetched.add(url)
+        return { url: read.note.url, text: pageBudget.take(read.note.content) }
+      }
+
       // Neither is a fetch failure, so neither touches the ledger: a refused proxy URL was never
       // asked for, and a spent budget is this worker's limit, not the page's.
       if (isProxyUrl(url)) {
@@ -668,7 +681,12 @@ const BRAIN_BUDGET_SPENT_NOTE =
 // Karakeep half is gated on KARAKEEP_URL + KARAKEEP_API_KEY. The tool is registered when EITHER
 // half is configured; unset both on the VPS/local dev/tests, exactly like buildLibraryDocsTool
 // above.
-function buildBrainNotesTool(ledger: RetrievalLedger, jobId = '-'): AnyTool | null {
+// Full-note reads have their own per-worker cap, separate from the search budget: reading the
+// note a query names is the point, not the burn the search budget exists to stop — and each
+// read is charged to the worker's page-text budget anyway.
+const MAX_BRAIN_READS = 6
+
+function buildBrainNotesTool(ledger: RetrievalLedger, pageBudget: PageBudget, jobId = '-'): AnyTool | null {
   const brainConfigured = Boolean(env.BRAIN_DIR && env.BRAIN_BASE_URL)
   const karakeepConfigured = Boolean(env.KARAKEEP_URL && env.KARAKEEP_API_KEY)
   if (!brainConfigured && !karakeepConfigured) return null
@@ -679,14 +697,44 @@ function buildBrainNotesTool(ledger: RetrievalLedger, jobId = '-'): AnyTool | nu
   // guard covers BOTH halves: a call spends one budget slot whether it reaches the vault, the
   // bookmarks or both.
   const guard = createBrainCallGuard()
+  let reads = 0
 
   return tool({
     description:
-      "Search the owner's own notes (their second brain) and saved Karakeep bookmarks — prior conclusions, decisions and curated reading already gathered, not general web content. Treat a match as a strong lead and cite it, but verify anything time- or version-sensitive (a price, a current version, a live status) against a primary source before asserting it. Cite the returned `url` field verbatim — never a file path, note title or an original page URL named inside an excerpt.",
+      "Search the owner's own notes (their second brain) and saved Karakeep bookmarks — prior conclusions, decisions and curated reading already gathered, not general web content. `query` returns ranked excerpts. `path` reads ONE note in full — use it whenever the question names a note or folder (e.g. \"Areas/Gaming/Wild Rift/Rammus\", \"Rammus\") or you want the whole body of a note a search returned (pass its `url`). Treat a match as a strong lead and cite it, but verify anything time- or version-sensitive (a price, a current version, a live status) against a primary source before asserting it. Cite the returned `url` field verbatim — never a file path, note title or an original page URL named inside an excerpt.",
     inputSchema: z.object({
-      query: z.string().describe('What to look up, e.g. "model routing deepseek" or "research gateway grounding"'),
+      query: z
+        .string()
+        .optional()
+        .describe('What to look up, e.g. "model routing deepseek" or "research gateway grounding"'),
+      path: z
+        .string()
+        .optional()
+        .describe(
+          'Read one note in full: a vault path ("Areas/Gaming/Wild Rift/Rammus"), a note title ("Rammus"), or a `url` a previous result returned.',
+        ),
     }),
-    execute: async ({ query }) => {
+    execute: async ({ query, path }) => {
+      const reference = path ?? (query && env.BRAIN_BASE_URL && isNoteRef(query, env.BRAIN_BASE_URL) ? query : undefined)
+      if (reference !== undefined && brainConfigured) {
+        reads++
+        if (reads > MAX_BRAIN_READS) return { path: reference, error: BRAIN_BUDGET_SPENT_NOTE }
+        if (!pageBudget.hasRoom()) return { path: reference, error: PAGE_BUDGET_SPENT }
+        const read = await readBrainNote(reference, jobId)
+        if (read.ok) {
+          ledger.recordRetrieved(read.note.url)
+          return {
+            path: reference,
+            results: [{ ...read.note, content: pageBudget.take(read.note.content) }],
+            note: "The owner's own note, read in full — true as of its `updated` date, not proof of the present. Cite its `url` exactly as given.",
+          }
+        }
+        // An explicit path that does not resolve is an answer. A query that merely LOOKED like
+        // a path ("wiki/gaming/sourcing.md gaming sourcing doc") falls through to search.
+        if (path !== undefined || query === undefined) return { path: reference, error: read.error }
+      }
+      if (query === undefined) return { error: 'Pass a `query` to search, or a `path` to read one note.' }
+
       const terms = parseQueryTerms(query)
 
       const gate = guard.check(terms)
@@ -751,7 +799,7 @@ function buildBrainNotesTool(ledger: RetrievalLedger, jobId = '-'): AnyTool | nu
         // note's 2026-09-07 answer at high confidence — the note had simply not been updated
         // after the 2026-09-13 switch. A note is the owner's record AS OF its date, never proof
         // of the present; a saved bookmark is the same (its excerpt is of the archived copy).
-        note: "These are the owner's own prior notes and saved bookmarks, each true as of its `updated` date — not proof of the present. For anything current (a version, a config, what runs 'today'), state the date and confirm it against a primary source (githubFile, packageInfo, the live page) before asserting it; if you cannot, say it may be superseded. Cite the `url` field exactly as given — never a file path, note title or the original page URL shown inside a bookmark's excerpt.",
+        note: "Excerpts only — to read a note in full, call brainNotes with { path: <its url> }. These are the owner's own prior notes and saved bookmarks, each true as of its `updated` date — not proof of the present. For anything current (a version, a config, what runs 'today'), state the date and confirm it against a primary source (githubFile, packageInfo, the live page) before asserting it; if you cannot, say it may be superseded. Cite the `url` field exactly as given — never a file path, note title or the original page URL shown inside a bookmark's excerpt.",
       }
     },
   }) as AnyTool
@@ -806,7 +854,7 @@ export function buildTools(args: {
 
   // Also optional, also registered last — same tools/list-order-stability reasoning as
   // libraryDocs above (mini-only, absent everywhere else).
-  const brainNotesTool = buildBrainNotesTool(ledger, jid)
+  const brainNotesTool = buildBrainNotesTool(ledger, pageBudget, jid)
   if (brainNotesTool) {
     tools['brainNotes'] = brainNotesTool
   }

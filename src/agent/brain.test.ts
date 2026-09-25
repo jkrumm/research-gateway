@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'bun:test'
 import {
+  parseNoteRef,
+  isNoteRef,
+  pickNoteByRef,
+  buildFullNote,
+  FULL_NOTE_CAP,
+  selectAnchorTerms,
   parseQueryTerms,
   isNearDuplicateQuery,
   createBrainCallGuard,
@@ -575,5 +581,88 @@ describe('rankAndBuildNotes', () => {
     ]
     const results = rankAndBuildNotes({ candidates, terms: ['deepseek'], baseUrl, corpus: corpusFromCandidates(candidates) })
     expect(results.map((r) => r.title)).toEqual(['deepseek reference'])
+  })
+})
+
+// ── Full-note reads by reference (2026-09-25) ────────────────────────────────
+describe('note references', () => {
+  const base = 'https://brain.example.com'
+
+  it('parseNoteRef normalizes vault paths, reader URLs and encoded slugs', () => {
+    expect(parseNoteRef('Areas/Gaming/Wild Rift/Rammus.md', base)).toBe('Areas/Gaming/Wild Rift/Rammus')
+    expect(parseNoteRef(`${base}/Areas/Gaming/Wild%20Rift/Rammus`, base)).toBe('Areas/Gaming/Wild Rift/Rammus')
+    expect(parseNoteRef('~/SourceRoot/brain/Areas/Gaming/Wild Rift/Rammus.md', base)).toBe('Areas/Gaming/Wild Rift/Rammus')
+    expect(parseNoteRef('Rammus', base)).toBe('Rammus')
+  })
+
+  it('parseNoteRef refuses foreign URLs and path escapes', () => {
+    expect(parseNoteRef('https://wrchina.gg/c/rammus/', base)).toBeNull()
+    expect(parseNoteRef('Areas/../../etc/passwd', base)).toBeNull()
+    expect(parseNoteRef('   ', base)).toBeNull()
+  })
+
+  it('isNoteRef recognises reader URLs and rooted or .md paths, not ordinary queries', () => {
+    expect(isNoteRef(`${base}/wiki/gaming/sourcing`, base)).toBe(true)
+    expect(isNoteRef('Areas/Gaming/Wild Rift/Rammus', base)).toBe(true)
+    expect(isNoteRef('notes/rammus.md', base)).toBe(true)
+    expect(isNoteRef('Rammus jungle build 7.3', base)).toBe(false)
+    expect(isNoteRef('https://wrchina.gg/c/rammus/', base)).toBe(false)
+  })
+
+  it('pickNoteByRef: exact path first, then a unique suffix, ambiguity reported', () => {
+    const paths = [
+      'Areas/Gaming/Wild Rift/Rammus.md',
+      'Areas/Gaming/Wild Rift/Nunu.md',
+      'wiki/gaming/items.md',
+      'Projects/items.md',
+    ]
+    expect(pickNoteByRef(paths, 'areas/gaming/wild rift/rammus')).toEqual({
+      kind: 'match',
+      relPath: 'Areas/Gaming/Wild Rift/Rammus.md',
+    })
+    expect(pickNoteByRef(paths, 'Wild Rift/Nunu')).toEqual({ kind: 'match', relPath: 'Areas/Gaming/Wild Rift/Nunu.md' })
+    expect(pickNoteByRef(paths, 'Rammus')).toEqual({ kind: 'match', relPath: 'Areas/Gaming/Wild Rift/Rammus.md' })
+    expect(pickNoteByRef(paths, 'items')).toEqual({
+      kind: 'ambiguous',
+      candidates: ['wiki/gaming/items.md', 'Projects/items.md'],
+    })
+    expect(pickNoteByRef(paths, 'Galio')).toEqual({ kind: 'none' })
+  })
+
+  it('buildFullNote returns the body without frontmatter, capped and flagged', () => {
+    const content = `---\ntitle: Rammus\nupdated: 2026-08-05\n---\n${'W max first. '.repeat(3_000)}`
+    const note = buildFullNote({ relPath: 'Areas/Gaming/Wild Rift/Rammus.md', content, baseUrl: base })
+    expect(note?.url).toBe(`${base}/Areas/Gaming/Wild%20Rift/Rammus`)
+    expect(note?.content.startsWith('W max first.')).toBe(true)
+    expect(note?.content.length).toBe(FULL_NOTE_CAP)
+    expect(note?.truncated).toBe(true)
+  })
+})
+
+describe('selectAnchorTerms (2026-09-25 weatherorb case)', () => {
+  it('picks the two rarest informative terms once a query has three or more', () => {
+    const idf = new Map([
+      ['wrchina', 5],
+      ['robots', 4.5],
+      ['leaderboard', 3],
+      ['reliability', 2],
+      ['combination', 2],
+    ])
+    expect(selectAnchorTerms(['leaderboard', 'wrchina', 'reliability', 'robots', 'combination'], idf)).toEqual([
+      'wrchina',
+      'robots',
+    ])
+    expect(selectAnchorTerms(['bun', 'runtime'], idf)).toEqual([])
+  })
+
+  it('a note covering the ordinary terms but no anchor is not a strong match', () => {
+    const informativeTerms = ['wrchina', 'leaderboard', 'reliability', 'combination']
+    const common = { frontmatterBlock: '', informativeTerms, anchorTerms: ['wrchina', 'robots'] }
+    expect(
+      isStrongMatch({ ...common, title: 'weatherorb digest', body: 'leaderboard reliability combination of models' }),
+    ).toBe(false)
+    expect(
+      isStrongMatch({ ...common, title: 'Data sourcing', body: 'wrchina leaderboard reliability combination' }),
+    ).toBe(true)
   })
 })

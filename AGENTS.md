@@ -153,7 +153,8 @@ Anything importing `env.ts` is untested by design — factor pure logic out inst
   (owner decision 2026-09-25 — health and finance notes in scope, journals never),
   realpath-checked against symlink escape (a note symlinked to a file outside every root is
   dropped, not followed); journals are excluded by path and frontmatter, vault-root files and
-  `docs/` are never roots. Ranking/excerpting is pure (brain.ts); the spawn+fs boundary is
+  `docs/` are never roots. `brainNotes({ path })` (and `fetchPage` on a reader URL) reads one
+  note in full under the same scope, charged to the worker's page-text budget. Ranking/excerpting is pure (brain.ts); the spawn+fs boundary is
   brain-search.ts.
 - `src/agent/karakeep.ts` + `karakeep-search.ts` — the owner's Karakeep bookmarks, folded into
   the same `brainNotes` tool (no eleventh tool definition), mini-only and optional

@@ -313,6 +313,20 @@ export function selectInformativeTerms(terms: readonly string[], idf: ReadonlyMa
   return terms.filter((t) => (idf.get(t) ?? 0) >= INFORMATIVE_IDF_FLOOR)
 }
 
+// The query's rarest terms usually NAME its subject — "wrchina", a champion, a project —
+// while the rest is ordinary English the whole vault shares. Coverage alone let four weatherorb
+// research digests answer "wrchina.gg leaderboard win rate per combination reliability
+// robots.txt" (measured 2026-09-25): they cover leaderboard / win / rate / combination /
+// reliability and never mention wrchina. With three or more informative terms, a strong match
+// must also contain one of the two rarest; a shorter query is all subject already.
+const ANCHOR_COUNT = 2
+const ANCHOR_MIN_TERMS = 3
+
+export function selectAnchorTerms(informativeTerms: readonly string[], idf: ReadonlyMap<string, number>): string[] {
+  if (informativeTerms.length < ANCHOR_MIN_TERMS) return []
+  return [...informativeTerms].sort((a, b) => (idf.get(b) ?? 0) - (idf.get(a) ?? 0)).slice(0, ANCHOR_COUNT)
+}
+
 // Sublinear term-frequency scaling (classic TF-IDF practice: Lucene's default scoring and
 // Robertson/Sparck Jones both dampen raw term COUNT the same way) — a note that happens to
 // repeat a term many times in passing (measured: a note surveying model IDs across every IU
@@ -359,9 +373,12 @@ export function isStrongMatch(args: {
   frontmatterBlock: string
   body: string
   informativeTerms: readonly string[]
+  anchorTerms?: readonly string[]
 }): boolean {
-  const { title, frontmatterBlock, body, informativeTerms } = args
+  const { title, frontmatterBlock, body, informativeTerms, anchorTerms = [] } = args
   if (informativeTerms.length === 0) return false
+  const text = `${title}\n${frontmatterBlock}\n${body}`
+  if (anchorTerms.length > 0 && !anchorTerms.some((t) => countTermMatches(text, [t]) > 0)) return false
 
   const titleOrFrontmatterHits = informativeTerms.filter(
     (t) => countTermMatches(title, [t]) > 0 || countTermMatches(frontmatterBlock, [t]) > 0,
@@ -459,6 +476,7 @@ export function rankAndBuildNotes(args: {
 
   const idf = computeIdf({ corpus, terms })
   const informativeTerms = selectInformativeTerms(terms, idf)
+  const anchorTerms = selectAnchorTerms(informativeTerms, idf)
   const excerptTerms = informativeTerms.length > 0 ? informativeTerms : terms
 
   const scored = candidates
@@ -473,7 +491,9 @@ export function rankAndBuildNotes(args: {
       return { relPath: c.relPath, title, body, frontmatter, frontmatterBlock }
     })
     .filter((c) => !isJournalNote(c.frontmatterBlock))
-    .filter((c) => isStrongMatch({ title: c.title, frontmatterBlock: c.frontmatterBlock, body: c.body, informativeTerms }))
+    .filter((c) =>
+      isStrongMatch({ title: c.title, frontmatterBlock: c.frontmatterBlock, body: c.body, informativeTerms, anchorTerms }),
+    )
     .map((c) => ({ ...c, score: scoreNote({ title: c.title, frontmatterBlock: c.frontmatterBlock, body: c.body, terms, idf }) }))
     .sort((a, b) => b.score - a.score)
     .slice(0, maxResults)
@@ -490,4 +510,93 @@ export function rankAndBuildNotes(args: {
     results.push({ kind: 'note', title: c.title, url, updated: resolveUpdatedDate(c.frontmatter), excerpt })
   }
   return results
+}
+
+// ── Read one note in full, by path ───────────────────────────────────────────
+//
+// Ranked excerpts answer "what does the vault say about X". They cannot answer the owner's
+// most common brain question — "compare with MY note on Rammus" — where the note body IS the
+// evidence: measured 2026-09-25, every per-champion job named `Areas/Gaming/Wild Rift/<Champ>`
+// in its query and still worked from a 1,500-char excerpt (or a failed fetchPage on the
+// tailnet-only reader URL). A reference resolves to one note, read whole up to FULL_NOTE_CAP.
+
+export const FULL_NOTE_CAP = 24_000
+
+export interface BrainNoteFull {
+  kind: 'note'
+  title: string
+  url: string
+  updated: string | null
+  content: string
+  truncated: boolean
+}
+
+const NOTE_ROOT_RE = /^(?:wiki|Projects|Areas|Inbox)\//i
+
+/** Normalize anything a model may pass as a note reference — a vault path with or without
+ * `.md`, a reader URL under `baseUrl`, a percent-encoded slug — to a BRAIN_DIR-relative path
+ * without extension. Returns null for anything that is not a note reference (a plain query, a
+ * foreign URL, a `..` escape). Scope (roots, journals, symlinks) is still enforced by the
+ * reader; this only parses. */
+export function parseNoteRef(input: string, baseUrl?: string): string | null {
+  let ref = input.trim()
+  const base = baseUrl?.replace(/\/+$/, '')
+  if (base && ref.toLowerCase().startsWith(`${base.toLowerCase()}/`)) ref = ref.slice(base.length + 1)
+  else if (/^[a-z][a-z0-9+.-]*:\/\//i.test(ref)) return null
+  ref = ref.split(/[?#]/)[0] ?? ''
+  try {
+    ref = ref
+      .split('/')
+      .map((segment) => decodeURIComponent(segment))
+      .join('/')
+  } catch {
+    return null
+  }
+  ref = ref.replace(/^~\/SourceRoot\/brain\//, '').replace(/^\/+/, '').replace(/\/+$/, '').replace(/\.md$/i, '')
+  if (ref.length === 0 || ref.split('/').some((segment) => segment === '..' || segment === '.')) return null
+  return ref
+}
+
+/** True when a brainNotes `query` is really a note reference — a reader URL, a rooted vault
+ * path, or a `.md` path — so the tool reads the note instead of ranking excerpts for it. */
+export function isNoteRef(input: string, baseUrl?: string): boolean {
+  const text = input.trim()
+  if (/\s{2,}|\n/.test(text)) return false
+  const base = baseUrl?.replace(/\/+$/, '').toLowerCase()
+  if (base && text.toLowerCase().startsWith(`${base}/`)) return true
+  return (NOTE_ROOT_RE.test(text) || /\.md$/i.test(text)) && parseNoteRef(text, baseUrl) !== null
+}
+
+/** Resolve a parsed reference against the in-scope note listing (BRAIN_DIR-relative paths with
+ * `.md`). Exact path first, case-insensitive; then a unique suffix match ("Wild Rift/Rammus",
+ * "Rammus"), so a model that names only the folder tail or the note title still lands on the
+ * file. More than one suffix match is ambiguous and returned as such — never guessed. */
+export function pickNoteByRef(
+  relPaths: readonly string[],
+  ref: string,
+): { kind: 'match'; relPath: string } | { kind: 'ambiguous'; candidates: string[] } | { kind: 'none' } {
+  const want = ref.toLowerCase()
+  const bare = (p: string): string => p.replace(/\.md$/i, '').toLowerCase()
+  const exact = relPaths.find((p) => bare(p) === want)
+  if (exact) return { kind: 'match', relPath: exact }
+  const suffix = relPaths.filter((p) => bare(p).endsWith(`/${want}`))
+  if (suffix.length === 1 && suffix[0]) return { kind: 'match', relPath: suffix[0] }
+  if (suffix.length > 1) return { kind: 'ambiguous', candidates: suffix.slice(0, 8) }
+  return { kind: 'none' }
+}
+
+/** The full-note payload: body without frontmatter, capped, flagged when cut. */
+export function buildFullNote(args: { relPath: string; content: string; baseUrl: string | undefined }): BrainNoteFull | null {
+  const url = buildNoteUrl(args.baseUrl, args.relPath)
+  if (!url) return null
+  const { frontmatter, body } = parseFrontmatter(args.content)
+  const trimmed = body.trim()
+  return {
+    kind: 'note',
+    title: resolveTitle(args.relPath, frontmatter, trimmed),
+    url,
+    updated: resolveUpdatedDate(frontmatter),
+    content: trimmed.slice(0, FULL_NOTE_CAP),
+    truncated: trimmed.length > FULL_NOTE_CAP,
+  }
 }

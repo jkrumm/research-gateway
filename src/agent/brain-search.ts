@@ -12,8 +12,17 @@ import { isAbsolute, join, relative } from 'node:path'
 import { env } from '../env.js'
 import { log } from '../lib/log.js'
 import { readCappedText } from './pdf-extract.js'
-import { rankAndBuildNotes, parseQueryTerms, buildCorpusStats, isJournalPath } from './brain.js'
-import type { BrainCandidate, BrainNoteResult, CorpusStats } from './brain.js'
+import {
+  rankAndBuildNotes,
+  parseQueryTerms,
+  buildCorpusStats,
+  isJournalPath,
+  isJournalNote,
+  parseNoteRef,
+  pickNoteByRef,
+  buildFullNote,
+} from './brain.js'
+import type { BrainCandidate, BrainNoteFull, BrainNoteResult, CorpusStats } from './brain.js'
 
 // The vault trees brainNotes may read. Owner decision 2026-09-25: wiki, projects, areas and
 // inbox are in scope (health and finance notes included); journals never. Anything else under
@@ -292,4 +301,49 @@ export async function searchBrain(query: string, jobId = '-'): Promise<BrainSear
     ok: true,
   })
   return { ok: true, notes }
+}
+
+export type BrainReadResult = { ok: true; note: BrainNoteFull } | { ok: false; error: string }
+
+/** Read ONE note in full by reference (a vault path, a reader URL, or a unique title/suffix).
+ * Same scope boundary as search: the note must resolve (realpath) under a root, with no dot
+ * segment, not a journal by path or frontmatter. The listing that resolves a suffix is the
+ * whole in-scope corpus, so an ambiguous reference is reported with its candidates, never
+ * guessed. Never throws. */
+export async function readBrainNote(reference: string, jobId = '-'): Promise<BrainReadResult> {
+  if (!env.BRAIN_DIR || !env.BRAIN_BASE_URL) return { ok: false, error: 'brainNotes is not configured on this host' }
+  const ref = parseNoteRef(reference, env.BRAIN_BASE_URL)
+  if (ref === null) return { ok: false, error: `not a note reference: ${reference}` }
+
+  let brainDirReal: string
+  try {
+    brainDirReal = await realpath(env.BRAIN_DIR)
+  } catch (err) {
+    log('tool.brainNotes', { jobId, read: ref, ok: false, error: `BRAIN_DIR unreadable: ${String(err)}` })
+    return { ok: false, error: 'brain vault is unreadable on this host' }
+  }
+  const rootReals = await resolveRoots(brainDirReal)
+  const listing = await listAllFiles(rootReals, jobId)
+  if (!listing.ok) return { ok: false, error: `brain listing failed: ${listing.error}` }
+
+  const relPaths = listing.paths.map((p) => relative(brainDirReal, p))
+  const pick = pickNoteByRef(relPaths, ref)
+  if (pick.kind === 'none') {
+    log('tool.brainNotes', { jobId, read: ref, ok: false, error: 'no such note' })
+    return { ok: false, error: `no note at "${ref}" in the owner's brain — search with a query instead` }
+  }
+  if (pick.kind === 'ambiguous') {
+    return { ok: false, error: `"${ref}" matches several notes — read one of: ${pick.candidates.join(', ')}` }
+  }
+
+  const [candidate] = await readScopedCandidates([join(brainDirReal, pick.relPath)], brainDirReal, rootReals)
+  const frontmatterBlock = candidate?.content.match(/^---\r?\n([\s\S]*?)\r?\n---/)?.[1] ?? ''
+  if (!candidate || isJournalNote(frontmatterBlock)) {
+    log('tool.brainNotes', { jobId, read: ref, ok: false, error: 'out of scope' })
+    return { ok: false, error: `the note "${ref}" is outside what research may read` }
+  }
+  const note = buildFullNote({ relPath: candidate.relPath, content: candidate.content, baseUrl: env.BRAIN_BASE_URL })
+  if (!note) return { ok: false, error: 'brain reader URL is not configured' }
+  log('tool.brainNotes', { jobId, read: candidate.relPath, chars: note.content.length, truncated: note.truncated, ok: true })
+  return { ok: true, note }
 }
