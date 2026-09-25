@@ -31,12 +31,10 @@ A missing overlay shows as `degraded: [...]` on `GET /health` and one error-leve
 `process.degraded` line at boot. Seeding: add the ref to `dotfiles-private/headless.refs`, then
 `make secrets-seed` on the MacBook.
 
-The Karakeep half of `brainNotes` is enabled the same way, through an optional overlay the
-**owner wires himself**: a `.env.mini.karakeep.tpl` supplying `KARAKEEP_URL` (the service base,
-no `/api` suffix) and `KARAKEEP_API_KEY`, registered in `scripts/launch.sh` beside the otel/github
-overlays so a missing key starts the instance degraded rather than half-configured. This repo
-carries neither the template nor any secret reference for it; until the overlay lands, the
-Karakeep half is simply absent and `brainNotes` is vault-only.
+The Karakeep half of `brainNotes` is the third optional overlay, `.env.mini.karakeep.tpl`
+(`KARAKEEP_URL` + the dedicated Hermes Karakeep key, already in the mini's secrets cache). It is
+layered by `scripts/launch.sh` like the otel/github overlays: an unresolved key starts the
+instance `degraded: ["karakeep"]` with vault-only `brainNotes`, never not at all.
 
 ## Deploys
 

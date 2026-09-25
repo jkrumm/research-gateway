@@ -82,6 +82,9 @@ if overlay_args otel "$DIR/.env.mini.otel.tpl" "op://vps/argo/HYPERDX_API_KEY_PR
 GITHUB_ARGS=()
 if overlay_args github "$DIR/.env.mini.github.tpl" "op://vps/research-gateway/GITHUB_TOKEN"; then GITHUB_ARGS=("$REPLY"); fi
 
+KARAKEEP_ARGS=()
+if overlay_args karakeep "$DIR/.env.mini.karakeep.tpl" "op://hermes/karakeep/api-key"; then KARAKEEP_ARGS=("$REPLY"); fi
+
 # Templates can't expand $HOME (secrets-run/op inject render literal text) —
 # compute the mini's absolute data paths here and export them so bun/zod see
 # them via process.env directly. Both live under the dedicated deploy layout
@@ -105,4 +108,4 @@ fi
 
 export RESEARCH_GATEWAY_DEGRADED="${(j:,:)DEGRADED}"
 
-exec "$SECRETS_RUN" run --env-file="$TPL_BASE" --env-file="$TPL_MINI" "${OTEL_ARGS[@]}" "${GITHUB_ARGS[@]}" -- bun run src/index.ts
+exec "$SECRETS_RUN" run --env-file="$TPL_BASE" --env-file="$TPL_MINI" "${OTEL_ARGS[@]}" "${GITHUB_ARGS[@]}" "${KARAKEEP_ARGS[@]}" -- bun run src/index.ts
