@@ -468,6 +468,7 @@ describe('groundReport — the job boundary', () => {
       citationsKept: 2,
       citationsDropped: 0,
       confidenceCapped: 0,
+      citationsDegraded: 0,
     })
   })
 
@@ -709,6 +710,7 @@ describe('groundReport — the job boundary', () => {
       expect(report.citations[0]?.confidence).toBe('low')
       expect(report.grounding.citationsKept).toBe(1)
       expect(report.grounding.confidenceCapped).toBe(1)
+      expect(report.grounding.citationsDegraded).toBe(1)
     })
 
     // A subject-matched citation asserts facts about a document the run never read. The

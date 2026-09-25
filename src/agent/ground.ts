@@ -333,6 +333,7 @@ export function groundReport(
     citationsKept: kept.length,
     citationsDropped: dropped.length,
     confidenceCapped,
+    citationsDegraded: degraded.size,
   }
 
   // Keep the invariant total: a URL that survived into `citations` must not also sit in

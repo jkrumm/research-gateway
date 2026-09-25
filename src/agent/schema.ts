@@ -95,6 +95,11 @@ export const Grounding = z.object({
   confidenceCapped: z
     .number()
     .describe('Citations whose asserted confidence was lowered to match what was actually retrieved.'),
+  citationsDegraded: z
+    .number()
+    .describe(
+      'Of the capped citations, those whose claim names the subject of an `unverified` entry. Any value above 0 marks the run `partial`.',
+    ),
 })
 export type Grounding = z.infer<typeof Grounding>
 

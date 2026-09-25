@@ -40,6 +40,7 @@ function report(overrides: Partial<ResearchReport> = {}): ResearchReport {
       citationsKept: 1,
       citationsDropped: 0,
       confidenceCapped: 0,
+      citationsDegraded: 0,
     },
     ...overrides,
   }
