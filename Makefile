@@ -118,6 +118,10 @@ install-cli: ## Symlink the research CLI into ~/.local/bin
 check: ## typecheck + test (this checkout)
 	@bun run typecheck && bun test
 
+.PHONY: eval
+eval: ## Golden-set answer-quality eval against a running gateway (API_SECRET=... make eval; ARGS="--filter serde")
+	@bun scripts/eval.ts $(ARGS)
+
 # ==============================================================================
 # Help
 # ==============================================================================
@@ -128,6 +132,7 @@ help:
 	@echo "  research-gateway"
 	@echo ""
 	@echo "  make check              typecheck + test"
+	@echo "  make eval               golden-set answer-quality eval (API_SECRET required)"
 	@echo ""
 	@echo "  Mini native instance (:7780) + lightpanda sidecar (:7781) — see AGENTS.md"
 	@echo "  make mini-setup         Clone/update the deploy clone, install deps + pinned bins, install the LaunchAgents"

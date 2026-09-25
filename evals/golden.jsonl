@@ -1,0 +1,20 @@
+{"id":"rfc9110-413","query":"Which HTTP status code does RFC 9110 assign to 'Content Too Large'?","depth":"quick","expect":{"any":["\\b413\\b"]}}
+{"id":"postgres-default-port","query":"What is the default TCP port of PostgreSQL?","depth":"quick","expect":{"any":["\\b5432\\b"]}}
+{"id":"redis-default-port","query":"What is the default TCP port of Redis?","depth":"quick","expect":{"any":["\\b6379\\b"]}}
+{"id":"jwt-rfc","query":"Which RFC defines JSON Web Token (JWT)?","depth":"quick","expect":{"any":["RFC\\s*7519|\\b7519\\b"]}}
+{"id":"pkce-rfc","query":"Which RFC defines PKCE (Proof Key for Code Exchange) for OAuth 2.0?","depth":"quick","expect":{"any":["\\b7636\\b"]}}
+{"id":"oauth2-rfc","query":"Which RFC defines the OAuth 2.0 Authorization Framework?","depth":"quick","expect":{"any":["\\b6749\\b"]}}
+{"id":"http2-obsoleted-by","query":"Which RFC obsoleted RFC 7540 as the HTTP/2 specification?","depth":"quick","expect":{"any":["\\b9113\\b"]}}
+{"id":"retry-after-header","query":"Which HTTP response header tells a client how long to wait before retrying after a 429 or 503?","depth":"quick","expect":{"any":["Retry-After"]}}
+{"id":"rust-1.0-year","query":"In which year was Rust 1.0 released?","depth":"quick","expect":{"any":["\\b2015\\b"]}}
+{"id":"node-sqlite-version","query":"Which Node.js version first added the node:sqlite module?","depth":"quick","expect":{"any":["22\\.5(\\.0)?"]}}
+{"id":"euro-codepoint","query":"What is the Unicode code point of the euro sign?","depth":"quick","expect":{"any":["U\\+20AC"]}}
+{"id":"sqlite-wal-pragma","query":"Which SQLite PRAGMA enables write-ahead logging?","depth":"quick","expect":{"any":["journal_mode\\s*=?\\s*WAL"]}}
+{"id":"pep779-free-threaded","query":"Which Python version made the free-threaded (no-GIL) build officially supported rather than experimental, per PEP 779?","depth":"standard","expect":{"any":["3\\.14"]}}
+{"id":"bun-serve-idle-timeout","query":"What is the maximum value Bun.serve accepts for idleTimeout, in seconds?","depth":"standard","expect":{"any":["\\b255\\b"]}}
+{"id":"npm-hono-latest","query":"What is the latest published version of the npm package hono?","depth":"quick","expect":{"live":"npm:hono"}}
+{"id":"npm-ai-latest","query":"What is the latest published version of the npm package ai (Vercel AI SDK)?","depth":"quick","expect":{"live":"npm:ai"}}
+{"id":"pypi-requests-latest","query":"What is the latest version of the Python package requests on PyPI?","depth":"quick","expect":{"live":"pypi:requests"}}
+{"id":"crates-serde-latest","query":"What is the latest stable version of the Rust crate serde?","depth":"quick","expect":{"live":"crates:serde"}}
+{"id":"bun-runtime-latest","query":"What is the latest release version of the Bun runtime?","depth":"quick","expect":{"live":"github-release:oven-sh/bun"}}
+{"id":"npm-elysia-latest","query":"What is the latest release version of Elysia (the Bun web framework) on npm?","depth":"quick","expect":{"live":"npm:elysia"}}
