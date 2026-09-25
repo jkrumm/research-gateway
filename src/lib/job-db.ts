@@ -198,15 +198,18 @@ export function openJobDb(dbPath: string): JobDb {
 
   const deleteFinishedStmt = db.prepare(`
     DELETE FROM job
-    WHERE status IN ('done', 'error')
+    WHERE status IN ('done', 'error', 'cancelled')
       AND COALESCE(finished_at, created_at) < $cutoff
   `)
 
   // A queued/running job never expires (it has not finished yet), so it is always a valid
-  // dedupe hit; a terminal one only while its finish time is inside the retention window.
+  // dedupe hit; a terminal one only while its finish time is inside the retention window. A
+  // cancelled job is never one: cancelling says "this job is void", and the natural next move —
+  // fix the input, resubmit under the same key — must start a fresh job, not hand the corpse back.
   const findByIdempotencyStmt = db.prepare(`
     SELECT * FROM job
     WHERE idempotency_key = $key
+      AND status != 'cancelled'
       AND (status IN ('queued', 'running') OR COALESCE(finished_at, created_at) >= $cutoff)
     ORDER BY created_at DESC
     LIMIT 1

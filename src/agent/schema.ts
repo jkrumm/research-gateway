@@ -201,8 +201,14 @@ export type WorkerDigest = z.infer<typeof WorkerDigest>
 
 // ── Async job contract (REST + MCP share this vocabulary) ────────────────────
 
-export const JobStatus = z.enum(['queued', 'running', 'done', 'error'])
+// `cancelled` is terminal, like `done`/`error`: a caller cancelled the job (DELETE
+// /research/:jobId, MCP `job_cancel`, `research cancel`) before it finished.
+export const JobStatus = z.enum(['queued', 'running', 'done', 'error', 'cancelled'])
 export type JobStatus = z.infer<typeof JobStatus>
+
+export function isTerminalStatus(status: JobStatus): boolean {
+  return status === 'done' || status === 'error' || status === 'cancelled'
+}
 
 // Returned by the `research` submit tool — a handle, not the report.
 export const JobHandle = z.object({
@@ -219,12 +225,15 @@ export type JobHandle = z.infer<typeof JobHandle>
 // Returned by job_wait / job_status — the live state of a research job.
 export const JobState = z.object({
   jobId: z.string(),
-  status: JobStatus.describe('queued=waiting, running=executing, done/error=terminal.'),
+  status: JobStatus.describe('queued=waiting, running=executing, done/error/cancelled=terminal.'),
   stillRunning: z
     .boolean()
     .describe('True while not terminal. If true after job_wait, call job_wait again with the same jobId.'),
   elapsedMs: z.number().describe('Wall time so far (running) or total (terminal).'),
   result: ResearchReport.nullable().describe("The cited research report. Present only when status is 'done'."),
-  error: z.string().nullable().describe("Failure reason. Present when status is 'error'."),
+  error: z
+    .string()
+    .nullable()
+    .describe("Failure reason. Present when status is 'error' (or 'cancelled', naming the cancel)."),
 })
 export type JobState = z.infer<typeof JobState>

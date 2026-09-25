@@ -1,5 +1,5 @@
 import { env } from '../env.js'
-import type { ResearchReport, Depth, JobStatus } from '../agent/schema.js'
+import { isTerminalStatus, type ResearchReport, type Depth, type JobStatus } from '../agent/schema.js'
 import { openJobDb } from './job-db.js'
 import { log } from './log.js'
 import { admit, canDispatch, type AdmissionRefusal } from './admission.js'
@@ -44,6 +44,18 @@ const INTERRUPTED_MESSAGE =
 // lost its heartbeat), so there is nothing to reap on the next boot — just resubmit.
 const DRAIN_QUEUED_MESSAGE =
   'This research job was still queued when the service began restarting. It never started — resubmit the query.'
+
+const CANCELLED_MESSAGE = 'Cancelled by the caller before it finished.'
+
+// The abort reason a cancel hands to a running job's controller and a queued job's semaphore
+// waiter. run-job.ts tells a cancel apart from a real failure by the job's own signal, not by
+// this type — but a typed reason keeps the unwinding error readable in a trace.
+export class JobCancelledError extends Error {
+  constructor() {
+    super(CANCELLED_MESSAGE)
+    this.name = 'JobCancelledError'
+  }
+}
 
 // How often the owning process re-proves a job (queued OR running) is alive (see
 // `startHeartbeat`), and how far behind that a heartbeat has to fall before another process
@@ -104,7 +116,7 @@ function sweep(): void {
   // sees it. A terminal job is durable in sqlite and read from there, so its map entry can go
   // as soon as the sweep notices — it must never sit in memory for the 7-day retention window.
   for (const [id, job] of jobs) {
-    if (job.status !== 'done' && job.status !== 'error') continue
+    if (!isTerminalStatus(job.status)) continue
     jobs.delete(id)
     owned.delete(id)
   }
@@ -154,7 +166,7 @@ export function getJob(jobId: string): Job | undefined {
   // Terminal jobs are not retained in memory (sweep evicts them shortly after they finish);
   // they live in sqlite for the whole retention window. A cached terminal job is the hot path
   // for one that just finished — its snapshot is final, so hand it back directly.
-  if (cached && cached.status !== 'running' && cached.status !== 'queued') return cached
+  if (cached && isTerminalStatus(cached.status)) return cached
 
   // For a non-terminal job the map is only authoritative when this process owns it. A job this
   // process does NOT own may be executed by the sibling replica of a rolling deploy, which
@@ -175,7 +187,7 @@ export function getJob(jobId: string): Job | undefined {
   if (!job) return undefined
   // The fresh read may already be terminal (the sibling replica finished it, or a reap wrote
   // 'error'). Its snapshot is final.
-  if (job.status !== 'running' && job.status !== 'queued') return job
+  if (isTerminalStatus(job.status)) return job
 
   // Read-time half of the heartbeat guarantee: a job hydrated at boot as 'queued'/'running'
   // (owned by whichever replica actually created or started it) can go stale between boot and
@@ -194,9 +206,14 @@ export function getJob(jobId: string): Job | undefined {
   return reapedJob
 }
 
+// A terminal status is final. The one race this guards is a cancel: the job is marked
+// 'cancelled' the moment the caller asks, while its run is still unwinding — and whatever that
+// run reports on the way out ('error' from the abort, or even 'done' if the cancel landed after
+// the last phase check) must not overwrite what the caller was already told.
 export function updateJob(jobId: string, patch: Partial<Job>): void {
   const job = jobs.get(jobId)
   if (!job) return
+  if (isTerminalStatus(job.status)) return
   const updated = { ...job, ...patch }
   jobs.set(jobId, updated)
   db.put(updated)
@@ -230,7 +247,9 @@ export function startHeartbeat(jobId: string): () => void {
 // Avoids reaching for p-limit for a few lines of logic.
 
 let running = 0
-const queue: Array<{ resolve: () => void; reject: (err: Error) => void }> = []
+// Waiters carry their job id so a cancel can pull one out of the line (`cancelJob`) and a
+// status read can report its place in it (`queuePosition`).
+const queue: Array<{ jobId: string; resolve: () => void; reject: (err: Error) => void }> = []
 
 // Set once by `beginDraining` (SIGTERM/SIGINT — see index.ts) and never cleared: a process
 // that started shutting down must never resume accepting work. `tryDispatch` checks it so a
@@ -258,13 +277,13 @@ function tryDispatch(): void {
   }
 }
 
-function acquire(): Promise<void> {
+function acquire(jobId: string): Promise<void> {
   if (!memoryPressure && running < env.RESEARCH_MAX_CONCURRENCY) {
     running++
     return Promise.resolve()
   }
   return new Promise<void>((resolve, reject) => {
-    queue.push({ resolve, reject })
+    queue.push({ jobId, resolve, reject })
   })
 }
 
@@ -273,8 +292,8 @@ function release(): void {
   tryDispatch()
 }
 
-export async function withSlot<T>(fn: () => Promise<T>): Promise<T> {
-  await acquire()
+export async function withSlot<T>(jobId: string, fn: () => Promise<T>): Promise<T> {
+  await acquire(jobId)
   try {
     return await fn()
   } finally {
@@ -297,6 +316,54 @@ export function isDraining(): boolean {
 export function setMemoryPressure(under: boolean): void {
   memoryPressure = under
   if (!under) tryDispatch()
+}
+
+// ── Cancel ──────────────────────────────────────────────────────────────────
+
+// The abort controller of every job this process is executing, registered by run-job.ts for
+// the job's whole lifetime (queued and running). Only the owning process can stop a job's
+// work, so only it can cancel one.
+const cancels = new Map<string, AbortController>()
+
+export function registerCancel(jobId: string, controller: AbortController): () => void {
+  cancels.set(jobId, controller)
+  return () => {
+    cancels.delete(jobId)
+  }
+}
+
+export type CancelOutcome =
+  | { kind: 'cancelled'; job: Job }
+  | { kind: 'already_terminal'; job: Job }
+  | { kind: 'not_found' }
+  | { kind: 'not_owned'; job: Job }
+
+// Idempotent: cancelling a terminal job (a second cancel included) returns it unchanged.
+// A queued job leaves the semaphore line at once and never starts; a running job is marked
+// 'cancelled' immediately and its controller aborted — the in-flight LLM calls abort through
+// their idle watchdogs, and the concurrency slot frees as soon as the run unwinds (an in-flight
+// page fetch finishes on its own budget first).
+export function cancelJob(jobId: string): CancelOutcome {
+  const job = getJob(jobId)
+  if (!job) return { kind: 'not_found' }
+  if (isTerminalStatus(job.status)) return { kind: 'already_terminal', job }
+  const controller = cancels.get(jobId)
+  // A live job this process has no controller for belongs to the sibling replica of a rolling
+  // deploy: marking it here would be overwritten by the owner, which keeps running it.
+  if (!owned.has(jobId) || !controller) return { kind: 'not_owned', job }
+
+  const index = queue.findIndex((waiter) => waiter.jobId === jobId)
+  const waiter = index === -1 ? undefined : queue.splice(index, 1)[0]
+
+  const cancelled: Job = { ...job, status: 'cancelled', error: CANCELLED_MESSAGE, finishedAt: Date.now() }
+  jobs.set(jobId, cancelled)
+  db.put(cancelled)
+
+  const reason = new JobCancelledError()
+  controller.abort(reason)
+  waiter?.reject(reason)
+  log('job.cancelled', { jobId, wasStatus: job.status })
+  return { kind: 'cancelled', job: cancelled }
 }
 
 export function jobCounts(): { running: number; queued: number } {

@@ -34,6 +34,7 @@ export async function planResearch(args: {
   context?: string | undefined
   depth: Depth
   jobId: string
+  signal?: AbortSignal | undefined
 }): Promise<{ plan: ResearchPlan; usage: UsageStats }> {
   const { query, context, depth, jobId } = args
   const profile = profiles[depth]
@@ -74,7 +75,7 @@ export async function planResearch(args: {
     async (span) => {
       // No wall-clock ceiling (settled 2026-09-12) — only an idle watchdog: aborted when a
       // step has produced no activity for `RESEARCH_IDLE_TIMEOUT_MS`. See idle-watchdog.ts.
-      const idle = createIdleWatchdog(env.RESEARCH_IDLE_TIMEOUT_MS)
+      const idle = createIdleWatchdog(env.RESEARCH_IDLE_TIMEOUT_MS, args.signal)
       idle.arm()
       try {
         let result = await callPlan(planModel, idle)

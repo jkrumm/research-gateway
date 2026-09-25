@@ -42,6 +42,7 @@ export async function synthesize(args: {
   digests: WorkerDigest[]
   depth: Depth
   jobId: string
+  signal?: AbortSignal | undefined
 }): Promise<{ report: SubmittedReport | null; usage: UsageStats }> {
   const { query, context, digests, depth, jobId } = args
   const start = Date.now()
@@ -74,7 +75,7 @@ export async function synthesize(args: {
       // step has produced no activity for `RESEARCH_IDLE_TIMEOUT_MS`. See idle-watchdog.ts.
       // Synthesis can legitimately run long writing out a large report; what it must never
       // do is go silent.
-      const idle = createIdleWatchdog(env.RESEARCH_IDLE_TIMEOUT_MS)
+      const idle = createIdleWatchdog(env.RESEARCH_IDLE_TIMEOUT_MS, args.signal)
       idle.arm()
       try {
         let result = await callSynthesis(synthesisModel, idle)

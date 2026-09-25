@@ -107,6 +107,7 @@ describe('parseArgs', () => {
   it('parses the wait and status subcommands', () => {
     expect(parseArgs(['wait', 'job-1']).command).toEqual({ kind: 'wait', jobId: 'job-1' })
     expect(parseArgs(['status', 'job-2']).command).toEqual({ kind: 'status', jobId: 'job-2' })
+    expect(parseArgs(['cancel', 'job-3']).command).toEqual({ kind: 'cancel', jobId: 'job-3' })
   })
 
   it('sets --json and --no-wait on the options', () => {
@@ -308,5 +309,35 @@ describe('run — status', () => {
     const code = await run(['status', 'nope'], makeCtx({ fetchFn }), io)
     expect(code).toBe(1)
     expect(err.join('')).toContain('job not found')
+  })
+})
+
+describe('run — cancel', () => {
+  it('sends DELETE for the job and prints its new status', async () => {
+    const calls: Array<{ url: string; method: string | undefined }> = []
+    const fetchFn: FetchLike = async (input, init) => {
+      calls.push({ url: String(input), method: init?.method })
+      return jsonResponse({ jobId: 'job-20', status: 'cancelled' })
+    }
+    const { io, out } = makeIo()
+    const code = await run(['cancel', 'job-20'], makeCtx({ fetchFn }), io)
+    expect(code).toBe(0)
+    expect(calls).toEqual([{ url: 'http://127.0.0.1:7780/research/job-20', method: 'DELETE' }])
+    expect(out.join('')).toBe('job-20 cancelled\n')
+  })
+
+  it('exits 1 when the job id is unknown (404)', async () => {
+    const fetchFn: FetchLike = async () => jsonResponse({ error: 'not found' }, 404)
+    const { io, err } = makeIo()
+    expect(await run(['cancel', 'nope'], makeCtx({ fetchFn }), io)).toBe(1)
+    expect(err.join('')).toContain('job not found')
+  })
+
+  it('a wait that lands on a cancelled job ends with exit 1', async () => {
+    const fetchFn: FetchLike = async () =>
+      jsonResponse({ status: 'cancelled', result: null, error: 'Cancelled by the caller before it finished.' })
+    const { io, err } = makeIo()
+    expect(await run(['wait', 'job-21'], makeCtx({ fetchFn }), io)).toBe(1)
+    expect(err.join('')).toContain('cancelled')
   })
 })

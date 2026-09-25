@@ -61,7 +61,8 @@ talk to — and plain bearer HTTP for everything else (Hermes, scripts, curl).
 | `GET /openapi`, `/openapi/json` | public | — | Scalar UI, raw spec |
 | `POST /research` | bearer | `{ query, depth?, context?, idempotencyKey? }` (`quick \| standard \| deep`; `context` = free-text background treated as given — not re-searched, never cited; `idempotencyKey` = optional 1..200-char key — a retried submit with the same key returns the original job) | `{ jobId, status }` (async) |
 | `GET /research/:jobId` | bearer | — | `{ status, result?, error? }` — a **poll**: returns current state at once, never blocks |
-| `POST /mcp` | bearer | streamable-http (stateless, 2026-07-28) | tools `research`, `job_wait`, `job_status` — same engine. `job_wait` blocks for the whole job, so one call is normally the whole interaction |
+| `DELETE /research/:jobId` | bearer | — | `{ jobId, status }` — **cancel**: a queued job never starts, a running one is aborted and its slot freed; `status: "cancelled"` (terminal). Idempotent — an already-terminal job comes back unchanged. A cancelled job's `idempotencyKey` is released for a corrected resubmit |
+| `POST /mcp` | bearer | streamable-http (stateless, 2026-07-28) | tools `research`, `job_wait`, `job_status`, `job_cancel` — same engine. `job_wait` blocks for the whole job, so one call is normally the whole interaction |
 | `POST /probe/fetch` | bearer | `{ url }` | one URL through the real fetch chain, no LLM — which step terminated it, chars and ms per step. Drives `scripts/fetch-bench.ts` |
 
 `result` shape: `{ report, citations: [{ claim, url, confidence }], sources, unverified,
@@ -353,7 +354,7 @@ failed at **startup** has no `research`/`job_wait` for its whole lifetime, while
 back to the macOS Keychain generic password `research-gateway-token`). `research wait <jobId>`
 resumes a job submitted earlier — the id is a durable handle, not a session token. The report
 markdown goes to stdout, `status`/`warnings`/`unverified` to stderr; `--json` prints the full
-job, `--no-wait` the id alone.
+job, `--no-wait` the id alone. `research cancel <jobId>` is the DELETE door.
 
 ### What an MCP client has to configure
 

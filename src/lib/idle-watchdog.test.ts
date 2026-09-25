@@ -40,4 +40,30 @@ describe('createIdleWatchdog', () => {
     await sleep(60)
     expect(watchdog.signal.aborted).toBe(false)
   })
+
+  it('aborts with the job reason when the job signal aborts mid-call', () => {
+    const job = new AbortController()
+    const watchdog = createIdleWatchdog(10_000, job.signal)
+    watchdog.arm()
+    job.abort(new Error('cancelled'))
+    expect(watchdog.signal.aborted).toBe(true)
+    expect(String(watchdog.signal.reason)).toContain('cancelled')
+    watchdog.clear()
+  })
+
+  it('starts aborted when the job signal already is', () => {
+    const job = new AbortController()
+    job.abort(new Error('cancelled'))
+    const watchdog = createIdleWatchdog(10_000, job.signal)
+    expect(watchdog.signal.aborted).toBe(true)
+    watchdog.clear()
+  })
+
+  it('stops following the job signal once cleared', () => {
+    const job = new AbortController()
+    const watchdog = createIdleWatchdog(10_000, job.signal)
+    watchdog.clear()
+    job.abort(new Error('cancelled'))
+    expect(watchdog.signal.aborted).toBe(false)
+  })
 })

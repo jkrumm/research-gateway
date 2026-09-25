@@ -454,6 +454,13 @@ describe('openJobDb — idempotency key lookup', () => {
     expect(db.findByIdempotencyKey('never-used', now - 5_000)).toBeUndefined()
     db.close()
   })
+  it('never returns a cancelled job, so a corrected resubmit under the same key starts fresh', () => {
+    const db = openJobDb(':memory:')
+    const now = Date.now()
+    db.put(job({ status: 'cancelled', idempotencyKey: 'k-cancelled', error: 'cancelled', finishedAt: now - 1_000 }))
+    expect(db.findByIdempotencyKey('k-cancelled', now - 5_000)).toBeUndefined()
+    db.close()
+  })
 })
 
 // The retention sweep. `job-store.ts` evicts terminal jobs from its in-memory map and calls
@@ -473,6 +480,17 @@ describe('openJobDb — retention sweep (deleteFinishedBefore)', () => {
     const all = db.all()
     expect(all.some((j) => j.jobId === old.jobId)).toBe(false)
     expect(all.some((j) => j.jobId === recent.jobId)).toBe(true)
+    db.close()
+  })
+
+  it('prunes a cancelled job like any other terminal one', () => {
+    const db = openJobDb(':memory:')
+    const now = Date.now()
+    db.put(job({ status: 'cancelled', error: 'cancelled', finishedAt: now - 10_000 }))
+
+    db.deleteFinishedBefore(now - 5_000)
+
+    expect(db.all()).toEqual([])
     db.close()
   })
 

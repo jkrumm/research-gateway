@@ -1,9 +1,10 @@
 import { Elysia } from 'elysia'
 import { createMcpHandler, McpServer } from '@modelcontextprotocol/server'
 import { z } from 'zod'
-import { Depth, JobHandle, JobState, type ResearchReport } from '../agent/schema.js'
+import { Depth, JobHandle, JobState, isTerminalStatus, type ResearchReport } from '../agent/schema.js'
 import {
   admission,
+  cancelJob,
   createJob,
   findActiveJobByIdempotencyKey,
   getJob,
@@ -58,7 +59,7 @@ function reportText(report: ResearchReport): string {
 }
 
 function toState(job: Job): z.infer<typeof JobState> {
-  const terminal = job.status === 'done' || job.status === 'error'
+  const terminal = isTerminalStatus(job.status)
   const start = job.startedAt ?? job.createdAt
   const end = job.finishedAt ?? Date.now()
   return {
@@ -67,7 +68,7 @@ function toState(job: Job): z.infer<typeof JobState> {
     stillRunning: !terminal,
     elapsedMs: Math.max(0, end - start),
     result: job.status === 'done' ? (job.result ?? null) : null,
-    error: job.status === 'error' ? (job.error ?? null) : null,
+    error: job.status === 'error' || job.status === 'cancelled' ? (job.error ?? null) : null,
   }
 }
 
@@ -254,6 +255,37 @@ function buildMcpServer(): McpServer {
       const job = getJob(args.jobId)
       if (!job) return notFound(args.jobId)
       return stateResult(job)
+    },
+  )
+
+  // ── job_cancel — stop a queued or running job ───────────────────────────────
+  mcpServer.registerTool(
+    'job_cancel',
+    {
+      title: 'Cancel Research Job',
+      description:
+        "Cancel a research job by id — e.g. one submitted with a wrong query or context. A queued job is removed from the line and never starts; a running job is stopped and its slot freed for the jobs queued behind it. Returns the job's state, status 'cancelled'. Idempotent: cancelling a job that already finished (or was already cancelled) returns its state unchanged. A cancelled job's idempotencyKey is released, so a corrected resubmit under the same key starts a fresh job.",
+      inputSchema: z.object({
+        jobId: z.string().describe('The job id returned by research.'),
+      }),
+      outputSchema: JobState,
+      annotations: { destructiveHint: true, idempotentHint: true },
+    },
+    async (args): Promise<CallToolResult> => {
+      const outcome = cancelJob(args.jobId)
+      if (outcome.kind === 'not_found') return notFound(args.jobId)
+      if (outcome.kind === 'not_owned') {
+        return {
+          content: [
+            {
+              type: 'text',
+              text: `Job ${args.jobId} is running on the other replica of an in-progress deploy and cannot be cancelled from this one; retry in a minute.`,
+            },
+          ],
+          isError: true,
+        }
+      }
+      return stateResult(outcome.job)
     },
   )
 

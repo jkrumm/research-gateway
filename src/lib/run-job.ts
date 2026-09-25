@@ -1,4 +1,4 @@
-import { updateJob, withSlot, startHeartbeat, type Job } from './job-store.js'
+import { updateJob, withSlot, startHeartbeat, registerCancel, type Job } from './job-store.js'
 import { runResearch, type JobUsage } from '../agent/run.js'
 import { reportUsage } from './usage.js'
 import { env } from '../env.js'
@@ -29,8 +29,13 @@ export function startResearchJob(job: Job): void {
   // lifetime, queued and running alike. Stopped via `.finally` below so it covers the whole
   // span, not just the async work inside `withSlot`.
   const stopHeartbeat = startHeartbeat(job.jobId)
+  // Registered for the same queued+running span as the heartbeat, so `cancelJob` can reach the
+  // job wherever it is. A cancel already wrote the terminal 'cancelled' status itself, so both
+  // failure paths below only need to not report the unwinding abort as a job error.
+  const controller = new AbortController()
+  const unregisterCancel = registerCancel(job.jobId, controller)
 
-  void withSlot(async () => {
+  void withSlot(job.jobId, async () => {
     updateJob(job.jobId, { status: 'running', startedAt: Date.now() })
 
     // `runResearch` emits a cumulative snapshot per round; hold on to the last one
@@ -56,7 +61,7 @@ export function startResearchJob(job: Job): void {
 
     try {
       const result = await runResearch(
-        { query: job.query, context: job.context, depth: job.depth, jobId: job.jobId },
+        { query: job.query, context: job.context, depth: job.depth, jobId: job.jobId, signal: controller.signal },
         (stats) => {
           lastStats = stats
           emit(stats, 'ok')
@@ -65,7 +70,7 @@ export function startResearchJob(job: Job): void {
       updateJob(job.jobId, { status: 'done', result, finishedAt: Date.now() })
     } catch (err) {
       if (lastStats) emit(lastStats, 'error')
-      markFailed(job.jobId, err)
+      if (!controller.signal.aborted) markFailed(job.jobId, err)
     }
   })
     .catch((err) => {
@@ -74,7 +79,10 @@ export function startResearchJob(job: Job): void {
       // rejects exactly that waiter on shutdown, and this is the only place that rejection can
       // land: the job's status was never flipped to 'running', so without this it would sit at
       // 'queued' until the heartbeat staleness reap caught it up to 90s later.
-      markFailed(job.jobId, err)
+      if (!controller.signal.aborted) markFailed(job.jobId, err)
     })
-    .finally(() => stopHeartbeat())
+    .finally(() => {
+      stopHeartbeat()
+      unregisterCancel()
+    })
 }

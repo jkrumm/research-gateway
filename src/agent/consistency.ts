@@ -47,6 +47,7 @@ function truncateForSpan(text: string): string {
 export async function reviewConsistency(args: {
   report: string
   jobId: string
+  signal?: AbortSignal | undefined
 }): Promise<{
   report: string
   corrected: boolean
@@ -69,7 +70,7 @@ export async function reviewConsistency(args: {
     async (span) => {
       // Same liveness rule as every other lead call (see synthesize.ts) — no wall-clock
       // ceiling, only the idle watchdog.
-      const idle = createIdleWatchdog(env.RESEARCH_IDLE_TIMEOUT_MS)
+      const idle = createIdleWatchdog(env.RESEARCH_IDLE_TIMEOUT_MS, args.signal)
       idle.arm()
       try {
         const result = await generateText({

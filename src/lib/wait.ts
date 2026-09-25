@@ -33,7 +33,7 @@
 // bounded peek, but nothing imposes one on its behalf.
 //
 // Pure and `env`-free so both rules are unit-testable — same convention as `admission.ts`.
-import type { JobStatus } from '../agent/schema.js'
+import { isTerminalStatus, type JobStatus } from '../agent/schema.js'
 
 export const POLL_INTERVAL_MS = 2_000
 
@@ -56,7 +56,7 @@ export function shouldKeepWaiting(args: {
   deadline: number | null
   aborted: boolean
 }): boolean {
-  if (args.status === 'done' || args.status === 'error') return false
+  if (isTerminalStatus(args.status)) return false
   if (args.aborted) return false
   if (args.deadline !== null && args.now >= args.deadline) return false
   return true

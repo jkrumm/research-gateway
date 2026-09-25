@@ -78,11 +78,12 @@ async function dispatchRound(
   jobId: string,
   round: number,
   context?: string,
+  signal?: AbortSignal,
 ): Promise<RoundResult> {
   const sem = new Semaphore(env.WORKER_MAX_CONCURRENCY)
   const settled = await Promise.allSettled<WorkerOutcome>(
     subQuestions.map((sq) =>
-      withLimit(sem, () => runWorker({ subQuestion: sq.question, context, depth, jobId, round })),
+      withLimit(sem, () => runWorker({ subQuestion: sq.question, context, depth, jobId, round, signal })),
     ),
   )
 
@@ -99,6 +100,7 @@ function tracedRound(args: {
   round: number
   retry: boolean
   context?: string | undefined
+  signal?: AbortSignal | undefined
 }): Promise<RoundResult> {
   return withSpan(
     'research.round',
@@ -109,7 +111,14 @@ function tracedRound(args: {
       ...(args.retry ? { 'research.round_retry': true } : {}),
     },
     async (s) => {
-      const result = await dispatchRound(args.subQuestions, args.depth, args.jobId, args.round, args.context)
+      const result = await dispatchRound(
+        args.subQuestions,
+        args.depth,
+        args.jobId,
+        args.round,
+        args.context,
+        args.signal,
+      )
       s.setAttributes({ 'research.digests_returned': result.digests.length })
       return result
     },
@@ -117,11 +126,22 @@ function tracedRound(args: {
 }
 
 export async function runResearch(
-  input: { query: string; context?: string | undefined; depth?: Depth; jobId?: string },
+  input: {
+    query: string
+    context?: string | undefined
+    depth?: Depth
+    jobId?: string
+    // Job-level cancel. Every LLM call's idle watchdog follows it (so the in-flight request
+    // aborts at once), and the phase boundaries below re-check it: plan, worker, synthesis and
+    // consistency all degrade instead of throwing, so without these checks an aborted job would
+    // fall through to the fallback plan / assembled report and "finish".
+    signal?: AbortSignal | undefined
+  },
   onUsage?: (stats: JobUsage) => void,
 ): Promise<ResearchReport> {
   const depth = input.depth ?? 'standard'
   const jobId = input.jobId ?? '-'
+  const signal = input.signal
 
   // The whole job is one trace, and its id is derived from the jobId — so a job id from the
   // REST/MCP surface is enough to find the trace, with no lookup table in between.
@@ -154,8 +174,15 @@ export async function runResearch(
       // No span wrapper here — planResearch opens `research.plan` itself, so the quick-depth
       // path (which makes no LLM call at all) produces no zero-duration span. Same for
       // synthesize/`research.synthesis` below.
-      const { plan, usage: planUsage } = await planResearch({ query: input.query, context: input.context, depth, jobId })
+      const { plan, usage: planUsage } = await planResearch({
+        query: input.query,
+        context: input.context,
+        depth,
+        jobId,
+        signal,
+      })
       leadUsage = addUsage(leadUsage, planUsage)
+      signal?.throwIfAborted()
       log('research.plan', { jobId, subQuestions: plan.subQuestions.length })
 
       let currentQuestions: SubQuestion[] = plan.subQuestions
@@ -184,8 +211,10 @@ export async function runResearch(
           round,
           retry: false,
           context: input.context,
+          signal,
         })
         absorb(first)
+        signal?.throwIfAborted()
 
         // One retry per JOB, not per round (see `alreadyRetried` above): a round that lost
         // EVERY worker to a fast upstream failure is nearly free to retry once — there is no
@@ -214,6 +243,7 @@ export async function runResearch(
               round,
               retry: true,
               context: input.context,
+              signal,
             }),
           )
         }
@@ -247,6 +277,7 @@ export async function runResearch(
         currentQuestions = gapQuestions
         round += 1
       }
+      signal?.throwIfAborted()
 
       // Guard clause: no digest was ever produced — every worker failed or timed out on every
       // round, plus the one retry above. This used to fall through to a hardcoded stub
@@ -295,8 +326,10 @@ export async function runResearch(
         digests: allDigests,
         depth,
         jobId,
+        signal,
       })
       leadUsage = addUsage(leadUsage, synthesisUsage)
+      signal?.throwIfAborted()
 
       let submitted: SubmittedReport
       let reason: 'submit_report' | 'assembled'
@@ -327,7 +360,7 @@ export async function runResearch(
         'research.consistency_gate',
         { 'report.reason': reason },
         async (gateSpan) => {
-          const review = await reviewConsistency({ report: submitted.report, jobId })
+          const review = await reviewConsistency({ report: submitted.report, jobId, signal })
           const merged = applyConsistencyGate({ review, leadUsage })
           leadUsage = merged.leadUsage
           gateSpan.setAttributes({
@@ -345,6 +378,7 @@ export async function runResearch(
       )
       submitted = gateOutcome.reviewed
       const gate = gateOutcome.gate
+      signal?.throwIfAborted()
 
       // The job-level gate. Every citation the synthesis model asserted is checked against the
       // union of what the workers' tools actually retrieved, `sources` is replaced by the pages

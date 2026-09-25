@@ -32,6 +32,7 @@ export async function runWorker(args: {
   depth: Depth
   jobId: string
   round: number
+  signal?: AbortSignal | undefined
 }): Promise<{ digest: WorkerDigest | null; usage: UsageStats; ledger: LedgerSnapshot; error?: string }> {
   const { subQuestion, context, depth, jobId, round } = args
   const profile = profiles[depth]
@@ -87,7 +88,7 @@ export async function runWorker(args: {
       // No step/turn limit and no wall-clock ceiling (settled 2026-09-12) — a worker runs
       // until it submits its digest, or this fires because a step has produced NO
       // step/tool activity for `RESEARCH_IDLE_TIMEOUT_MS`. See lib/idle-watchdog.ts.
-      const idle = createIdleWatchdog(env.RESEARCH_IDLE_TIMEOUT_MS)
+      const idle = createIdleWatchdog(env.RESEARCH_IDLE_TIMEOUT_MS, args.signal)
       idle.arm()
 
       try {

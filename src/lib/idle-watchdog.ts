@@ -16,17 +16,24 @@ export interface IdleWatchdog {
   clear: () => void
 }
 
-export function createIdleWatchdog(idleMs: number): IdleWatchdog {
+// `jobSignal` is the job-level cancel (DELETE /research/:jobId → run-job.ts's controller): it
+// aborts this call too, so a cancelled job stops at its in-flight LLM request instead of running
+// every worker to completion first. Absent for callers with no job (scripts, tests).
+export function createIdleWatchdog(idleMs: number, jobSignal?: AbortSignal): IdleWatchdog {
   const controller = new AbortController()
   let timer: ReturnType<typeof setTimeout> | undefined
 
-  const clear = (): void => {
+  const onJobAbort = (): void => controller.abort(jobSignal?.reason)
+  if (jobSignal?.aborted) onJobAbort()
+  else jobSignal?.addEventListener('abort', onJobAbort, { once: true })
+
+  const stopTimer = (): void => {
     if (timer !== undefined) clearTimeout(timer)
     timer = undefined
   }
 
   const arm = (): void => {
-    clear()
+    stopTimer()
     if (controller.signal.aborted) return
     timer = setTimeout(() => {
       controller.abort(new Error(`idle: no step/tool activity for ${idleMs}ms`))
@@ -34,6 +41,13 @@ export function createIdleWatchdog(idleMs: number): IdleWatchdog {
     // Never keep the process alive on its own — matches `_sweepTimer`/heartbeat timers
     // elsewhere in this codebase.
     if (typeof timer.unref === 'function') timer.unref()
+  }
+
+  // Also detaches from the job signal — one listener per LLM call would otherwise pile up on
+  // it for the whole job.
+  const clear = (): void => {
+    stopTimer()
+    jobSignal?.removeEventListener('abort', onJobAbort)
   }
 
   return { signal: controller.signal, arm, clear }

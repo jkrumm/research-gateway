@@ -1,7 +1,7 @@
 import { Elysia } from 'elysia'
 import { z } from 'zod'
 import { ResearchInput, ResearchReport } from '../agent/schema.js'
-import { admission, createJob, findActiveJobByIdempotencyKey, getJob } from '../lib/job-store.js'
+import { admission, cancelJob, createJob, findActiveJobByIdempotencyKey, getJob } from '../lib/job-store.js'
 import { startResearchJob } from '../lib/run-job.js'
 import { log } from '../lib/log.js'
 import { env } from '../env.js'
@@ -111,6 +111,37 @@ export const researchRoutes = new Elysia({ prefix: '/research' })
         summary: 'Poll a research job',
         description:
           'Returns the current status of a research job. When `status` is `done`, `result` contains the research report. When `status` is `error`, `error` contains the failure message.',
+        security: [{ BearerAuth: [] }],
+      },
+    },
+  )
+  .delete(
+    '/:jobId',
+    ({ params, status }) => {
+      const outcome = cancelJob(params.jobId)
+      if (outcome.kind === 'not_found') {
+        return status(404, {
+          error: `Job not found: ${params.jobId}. It never existed, or has passed its retention window (${env.JOB_TTL_MINUTES} minutes after completion).`,
+        })
+      }
+      if (outcome.kind === 'not_owned') {
+        return status(409, {
+          error: `Job ${params.jobId} is running on the other replica of an in-progress deploy and cannot be cancelled from this one; retry in a minute.`,
+        })
+      }
+      return { jobId: outcome.job.jobId, status: outcome.job.status }
+    },
+    {
+      response: {
+        200: z.object({ jobId: z.string(), status: z.string() }),
+        404: z.object({ error: z.string() }),
+        409: z.object({ error: z.string() }),
+      },
+      detail: {
+        tags: ['Research'],
+        summary: 'Cancel a research job',
+        description:
+          "Cancels a queued or running job: a queued one never starts, a running one is aborted and its slot freed. Returns `status: 'cancelled'`. Idempotent — a job that is already terminal is returned with its status unchanged. A cancelled job's idempotencyKey is released for a corrected resubmit.",
         security: [{ BearerAuth: [] }],
       },
     },

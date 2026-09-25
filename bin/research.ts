@@ -78,10 +78,14 @@ export interface StatusCommand {
   kind: 'status'
   jobId: string
 }
+export interface CancelCommand {
+  kind: 'cancel'
+  jobId: string
+}
 export interface HelpCommand {
   kind: 'help'
 }
-export type Command = SubmitCommand | WaitCommand | StatusCommand | HelpCommand
+export type Command = SubmitCommand | WaitCommand | StatusCommand | CancelCommand | HelpCommand
 
 export interface Options {
   json: boolean
@@ -164,7 +168,7 @@ export function parseArgs(argv: string[]): Parsed {
   const [first, ...rest] = positionals
   if (first === undefined) throw new CliUsageError("no query given (see 'research --help')")
 
-  if (first === 'wait' || first === 'status') {
+  if (first === 'wait' || first === 'status' || first === 'cancel') {
     if (rest.length !== 1 || (rest[0] ?? '').length === 0) {
       throw new CliUsageError(`research ${first} requires exactly one <jobId>`)
     }
@@ -235,13 +239,13 @@ export function submitRequestBody(
   return body
 }
 
-/** Exit code for a job that reached a terminal state: 0 done, 1 error. */
+/** Exit code for a job that reached a terminal state: 0 done, 1 error or cancelled. */
 export function exitCodeFor(status: JobStatus): number {
   return status === 'done' ? 0 : 1
 }
 
 function isTerminal(status: JobStatus): boolean {
-  return status === 'done' || status === 'error'
+  return status === 'done' || status === 'error' || status === 'cancelled'
 }
 
 // ── Rendering (readable output for humans) ───────────────────────────────────────
@@ -270,6 +274,10 @@ function emitResult(io: CliIo, jobId: string, job: JobView, options: Options): v
     io.err(`research: job error: ${job.error ?? 'unknown error'}\n`)
     return
   }
+  if (job.status === 'cancelled') {
+    io.err(`research: job cancelled\n`)
+    return
+  }
   if (job.result) {
     for (const line of reportSummaryLines(job.result)) io.err(`${line}\n`)
     io.out(`${job.result.report}\n`)
@@ -280,6 +288,7 @@ function emitResult(io: CliIo, jobId: string, job: JobView, options: Options): v
 
 function renderJobHuman(job: JobView): string {
   if (job.status === 'error') return `status: error\nerror: ${job.error ?? 'unknown error'}`
+  if (job.status === 'cancelled') return `status: cancelled`
   if (job.status === 'done' && job.result) {
     return [`status: done`, ...reportSummaryLines(job.result), '', job.result.report].join('\n')
   }
@@ -409,6 +418,25 @@ async function fetchJob(
   return r.data as JobView
 }
 
+async function cancelRemoteJob(
+  fetchFn: FetchLike,
+  base: string,
+  token: string,
+  jobId: string,
+): Promise<SubmitResult> {
+  const r = await request(fetchFn, base, `/research/${encodeURIComponent(jobId)}`, {
+    method: 'DELETE',
+    headers: { authorization: `Bearer ${token}` },
+  })
+  if (r.status === 404) throw new CliServerError(`job not found: ${jobId}`)
+  if (r.status === 401 || r.status === 403) throw new CliUsageError('unauthorized — check RESEARCH_GATEWAY_TOKEN')
+  if (r.status !== 200) {
+    const data = r.data as { error?: string } | null
+    throw new CliServerError(data?.error ?? `cancel failed (${r.status})`)
+  }
+  return r.data as SubmitResult
+}
+
 // ── Execution ────────────────────────────────────────────────────────────────────
 
 export interface CliIo {
@@ -515,6 +543,14 @@ async function execute(
       else io.out(`${renderJobHuman(job)}\n`)
       return isTerminal(job.status) ? exitCodeFor(job.status) : 0
     }
+    case 'cancel': {
+      // Idempotent server-side: a job that already finished comes back with its own status,
+      // which is reported as-is — exit 0 either way, the job is no longer running.
+      const { status } = await cancelRemoteJob(ctx.fetchFn, base, token, command.jobId)
+      if (options.json) io.out(`${JSON.stringify({ jobId: command.jobId, status }, null, 2)}\n`)
+      else io.out(`${command.jobId} ${status}\n`)
+      return 0
+    }
   }
 }
 
@@ -575,18 +611,20 @@ Usage:
                      [--key <idempotencyKey>] [--json] [--no-wait]
   research wait <jobId> [--json]
   research status <jobId> [--json]
+  research cancel <jobId> [--json]
 
 Submits to POST /research and (by default) waits by polling GET /research/:jobId until the
 job is done, then prints the report markdown to stdout and status/warnings/unverified to
 stderr. --no-wait prints only the jobId. --json prints the full job JSON. wait resumes a
-known job id without re-submitting; status is a single non-blocking check.
+known job id without re-submitting; status is a single non-blocking check; cancel stops a
+queued or running job (idempotent — an already-finished job is left as it is).
 
 Environment:
   RESEARCH_GATEWAY_URL    base URL (default http://127.0.0.1:7780)
   RESEARCH_GATEWAY_TOKEN  bearer token; falls back to the macOS Keychain generic password
                           service "research-gateway-token".
 
-Exit codes: 0 done · 1 job error · 2 usage/auth/refused · 3 unreachable.`
+Exit codes: 0 done · 1 job error or cancelled · 2 usage/auth/refused · 3 unreachable.`
 
 if (import.meta.main) {
   process.exitCode = await run(

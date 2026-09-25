@@ -25,7 +25,7 @@ Everything is submit-then-poll — never expect a synchronous result.
   `GET /research/:jobId` — it returns current state at once and never blocks — until
   `status: "done"` — measured p50 quick 38s / standard 111s / deep 366s, full distribution in
   `docs/measurements.md` § Job duration.
-- MCP (`/mcp`, bearer): tools `research`, `job_status`, `job_wait` — same submit → poll
+- MCP (`/mcp`, bearer): tools `research`, `job_status`, `job_wait`, `job_cancel` — same submit → poll
   contract — but `job_wait` blocks for the WHOLE job, not a 50s slice, so one call is normally
   the entire interaction. `responseMode: 'sse'` is what makes that safe: the SDK writes a
   keep-alive frame every 15s. `src/lib/wait.ts`'s header is the canonical explanation of why
@@ -37,6 +37,11 @@ Everything is submit-then-poll — never expect a synchronous result.
   A text-only MCP client sees only the prose, so **always surface `unverified` and a
   non-`ok` status to the human**, never just the `report` string.
 - `RESEARCH_MAX_CONCURRENCY` / `RESEARCH_MAX_QUEUE` cap jobs; past it, submit returns 429.
+- Terminal statuses are `done`, `error` and `cancelled` (`isTerminalStatus` in `schema.ts` — use
+  it, never a hand-written `done || error`). Cancel is `DELETE /research/:jobId`, MCP
+  `job_cancel`, `research cancel`; the job's `AbortSignal` reaches every LLM call through its idle
+  watchdog, and `run.ts` re-checks it at each phase boundary because plan/worker/synthesis/
+  consistency all degrade instead of throwing.
 - A finished job is retained 7 days in sqlite (`JOB_TTL_MINUTES`, default 10080) — the `jobId`
   is the durable handle a client comes back to, not a session token. Memory holds queued/running
   jobs only (plus a terminal one until the next sweep). `POST /research` and the MCP `research`

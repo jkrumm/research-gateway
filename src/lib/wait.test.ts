@@ -33,6 +33,7 @@ describe('shouldKeepWaiting', () => {
   it('stops on a terminal status — the guarantee the unbounded wait rests on', () => {
     expect(shouldKeepWaiting({ ...base, status: 'done' })).toBe(false)
     expect(shouldKeepWaiting({ ...base, status: 'error' })).toBe(false)
+    expect(shouldKeepWaiting({ ...base, status: 'cancelled' })).toBe(false)
   })
 
   it('stops when the client aborts, even with time and a live job left', () => {
