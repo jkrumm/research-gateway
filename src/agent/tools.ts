@@ -8,6 +8,7 @@ import { getActiveSpan, withSpan } from '../lib/otel.js'
 import { reportTavilyUsage, reportSonarUsage, reportRenderUsage, reportYtdlpUsage, reportArchiveUsage } from '../lib/usage.js'
 import { reportTavilyAccountUsage } from '../lib/tavily-account.js'
 import { capText, TEXT_CAP } from './extract.js'
+import { createPageBudget, isProxyUrl, PAGE_BUDGET_SPENT, PROXY_REFUSED, type PageBudget } from './fetch-guard.js'
 import { buildDirectSourceTools } from './direct-sources.js'
 import { sonarSearch, type SonarContextSize } from './sonar.js'
 import { runFetchChain, hostOf } from './fetch-chain.js'
@@ -528,7 +529,7 @@ function buildSearchWebTool(args: {
   })
 }
 
-function buildFetchPageTool(ledger: RetrievalLedger, jobId = '-'): AnyTool {
+function buildFetchPageTool(ledger: RetrievalLedger, pageBudget: PageBudget, jobId = '-'): AnyTool {
   // Per-run dedup: a URL fetched once is not fetched again. Re-fetching wastes network,
   // readability/Tavily-extract work, and budget; the model already has the content above.
   const fetched = new Set<string>()
@@ -544,6 +545,17 @@ function buildFetchPageTool(ledger: RetrievalLedger, jobId = '-'): AnyTool {
         getActiveSpan().setAttributes({ 'fetch.url': url, 'fetch.via': 'cache', 'fetch.ok': true })
         log('tool.fetchPage', { jobId, url, via: 'cache' })
         return { url, text: 'Already fetched earlier in this conversation — reuse the previous result for this URL.' }
+      }
+
+      // Neither is a fetch failure, so neither touches the ledger: a refused proxy URL was never
+      // asked for, and a spent budget is this worker's limit, not the page's.
+      if (isProxyUrl(url)) {
+        log('tool.fetchPage', { jobId, url, via: 'proxy-refused' })
+        return { url, error: PROXY_REFUSED }
+      }
+      if (!pageBudget.hasRoom()) {
+        log('tool.fetchPage', { jobId, url, via: 'budget-spent' })
+        return { url, error: PAGE_BUDGET_SPENT }
       }
 
       // The chain itself lives in fetch-chain.ts so it can be replayed and measured without
@@ -579,7 +591,7 @@ function buildFetchPageTool(ledger: RetrievalLedger, jobId = '-'): AnyTool {
 
       if (result.text === null) return { url, error: result.error ?? 'fetch failed' }
       fetched.add(url)
-      return { url, text: result.text }
+      return { url, text: pageBudget.take(result.text) }
     },
   })
 }
@@ -753,6 +765,9 @@ export function buildTools(args: {
   maxResults?: number
   maxSearches?: number
   dualSearch?: boolean
+  // Sizes the worker's page-text budget (fetch-guard.ts). Omitted = TEXT_CAP-sized pages with
+  // no running limit beyond one worker's typical context, for callers outside a worker loop.
+  maxContextTokens?: number
 }): Record<string, AnyTool> {
   const {
     ledger,
@@ -763,6 +778,9 @@ export function buildTools(args: {
     dualSearch = false,
   } = args
   const jid = args.jobId ?? '-'
+  // One budget per worker (buildTools runs once per worker), shared with brainNotes' full-note
+  // reads — both put whole documents into the same context.
+  const pageBudget = createPageBudget(args.maxContextTokens ?? 80_000)
   const tools: Record<string, AnyTool> = {
     searchWeb: buildSearchWebTool({
       searchDepth,
@@ -773,7 +791,7 @@ export function buildTools(args: {
       ledger,
       jobId: jid,
     }),
-    fetchPage: buildFetchPageTool(ledger, jid),
+    fetchPage: buildFetchPageTool(ledger, pageBudget, jid),
     // Deterministic source-of-truth lookups (registries, GitHub). Registered before the
     // optional libraryDocs tool so tools/list order stays stable across configurations.
     ...buildDirectSourceTools(ledger, jid, (r) =>

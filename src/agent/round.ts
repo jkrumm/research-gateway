@@ -32,6 +32,11 @@ export interface RoundResult {
   // questions — and so `describeFailures` can name the real cause instead of a fabricated
   // "budget exhausted".
   failures: string[]
+  // The sub-questions (by the text they were dispatched with) whose worker delivered no
+  // digest. Synthesis names them as worker failures — without this it saw only the digests
+  // that arrived and filled the gap itself: a 2026-09-25 job whose wrchina worker read the
+  // pages in full but lost its digest reported those pages as "JS shells".
+  undigested: string[]
 }
 
 // What one worker settles to, from `run.ts`'s point of view: either `runWorker`'s resolved
@@ -50,7 +55,10 @@ export interface WorkerOutcome {
 // `reportUsage`'s ARGO_* gate, which parses `process.env` at import time and throws without
 // secrets — pulling it in here would silently break this module's whole "pure, env-free, unit
 // testable with zero env vars" premise.
-export function collectRoundOutcome(settled: PromiseSettledResult<WorkerOutcome>[]): RoundResult {
+export function collectRoundOutcome(
+  settled: PromiseSettledResult<WorkerOutcome>[],
+  questions: readonly string[] = [],
+): RoundResult {
   let usage: UsageStats = {
     inputTokens: 0,
     outputTokens: 0,
@@ -64,10 +72,13 @@ export function collectRoundOutcome(settled: PromiseSettledResult<WorkerOutcome>
   const digests: WorkerDigest[] = []
   const ledgers: LedgerSnapshot[] = []
   const failures: string[] = []
+  const undigested: string[] = []
 
-  for (const outcome of settled) {
+  for (const [index, outcome] of settled.entries()) {
+    const question = questions[index]
     if (outcome.status === 'rejected') {
       failures.push(String(outcome.reason))
+      if (question !== undefined) undigested.push(question)
       continue
     }
 
@@ -97,10 +108,11 @@ export function collectRoundOutcome(settled: PromiseSettledResult<WorkerOutcome>
       // failing to submit leaves no room under the deadline check below, so this does not
       // turn every malformed digest into a doubled worker spend.
       failures.push(outcome.value.error ?? 'worker completed without a valid digest')
+      if (question !== undefined) undigested.push(question)
     }
   }
 
-  return { digests, usage, ledgers, failures }
+  return { digests, usage, ledgers, failures, undigested }
 }
 
 // Whether a round that lost every worker deserves a second try. With no research deadline to

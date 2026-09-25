@@ -24,7 +24,20 @@ function extractReport(toolCalls: ReadonlyArray<{ toolName: string; input: unkno
   return parsed.success ? parsed.data : null
 }
 
-function renderDigests(query: string, context: string | undefined, digests: WorkerDigest[]): string {
+// Worded against the exact fabrication it replaces: a missing digest is a worker that did not
+// report, which says nothing about the pages it was sent to read.
+function undigestedSection(undigested: readonly string[]): string {
+  if (undigested.length === 0) return ''
+  const lines = undigested.map((q) => `- ${q}`).join('\n')
+  return `\n\n## Sub-questions with no report\n\nThe worker for each of these ended without delivering findings. That is a failure of the worker, NOT evidence about its sources: do not describe any page, site or tool as blocked, JavaScript-only, unavailable or broken on account of these, and do not state findings for them. List them as not researched in this run.\n\n${lines}`
+}
+
+function renderDigests(
+  query: string,
+  context: string | undefined,
+  digests: WorkerDigest[],
+  undigested: readonly string[],
+): string {
   const sections = digests.map((d) => {
     const findings = d.findings.map((f) => `- ${f.claim} — ${f.url} (${f.confidence})`).join('\n')
     const sourcesRead = d.sourcesRead.join(', ')
@@ -33,7 +46,7 @@ function renderDigests(query: string, context: string | undefined, digests: Work
       .join('\n')
     return `### ${d.subQuestion}\n\n${d.summary}\n\n**Findings:**\n${findings || '(none)'}\n\n**Sources read:** ${sourcesRead || '(none)'}\n\n**Blocked sources:**\n${blockedSources || '(none)'}`
   })
-  return `## Original query\n\n${query}${backgroundSection(context)}\n\n## Researched sub-questions\n\n${sections.join('\n\n')}`
+  return `## Original query\n\n${query}${backgroundSection(context)}\n\n## Researched sub-questions\n\n${sections.join('\n\n')}${undigestedSection(undigested)}`
 }
 
 export async function synthesize(args: {
@@ -43,6 +56,7 @@ export async function synthesize(args: {
   depth: Depth
   jobId: string
   signal?: AbortSignal | undefined
+  undigested?: readonly string[] | undefined
 }): Promise<{ report: SubmittedReport | null; usage: UsageStats }> {
   const { query, context, digests, depth, jobId } = args
   const start = Date.now()
@@ -57,7 +71,7 @@ export async function synthesize(args: {
     generateText({
       model,
       instructions: synthesisPrompt(depth),
-      prompt: renderDigests(query, context, digests),
+      prompt: renderDigests(query, context, digests, args.undigested ?? []),
       tools: { submit_report: submitReportTool },
       toolChoice: leadSubmitChoice('submit_report'),
       maxRetries: 2,

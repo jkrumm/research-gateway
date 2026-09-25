@@ -127,6 +127,16 @@ describe('collectRoundOutcome', () => {
     expect(result.digests).toEqual([])
   })
 
+  it('names the sub-questions whose worker delivered no digest, by dispatch position', () => {
+    const settled: PromiseSettledResult<WorkerOutcome>[] = [
+      { status: 'fulfilled', value: { digest, usage: usageA, ledger: ledgerA } },
+      { status: 'fulfilled', value: { digest: null, usage: usageB, ledger: ledgerB } },
+      { status: 'rejected', reason: 'unexpected throw' },
+    ]
+    const result = collectRoundOutcome(settled, ['q1 wrchina builds', 'q2 riftgg stats', 'q3 reddit'])
+    expect(result.undigested).toEqual(['q2 riftgg stats', 'q3 reddit'])
+  })
+
   it('accumulates usage and ledgers across a mixed batch', () => {
     const settled: PromiseSettledResult<WorkerOutcome>[] = [
       { status: 'fulfilled', value: { digest, usage: usageA, ledger: ledgerA } },

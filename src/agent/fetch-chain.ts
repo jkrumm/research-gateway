@@ -13,6 +13,7 @@ import { parseRenderResponse, renderUrl } from './lightpanda.js'
 import { fetchYoutubeTranscript } from './ytdlp.js'
 import { waybackLookupUrl, isArchiveUrl, parseSnapshotDate, archiveBanner, snapshotAgeDays } from './archive.js'
 import type { RetrievalLedger } from './ledger.js'
+import { describeAttempts } from './fetch-guard.js'
 
 // The page-fetch chain, extracted from the `fetchPage` tool so it can be RUN AND MEASURED
 // without an LLM in the loop.
@@ -560,14 +561,18 @@ export async function runFetchChain(url: string, opts: FetchChainOptions): Promi
     // attempt below before this URL is unverifiable for this run, and the ledger is what
     // makes it structurally ineligible as a citation source.
     attempt(attempts, 'tavily-extract', t3, { ok: false, error: reason })
-    ledger.recordFailed(url, reason)
-    log('tool.fetchPage', { jobId, url, via: 'error', reason, host: hostOf(fetchUrl) })
-    return await tryWayback(reason)
+    // The whole chain's story, not Tavily's generic last word — see describeAttempts.
+    const chain = describeAttempts(attempts, reason)
+    ledger.recordFailed(url, chain)
+    log('tool.fetchPage', { jobId, url, via: 'error', reason: chain, host: hostOf(fetchUrl) })
+    return await tryWayback(chain)
   } catch (err) {
     const reason = String(err)
     attempt(attempts, 'tavily-extract', t3, { ok: false, error: reason })
-    ledger.recordFailed(url, reason)
-    log('tool.fetchPage', { jobId, url, via: 'error', reason, host: hostOf(fetchUrl) })
-    return await tryWayback(reason)
+    // The whole chain's story, not Tavily's generic last word — see describeAttempts.
+    const chain = describeAttempts(attempts, reason)
+    ledger.recordFailed(url, chain)
+    log('tool.fetchPage', { jobId, url, via: 'error', reason: chain, host: hostOf(fetchUrl) })
+    return await tryWayback(chain)
   }
 }

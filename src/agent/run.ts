@@ -94,7 +94,10 @@ async function dispatchRound(
     ),
   )
 
-  return collectRoundOutcome(settled)
+  return collectRoundOutcome(
+    settled,
+    subQuestions.map((sq) => sq.question),
+  )
 }
 
 // One round's span + dispatch. Both the first pass and the retry pass go through here so the
@@ -190,6 +193,8 @@ export async function runResearch(
       // one retry per JOB, not per round, so a job with two zero-digest rounds doesn't
       // silently double its worker spend chasing the same upstream outage.
       const allFailures: string[] = []
+      // Sub-questions no worker ever reported on, across rounds (see round.ts's `undigested`).
+      const allUndigested: string[] = []
       let alreadyRetried = false
 
       // No span wrapper here — planResearch opens `research.plan` itself, so the quick-depth
@@ -216,7 +221,10 @@ export async function runResearch(
         // after this block, so a retry that DID recover evidence still informs what the next
         // round asks.
         const roundDigests: WorkerDigest[] = []
+        let roundUndigested: string[] = []
         const absorb = (result: RoundResult): void => {
+          // A retry re-runs the same questions, so its answer supersedes the first pass's.
+          roundUndigested = result.undigested
           workerUsage = addUsage(workerUsage, result.usage)
           allDigests.push(...result.digests)
           roundDigests.push(...result.digests)
@@ -290,6 +298,7 @@ export async function runResearch(
           })
         }
 
+        allUndigested.push(...roundUndigested)
         log('research.round', {
           jobId,
           round,
@@ -356,6 +365,7 @@ export async function runResearch(
         depth,
         jobId,
         signal,
+        undigested: allUndigested,
       })
       leadUsage = addUsage(leadUsage, synthesisUsage)
       signal?.throwIfAborted()

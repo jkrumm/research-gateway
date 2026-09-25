@@ -51,6 +51,7 @@ export async function runWorker(args: {
     maxSearches: profile.maxSearches,
     // Round 1 only — see DepthProfile.dualSearchFirstRound for why the gap round is excluded.
     dualSearch: profile.dualSearchFirstRound && round === 1,
+    maxContextTokens: profile.maxContextTokens,
   })
 
   // The done tool — no `execute` means the loop halts when the model calls it.
