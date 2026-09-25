@@ -146,6 +146,9 @@ Anything importing `env.ts` is untested by design — factor pure logic out inst
   > queue full); `memory-watch.ts` feeds it, `index.ts`'s SIGTERM path flips it
 - `src/lib/otel.ts` + `otel-format.ts` — SDK-free OTLP export, job id = trace id
 - `src/lib/cost.ts` + `usage.ts` — per-job spend, reported to argo
+- `evals/` + `scripts/eval.ts` — golden-set answer-quality eval (`evals/golden.jsonl`,
+  regex + live-registry resolvers, results in `evals/results/`); `bun scripts/eval.ts`,
+  see `docs/measurements.md` § Answer-quality eval
 - `lightpanda/` — the rendering sidecar, its own Dockerfile and deploy workflow
 
 ## Gotchas that change a decision

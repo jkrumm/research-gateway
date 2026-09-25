@@ -25,6 +25,34 @@ effects** (`pagesFailed` moved 10.8% → 11.3% at cv 1.00). Use `fetch-bench.ts`
 
 ---
 
+## Answer-quality eval (golden set)
+
+`scripts/bench.ts` measures cost, citations and pages; it does not say whether an answer was
+*right*. `scripts/eval.ts` scores correctness. It runs a fixed set of questions whose answer
+is deterministic — `evals/golden.jsonl`: static facts checked with a regex, and moving
+versions resolved live from npm / PyPI / crates.io / GitHub at run time — and reports, per
+item, whether the report text actually contains the expected value, alongside the report
+`status` (`ok` / `partial`), the grounding counters, cost and wall time.
+
+```bash
+API_SECRET=<gateway bearer> bun scripts/eval.ts                                  # mini, :7780
+API_SECRET=<gateway bearer> bun scripts/eval.ts --base-url https://<host> --concurrency 3
+API_SECRET=<gateway bearer> bun scripts/eval.ts --filter serde --concurrency 1   # one quick smoke
+```
+
+The full JSON goes to `evals/results/<date>-<sha>.json`; the printed table is the summary.
+Run it after every model or grounding change, and weekly. A resolver failure (registry
+unreachable, GitHub rate-limited) is recorded as an error and left un-scored, not counted as
+a wrong answer — set `GITHUB_TOKEN` to lift the 60 req/h anonymous ceiling.
+
+**A single run is a regression signal, not a distribution.** This file's own caution applies:
+at `deep`'s spread, one run cannot resolve a small effect. The eval is pass/fail per question,
+so one run is enough to catch a broken model or a grounding regression, and not enough to
+claim a prompt tweak bought two points. Compare against the previous results file, not
+against memory.
+
+---
+
 ## Web search backend — why Sonar, and the two pinned settings
 
 `searchWeb` runs on **Perplexity Sonar over the same IU endpoint as the LLMs** by default,
