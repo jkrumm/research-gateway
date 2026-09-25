@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'bun:test'
 import {
+  batchKey,
   exitCodeFor,
   finishedLine,
   liveStatusLine,
@@ -481,5 +482,18 @@ describe('batch and wait-all', () => {
 
   it('finishedLine names a cancelled job', () => {
     expect(finishedLine('c', { status: 'cancelled', result: null, error: 'x' })).toBe('c\tcancelled')
+  })
+})
+
+describe('batchKey', () => {
+  it('is stable for the same line and changes with query, depth or context', () => {
+    const base = { query: 'Frozen Heart 7.3', depth: 'quick' as const, context: 'facts' }
+    expect(batchKey(base)).toBe(batchKey({ ...base }))
+    expect(batchKey(base)).toMatch(/^batch-[0-9a-f]{32}$/)
+    expect(batchKey({ ...base, query: 'Sunfire 7.3' })).not.toBe(batchKey(base))
+    expect(batchKey({ ...base, depth: 'deep' })).not.toBe(batchKey(base))
+    expect(batchKey({ ...base, context: 'other' })).not.toBe(batchKey(base))
+    // An omitted depth is the server default, so it keys the same as an explicit standard.
+    expect(batchKey({ query: 'q' })).toBe(batchKey({ query: 'q', depth: 'standard' }))
   })
 })

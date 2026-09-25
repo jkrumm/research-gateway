@@ -179,7 +179,7 @@ function buildMcpServer(): McpServer {
         status: job.status,
         message:
           warnings.length > 0
-            ? `Submitted, but the input looks wrong: ${warnings.join(' ')} To stop it: job_cancel({ jobId: "${job.jobId}" }).`
+            ? `Submitted, but the input looks wrong: ${warnings.join(' ')} To stop it: job_cancel({ jobId: "${job.jobId}" }). If the input is right after all, call job_wait({ jobId: "${job.jobId}" }) to get the report — this call did NOT return it.`
             : `Submitted as background research job. Call job_wait({ jobId: "${job.jobId}" }) once to block until it finishes and get the report, or job_status({ jobId: "${job.jobId}" }) for a one-shot check. This call did NOT return the report — do not treat it as the answer.`,
         ...(warnings.length > 0 ? { warnings } : {}),
       }
@@ -298,7 +298,7 @@ function buildMcpServer(): McpServer {
           content: [
             {
               type: 'text',
-              text: `Job ${args.jobId} is running on the other replica of an in-progress deploy and cannot be cancelled from this one; retry in a minute.`,
+              text: `Job ${args.jobId} is running on the other replica of an in-progress deploy and cannot be cancelled from this one; retry once the deploy has finished (the old replica drains for up to 30 minutes).`,
             },
           ],
           isError: true,

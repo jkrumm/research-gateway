@@ -133,7 +133,7 @@ export const researchRoutes = new Elysia({ prefix: '/research' })
       }
       if (outcome.kind === 'not_owned') {
         return status(409, {
-          error: `Job ${params.jobId} is running on the other replica of an in-progress deploy and cannot be cancelled from this one; retry in a minute.`,
+          error: `Job ${params.jobId} is running on the other replica of an in-progress deploy and cannot be cancelled from this one; retry once the deploy has finished (the old replica drains for up to 30 minutes).`,
         })
       }
       return { jobId: outcome.job.jobId, status: outcome.job.status }

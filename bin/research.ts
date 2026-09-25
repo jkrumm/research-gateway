@@ -11,6 +11,7 @@
 // ceiling (rules/agent-limits.md): the job is durable server-side, so a transient poll
 // failure is retried with backoff rather than aborting the wait.
 
+import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import type { Depth, JobProgress, JobStatus, ResearchReport } from '../src/agent/schema.js'
 
@@ -319,7 +320,7 @@ export function parseBatchFile(text: string): BatchItem[] {
       throw new CliUsageError(`${where}: "context" must be a non-empty string`)
     }
     items.push({
-      query,
+      query: query.trim(),
       ...(depth !== undefined ? { depth: depth as Depth } : {}),
       ...(key !== undefined ? { key } : {}),
       ...(context !== undefined ? { context } : {}),
@@ -397,7 +398,7 @@ export function liveStatusLine(job: JobView, now: number): string {
     parts.push(phase === 'researching' ? `researching round ${round}, workers ${workers.done}/${workers.total}` : phase)
   }
   const since = job.status === 'running' ? job.startedAt : job.submittedAt
-  if (since != null) {
+  if (since != null && !Number.isNaN(Date.parse(since))) {
     const elapsed = `${job.status === 'running' ? 'running' : 'waiting'} ${secs(now - Date.parse(since))}`
     const typical = job.typicalDurationMs
     parts.push(
@@ -747,16 +748,16 @@ async function submitBatch(
 
   let failed = 0
   for (const item of items) {
-    const idempotencyKey = item.key ?? crypto.randomUUID()
     const context = item.context ?? sharedContext
     const depth = item.depth ?? command.depth
+    const idempotencyKey = item.key ?? batchKey({ query: item.query, depth, context })
     const body = submitRequestBody(
       { kind: 'submit', query: item.query, ...(depth !== undefined ? { depth } : {}) },
       { ...(context !== undefined ? { context } : {}), idempotencyKey },
     )
     try {
       const { jobId, warnings } = await submitWithRetry(ctx, io, base, token, body)
-      for (const warning of warnings ?? []) io.err(`research: warning (${jobId}): ${warning}\n`)
+      for (const warning of warnings ?? []) io.err(`research: warning: ${warning} (research cancel ${jobId})\n`)
       const row = { jobId, key: idempotencyKey, depth: depth ?? 'standard', query: item.query }
       io.out(options.json ? `${JSON.stringify(row)}\n` : `${jobId}\t${idempotencyKey}\t${item.query.slice(0, 80)}\n`)
     } catch (err) {
@@ -766,8 +767,22 @@ async function submitBatch(
       io.err(`research: not submitted: ${item.query.slice(0, 80)} — ${err instanceof Error ? err.message : String(err)}\n`)
     }
   }
-  if (failed > 0) io.err(`research: ${failed} of ${items.length} not submitted (resubmitting is safe — same keys)\n`)
+  if (failed > 0) {
+    io.err(
+      `research: ${failed} of ${items.length} not submitted — re-run the same file: every line has a stable key, so the submitted ones come back as the same jobs\n`,
+    )
+  }
   return failed > 0 ? 2 : 0
+}
+
+/** The default key for a batch line with none: derived from what the job would research, so
+ *  re-running the same file after a partial failure returns the already-submitted jobs instead
+ *  of paying for them twice. Same content → same job, for the server's 7-day retention. */
+export function batchKey(input: { query: string; depth?: Depth | undefined; context?: string | undefined }): string {
+  const digest = createHash('sha256')
+    .update(JSON.stringify([input.query, input.depth ?? 'standard', input.context ?? null]))
+    .digest('hex')
+  return `batch-${digest.slice(0, 32)}`
 }
 
 /** Poll a set of jobs and report each the moment it finishes — one line per job, human or
@@ -851,7 +866,8 @@ queued or running job (idempotent — an already-finished job is left as it is).
 
 batch submits one job per JSONL line — {"query", "depth"?, "key"?, "context"?} — with
 --depth/--context as the defaults a line can override (the whole file is validated before
-anything is submitted), and prints one "jobId key query" row per job (--json: one JSON object
+anything is submitted; a line without "key" gets one derived from its query, depth and context,
+so re-running the file never double-submits), and prints one "jobId key query" row per job (--json: one JSON object
 per line). wait-all polls the given jobs and prints one line per job as each finishes (--json:
 the full job per line); fetch a report with 'research status <jobId>'. Fan-out:
   research batch q.jsonl --context @facts.md --json | jq -r .jobId | xargs research wait-all

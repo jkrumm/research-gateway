@@ -358,7 +358,8 @@ job, `--no-wait` the id alone. `research cancel <jobId>` is the DELETE door.
 
 For fan-out (one shared fact block, N per-entity questions): `research batch q.jsonl --context
 @facts.md` submits one job per `{ query, depth?, key?, context? }` line (the whole file is
-validated first; line keys make a re-run of the same file idempotent), and `research wait-all
+validated first; a line without `key` gets one derived from its query/depth/context, so
+re-running the same file never double-submits), and `research wait-all
 <ids…>` prints one line per job the moment each finishes — `batch … --json | jq -r .jobId |
 xargs research wait-all`.
 

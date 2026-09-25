@@ -242,6 +242,8 @@ export function startHeartbeat(jobId: string): () => void {
   const tick = (): void => {
     const now = Date.now()
     const job = jobs.get(jobId)
+    // A cancelled job is terminal while its run still unwinds; nothing left to prove alive.
+    if (job && isTerminalStatus(job.status)) return
     if (job) jobs.set(jobId, { ...job, heartbeatAt: now })
     db.touchHeartbeat(jobId, now)
   }
@@ -359,7 +361,9 @@ export function cancelJob(jobId: string): CancelOutcome {
   if (isTerminalStatus(job.status)) return { kind: 'already_terminal', job }
   const controller = cancels.get(jobId)
   // A live job this process has no controller for belongs to the sibling replica of a rolling
-  // deploy: marking it here would be overwritten by the owner, which keeps running it.
+  // deploy: marking it here would be overwritten by the owner, which keeps running it. Only the
+  // VPS's rolling deploy has a sibling (the mini runs one process); the window lasts until the
+  // old replica has drained, up to SHUTDOWN_DRAIN_MS.
   if (!owned.has(jobId) || !controller) return { kind: 'not_owned', job }
 
   const index = queue.findIndex((waiter) => waiter.jobId === jobId)
@@ -368,6 +372,7 @@ export function cancelJob(jobId: string): CancelOutcome {
   const cancelled: Job = { ...job, status: 'cancelled', error: CANCELLED_MESSAGE, finishedAt: Date.now() }
   jobs.set(jobId, cancelled)
   db.put(cancelled)
+  progress.delete(jobId)
 
   const reason = new JobCancelledError()
   controller.abort(reason)
@@ -383,7 +388,11 @@ export function cancelJob(jobId: string): CancelOutcome {
 // a job whose process died is reaped to 'error' anyway — so nothing here needs to survive.
 const progress = new Map<string, JobProgress>()
 
+// Ignored once the job is terminal (or swept): a cancelled run keeps reporting workers as it
+// unwinds, and writing those would re-create an entry nothing ever deletes again.
 export function setJobProgress(jobId: string, value: JobProgress): void {
+  const job = jobs.get(jobId)
+  if (!job || isTerminalStatus(job.status)) return
   progress.set(jobId, value)
 }
 

@@ -36,6 +36,9 @@ export function startResearchJob(job: Job): void {
   const unregisterCancel = registerCancel(job.jobId, controller)
 
   void withSlot(job.jobId, async () => {
+    // Cancelled in the gap between the slot being granted and this callback running — the
+    // waiter was already popped, so cancelJob could not pull it from the line.
+    if (controller.signal.aborted) return
     updateJob(job.jobId, { status: 'running', startedAt: Date.now() })
 
     // `runResearch` emits a cumulative snapshot per round; hold on to the last one
@@ -76,7 +79,9 @@ export function startResearchJob(job: Job): void {
       )
       updateJob(job.jobId, { status: 'done', result, finishedAt: Date.now() })
     } catch (err) {
-      if (lastStats) emit(lastStats, 'error')
+      // A cancel is not a failure: its spend is still reported (same source_id, so argo upserts
+      // the last snapshot), but as 'ok' so a cancelled job does not count toward the error rate.
+      if (lastStats) emit(lastStats, controller.signal.aborted ? 'ok' : 'error')
       if (!controller.signal.aborted) markFailed(job.jobId, err)
     }
   })

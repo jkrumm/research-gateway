@@ -84,9 +84,13 @@ async function dispatchRound(
   const sem = new Semaphore(env.WORKER_MAX_CONCURRENCY)
   const settled = await Promise.allSettled<WorkerOutcome>(
     subQuestions.map((sq) =>
-      withLimit(sem, () =>
-        runWorker({ subQuestion: sq.question, context, depth, jobId, round, signal }).finally(() => onWorkerDone?.()),
-      ),
+      withLimit(sem, () => {
+        // A worker still waiting on WORKER_MAX_CONCURRENCY when the job is cancelled never starts.
+        signal?.throwIfAborted()
+        return runWorker({ subQuestion: sq.question, context, depth, jobId, round, signal }).finally(() =>
+          onWorkerDone?.(),
+        )
+      }),
     ),
   )
 

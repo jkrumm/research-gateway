@@ -50,13 +50,6 @@ export interface DepthProfile {
   directive: string
 }
 
-// Depth is a BREADTH setting only: how many workers fan out, how many search hits and
-// searches each gets, how many gap-filling rounds run, and the directive telling the model
-// how thoroughly to read what it finds. There is no time or step ceiling here — a worker (or
-// the lead) runs until it submits its result or an idle watchdog decides it is wedged (see
-// `RESEARCH_IDLE_TIMEOUT_MS` in env.ts, and worker.ts/plan.ts/synthesize.ts). `quick` is
-// "fewer workers, fewer sources, a narrower directive", not "fastest" — a quick job with an
-// unusually stubborn source can still take longer than a lucky standard one.
 // Measured wall time per depth — docs/measurements.md § Job duration (the 30-day span record,
 // 2026-08-09..09-08). Surfaced on every status read so a caller can tell slow from stuck;
 // re-derive it together with that table, never from one run.
@@ -66,6 +59,13 @@ export const TYPICAL_DURATION_MS: Record<Depth, { p50: number; p90: number }> = 
   deep: { p50: 366_000, p90: 1_133_000 },
 }
 
+// Depth is a BREADTH setting only: how many workers fan out, how many search hits and
+// searches each gets, how many gap-filling rounds run, and the directive telling the model
+// how thoroughly to read what it finds. There is no time or step ceiling here — a worker (or
+// the lead) runs until it submits its result or an idle watchdog decides it is wedged (see
+// `RESEARCH_IDLE_TIMEOUT_MS` in env.ts, and worker.ts/plan.ts/synthesize.ts). `quick` is
+// "fewer workers, fewer sources, a narrower directive", not "fastest" — a quick job with an
+// unusually stubborn source can still take longer than a lucky standard one.
 export const profiles: Record<Depth, DepthProfile> = {
   quick: {
     workers: 1,
