@@ -76,6 +76,8 @@ describe('collectRoundOutcome', () => {
     reasoningTokens: 1,
     cachedInputTokens: 2,
     durationMs: 100,
+    reportedCostUsd: 0.001,
+    unreportedCalls: 0,
   }
   const usageB = {
     inputTokens: 20,
@@ -84,6 +86,8 @@ describe('collectRoundOutcome', () => {
     reasoningTokens: 0,
     cachedInputTokens: 4,
     durationMs: 200,
+    reportedCostUsd: 0,
+    unreportedCalls: 1,
   }
   const ledgerA = { retrieved: [], failed: [], snippet: [] } as unknown as LedgerSnapshot
   const ledgerB = { retrieved: ['x'], failed: [], snippet: [] } as unknown as LedgerSnapshot
@@ -140,6 +144,8 @@ describe('collectRoundOutcome', () => {
       reasoningTokens: 1,
       cachedInputTokens: 6,
       durationMs: 300,
+      reportedCostUsd: 0.001,
+      unreportedCalls: 1,
     })
   })
 })

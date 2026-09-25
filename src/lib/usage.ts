@@ -13,10 +13,10 @@ import {
   formatUsageJsonlLine,
 } from './cost.js'
 
-// Re-exported for compatibility — callers importing `computeCost` from `usage.ts` keep
-// working; the implementation lives in `cost.ts` because it has no `env.js` import and
+// Re-exported for compatibility — callers importing `computeCost`/`chooseCost` from `usage.ts`
+// keep working; the implementation lives in `cost.ts` because it has no `env.js` import and
 // so can be unit-tested without booting the env-parsing chain.
-export { computeCost } from './cost.js'
+export { computeCost, chooseCost } from './cost.js'
 
 // Shared sink, used by every reporter in this file — reportUsage (LLM/token records),
 // reportTavilyUsage/reportSonarUsage/reportRenderUsage (credit/cost/render records) — same
@@ -90,6 +90,14 @@ export async function postUsageRecord(record: Record<string, unknown>): Promise<
 }
 
 // Flat token/timing accumulator shared by plan/worker/synthesis calls and the job total.
+//
+// `reportedCostUsd`/`unreportedCalls` exist because the IU gateway prices some routes itself:
+// its `/openai/v1/chat/completions` response carries `usage.cost` (USD) for DeepSeek ids, but
+// nothing for GPT/Gemini ids. `reportedCostUsd` is the sum of that `cost` across every call
+// folded into this bucket that reported one; `unreportedCalls` counts the calls that didn't
+// (so a bucket that ever saw an unreported call is never silently under-priced by summing only
+// the calls that did report). See `toUsageStats` below and `cost.ts`'s `chooseCost`, the one
+// place this decides 'reported' vs the `RATES`-table 'computed' fallback.
 export interface UsageStats {
   inputTokens: number
   outputTokens: number
@@ -97,6 +105,8 @@ export interface UsageStats {
   reasoningTokens: number
   cachedInputTokens: number
   durationMs: number
+  reportedCostUsd: number
+  unreportedCalls: number
 }
 
 export function emptyUsage(): UsageStats {
@@ -107,10 +117,19 @@ export function emptyUsage(): UsageStats {
     reasoningTokens: 0,
     cachedInputTokens: 0,
     durationMs: 0,
+    reportedCostUsd: 0,
+    unreportedCalls: 0,
   }
 }
 
 export function toUsageStats(usage: LanguageModelUsage, durationMs: number): UsageStats {
+  // `usage.raw` is the provider's own usage object verbatim (`@ai-sdk/openai-compatible`'s
+  // `convertOpenAICompatibleChatUsage` sets `raw: usage` from the response body) — checked
+  // defensively for a numeric `cost` rather than trusted, since a GPT/Gemini call's `raw`
+  // carries no such field at all and a malformed one should fall through to `unreportedCalls`,
+  // not throw or silently coerce a non-number.
+  const rawCost = usage.raw?.['cost']
+  const hasReportedCost = typeof rawCost === 'number' && Number.isFinite(rawCost)
   return {
     inputTokens: usage.inputTokens ?? 0,
     outputTokens: usage.outputTokens ?? 0,
@@ -118,6 +137,8 @@ export function toUsageStats(usage: LanguageModelUsage, durationMs: number): Usa
     reasoningTokens: usage.outputTokenDetails?.reasoningTokens ?? 0,
     cachedInputTokens: usage.inputTokenDetails?.cacheReadTokens ?? 0,
     durationMs,
+    reportedCostUsd: hasReportedCost ? rawCost : 0,
+    unreportedCalls: hasReportedCost ? 0 : 1,
   }
 }
 
@@ -129,6 +150,8 @@ export function addUsage(target: UsageStats, addend: UsageStats): UsageStats {
     reasoningTokens: target.reasoningTokens + addend.reasoningTokens,
     cachedInputTokens: target.cachedInputTokens + addend.cachedInputTokens,
     durationMs: target.durationMs + addend.durationMs,
+    reportedCostUsd: target.reportedCostUsd + addend.reportedCostUsd,
+    unreportedCalls: target.unreportedCalls + addend.unreportedCalls,
   }
 }
 
@@ -142,6 +165,8 @@ export async function reportUsage(args: {
   reasoningTokens: number
   cachedInputTokens: number
   durationMs: number
+  reportedCostUsd: number
+  unreportedCalls: number
   /**
    * Defaults to 'ok'. Reporting only successes leaves `outcome` permanently 'ok',
    * which reads as a service that has never failed rather than one that isn't

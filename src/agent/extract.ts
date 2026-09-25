@@ -502,6 +502,8 @@ export function applyConsistencyGate(args: {
       reasoningTokens: leadUsage.reasoningTokens + u.reasoningTokens,
       cachedInputTokens: leadUsage.cachedInputTokens + u.cachedInputTokens,
       durationMs: leadUsage.durationMs + u.durationMs,
+      reportedCostUsd: leadUsage.reportedCostUsd + u.reportedCostUsd,
+      unreportedCalls: leadUsage.unreportedCalls + u.unreportedCalls,
     },
   }
 }

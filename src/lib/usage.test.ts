@@ -88,27 +88,27 @@ describe('computeCost', () => {
     expect(dated.costUsd).toBeCloseTo(bare.costUsd as number, 9)
   })
 
-  it('bills deepseek-v4.1-flash at the 2026-09-24 shared-table rate (0.15/0.003/0.60 per 1M)', () => {
+  it('bills deepseek-v4.1-flash at the 2026-09-25 measured peak rate (0.30/0.006/1.20 per 1M)', () => {
     const uncached = computeCost('deepseek-v4.1-flash', {
       inputTokens: 1_000_000,
       cachedInputTokens: 0,
       outputTokens: 0,
     })
-    expect(uncached.costUsd).toBeCloseTo(0.15, 6)
+    expect(uncached.costUsd).toBeCloseTo(0.3, 6)
 
     const cached = computeCost('deepseek-v4.1-flash', {
       inputTokens: 1_000_000,
       cachedInputTokens: 1_000_000,
       outputTokens: 0,
     })
-    expect(cached.costUsd).toBeCloseTo(0.003, 6)
+    expect(cached.costUsd).toBeCloseTo(0.006, 6)
 
     const output = computeCost('deepseek-v4.1-flash', {
       inputTokens: 0,
       cachedInputTokens: 0,
       outputTokens: 1_000_000,
     })
-    expect(output.costUsd).toBeCloseTo(0.6, 6)
+    expect(output.costUsd).toBeCloseTo(1.2, 6)
   })
 
   it('bills glm-5.3-flash at the 2026-09-13 measured rate (0.15/0.03/0.50 per 1M)', () => {
@@ -165,6 +165,11 @@ describe('buildLlmUsageRecord', () => {
     reasoningTokens: 50,
     cachedInputTokens: 400,
     durationMs: 1234,
+    // An unreported call — the gateway's own `usage.cost` never came back for it — so these
+    // tests exercise the RATES-table `computed` fallback by default; the 'reported' path gets
+    // its own describe block below.
+    reportedCostUsd: 0,
+    unreportedCalls: 1,
     machine: 'vps',
   }
 
@@ -198,6 +203,26 @@ describe('buildLlmUsageRecord', () => {
   it('stamps `machine` from the caller rather than hardcoding it', () => {
     expect(buildLlmUsageRecord(args).machine).toBe('vps')
     expect(buildLlmUsageRecord({ ...args, machine: 'mini' }).machine).toBe('mini')
+  })
+
+  it('prices from the gateway-reported cost, not the rate table, once every call reported one', () => {
+    const record = buildLlmUsageRecord({ ...args, reportedCostUsd: 0.0000174, unreportedCalls: 0 })
+    expect(record.cost_source).toBe('reported')
+    expect(record.cost_usd).toBe(0.0000174)
+  })
+
+  it('falls back to the rate table when a role made no calls at all', () => {
+    const record = buildLlmUsageRecord({
+      ...args,
+      inputTokens: 0,
+      outputTokens: 0,
+      reasoningTokens: 0,
+      cachedInputTokens: 0,
+      reportedCostUsd: 0,
+      unreportedCalls: 0,
+    })
+    expect(record.cost_source).toBe('computed')
+    expect(record.cost_usd).toBe(0)
   })
 })
 

@@ -16,13 +16,29 @@ const RATES: Record<string, { input: number; cachedInput: number; output: number
   // computed cost_usd at report time, it does not re-price from this table later).
   'deepseek-v4-flash': { input: 0.14, cachedInput: 0.0028, output: 0.28 },
   'deepseek-v4-pro': { input: 0.435, cachedInput: 0.0145, output: 0.87 },
-  // 2026-09-13 estate-wide model rollout: this repo's lead + worker model. Rates re-measured
-  // 2026-09-24 into the estate's shared price table (usage-tracker `src/pricing.ts`, whose
-  // comment says it covers research-gateway): input 0.15 / cache read 0.003 / output 0.6 USD
-  // per 1M tokens. **That shared table is the source of truth for this id — keep the two in
-  // step.** Supersedes the 2026-09-13 figures (0.50/0.05/1.50) measured here off the IU
-  // endpoint's own `usage.cost`; prompt caching remains live on this route.
-  'deepseek-v4.1-flash': { input: 0.15, cachedInput: 0.003, output: 0.6 },
+  // 2026-09-13 estate-wide model rollout: this repo's lead + worker model. The IU gateway
+  // re-prices this route often — three measurements against its own `usage.cost` (USD per 1M
+  // tokens), all on the same deepseek-v4.1-flash id:
+  //   2026-09-13 (time not recorded): input 0.50 / cachedInput 0.05 / output 1.50 — the rate
+  //     this table carried until now.
+  //   2026-09-24 ~18:50Z: input 0.15 / cachedInput 0.003 / output 0.60 — a third of the above.
+  //   2026-09-25 ~06:46Z (reconfirmed 06:51Z by a live probe made while writing this comment,
+  //     `usage.cost` matched this rate to the cent): input 0.30 / cachedInput 0.006 /
+  //     output 1.20 — exactly double the 09-24 figure.
+  // Unconfirmed hypothesis: 09-24's reading landed in an off-peak window and 09-13/09-25 in
+  // peak — the two peak readings differ (0.50 vs 0.30) so even that isn't settled, and a
+  // re-measure inside the suspected 16:30-00:30 UTC off-peak window is still pending. Given
+  // that, this row is set to the higher, more recently confirmed peak reading (09-25) as the
+  // conservative fallback. It matters far less now than it used to: since this change, a call
+  // whose response actually carries `usage.cost` reports that number directly
+  // (`cost_source: 'reported'`, see usage.ts's `toUsageStats`/`chooseCost`) — this table is
+  // consulted only when the gateway's own usage object had no numeric `cost` on it. Prompt
+  // caching is confirmed live on this route (`prompt_tokens_details.cached_tokens`). A
+  // sibling repo (usage-tracker, `src/pricing.ts`) carries a shared table that briefly set
+  // this id to the 09-24 off-peak figure (0.15/0.003/0.6) — that table is now out of step
+  // with the fallback here and worth reconciling once the peak/off-peak question above
+  // settles, but is not this repo's source of truth for its own gateway calls.
+  'deepseek-v4.1-flash': { input: 0.3, cachedInput: 0.006, output: 1.2 },
   // Measured 2026-09-13 against the IU unified endpoint's own `usage.cost`, same method as
   // deepseek-v4.1-flash above.
   'glm-5.3-flash': { input: 0.15, cachedInput: 0.03, output: 0.5 },
@@ -67,13 +83,45 @@ export function formatUsageJsonlLine(record: Record<string, unknown>): string {
   return `${JSON.stringify(record)}\n`
 }
 
+// The one place lead/worker cost provenance is decided — used by both `buildLlmUsageRecord`
+// below (the argo row) and `run.ts`'s job-level `cost.llmUsd`/`totalUsd`, so the two numbers
+// can never drift apart the way a report-side and a telemetry-side computation independently
+// could. `reportedCostUsd`/`unreportedCalls` come from `usage.ts`'s `toUsageStats`, which reads
+// the IU gateway's own `usage.cost` off the AI SDK's `LanguageModelUsage.raw` when present
+// (DeepSeek ids return it; GPT/Gemini ids don't).
+//
+// "Made a call" is inferred from token counts (or from either new field already being
+// nonzero) rather than a dedicated call counter — a role that never called the model (the
+// quick-depth plan skip, a plan/synthesis call that threw before any usage came back) leaves
+// every one of these at 0, and falling through to `computeCost` there is a no-op: an all-zero
+// token call prices to $0 either way, and the model is still surfaced correctly by whichever
+// caller actually reports one.
+export function chooseCost(
+  model: string,
+  usage: {
+    inputTokens: number
+    cachedInputTokens: number
+    outputTokens: number
+    reportedCostUsd: number
+    unreportedCalls: number
+  },
+): { costUsd: number | null; costSource: 'computed' | 'reported' | 'none' } {
+  const madeCall =
+    usage.inputTokens > 0 || usage.outputTokens > 0 || usage.reportedCostUsd > 0 || usage.unreportedCalls > 0
+  if (madeCall && usage.unreportedCalls === 0) {
+    return { costUsd: usage.reportedCostUsd, costSource: 'reported' }
+  }
+  return computeCost(model, usage)
+}
+
 // Shape of an argo `usage_record` row, built here (not usage.ts) for the same reason as
 // computeCost: no env.js import, so the builder is unit-testable with zero env vars.
 //
 // `cost_source` is a free-form string on argo's side (verified against its OpenAPI schema),
 // so 'reported' below is a legal value and not a silently-rejected record. It exists to keep
 // three provenances distinct on the dashboard: 'computed' (our rate table), 'reported' (the
-// vendor priced the call itself), 'none' (unpriced).
+// vendor priced the call itself — this now includes the IU gateway's own per-call `usage.cost`
+// on `lead`/`worker` rows, not just Sonar's), 'none' (unpriced).
 interface SearchUsageRecordBase {
   source: string
   source_id: string
@@ -123,6 +171,13 @@ export function buildLlmUsageRecord(args: {
   cachedInputTokens: number
   durationMs: number
   /**
+   * Sum of the gateway's own `usage.cost` (USD) across every call this snapshot covers, for
+   * the calls that reported one — 0 when none did. See `usage.ts`'s `toUsageStats`.
+   */
+  reportedCostUsd: number
+  /** Count of calls in this snapshot whose raw usage carried no numeric `cost`. See `chooseCost`. */
+  unreportedCalls: number
+  /**
    * Host label for the `machine` argo column (part of its idempotency triple, and a dashboard
    * breakdown dimension) — threaded in from the caller rather than read from `env.MACHINE`
    * here, so this module stays env-free and unit-testable with zero env vars (see the header
@@ -137,10 +192,12 @@ export function buildLlmUsageRecord(args: {
    */
   outcome?: 'ok' | 'error'
 }): LlmUsageRecord {
-  const { costUsd, costSource } = computeCost(args.model, {
+  const { costUsd, costSource } = chooseCost(args.model, {
     inputTokens: args.inputTokens,
     cachedInputTokens: args.cachedInputTokens,
     outputTokens: args.outputTokens,
+    reportedCostUsd: args.reportedCostUsd,
+    unreportedCalls: args.unreportedCalls,
   })
   const uncachedInputTokens = Math.max(0, args.inputTokens - args.cachedInputTokens)
 

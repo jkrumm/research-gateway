@@ -9,7 +9,7 @@ import { mergeLedgers, type LedgerSnapshot } from './ledger.js'
 import { groundReport } from './ground.js'
 import type { Depth, ResearchReport, SubmittedReport, SubQuestion, WorkerDigest } from './schema.js'
 import { log } from '../lib/log.js'
-import { computeCost, emptyUsage, addUsage } from '../lib/usage.js'
+import { chooseCost, emptyUsage, addUsage } from '../lib/usage.js'
 import { readSearchSpend, readRenderStats } from './tools.js'
 import type { UsageStats } from '../lib/usage.js'
 import { env } from '../env.js'
@@ -374,16 +374,14 @@ export async function runResearch(
 
       if (onUsage) onUsage(jobUsage)
 
-      const leadCost = computeCost(env.IU_LEAD_MODEL, {
-        inputTokens: leadUsage.inputTokens,
-        cachedInputTokens: leadUsage.cachedInputTokens,
-        outputTokens: leadUsage.outputTokens,
-      })
-      const workerCost = computeCost(env.IU_WORKER_MODEL, {
-        inputTokens: workerUsage.inputTokens,
-        cachedInputTokens: workerUsage.cachedInputTokens,
-        outputTokens: workerUsage.outputTokens,
-      })
+      // Per role: the gateway's own reported cost wins whenever every call in the bucket
+      // reported one (`unreportedCalls === 0`); a role with no calls at all, or with even one
+      // unreported call, falls back to the RATES-table `computeCost` — see `chooseCost`
+      // (cost.ts), the single decision this and `buildLlmUsageRecord`'s argo row both use, so
+      // the report's `cost.llmUsd` and the telemetry row can never price the same job two
+      // different ways.
+      const leadCost = chooseCost(env.IU_LEAD_MODEL, leadUsage)
+      const workerCost = chooseCost(env.IU_WORKER_MODEL, workerUsage)
       const costUsd =
         leadCost.costUsd === null && workerCost.costUsd === null
           ? null

@@ -58,6 +58,8 @@ export function collectRoundOutcome(settled: PromiseSettledResult<WorkerOutcome>
     reasoningTokens: 0,
     cachedInputTokens: 0,
     durationMs: 0,
+    reportedCostUsd: 0,
+    unreportedCalls: 0,
   }
   const digests: WorkerDigest[] = []
   const ledgers: LedgerSnapshot[] = []
@@ -76,6 +78,8 @@ export function collectRoundOutcome(settled: PromiseSettledResult<WorkerOutcome>
       reasoningTokens: usage.reasoningTokens + outcome.value.usage.reasoningTokens,
       cachedInputTokens: usage.cachedInputTokens + outcome.value.usage.cachedInputTokens,
       durationMs: usage.durationMs + outcome.value.usage.durationMs,
+      reportedCostUsd: usage.reportedCostUsd + outcome.value.usage.reportedCostUsd,
+      unreportedCalls: usage.unreportedCalls + outcome.value.usage.unreportedCalls,
     }
     ledgers.push(outcome.value.ledger)
 

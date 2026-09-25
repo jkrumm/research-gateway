@@ -259,7 +259,7 @@ instead — the tracker prices and syncs them to argo itself, so the gateway doe
 
 | `sub_tool` | `cost_source` | Why |
 |-|-|-|
-| `lead` / `worker` | `computed` | local rate table, cache-aware — the endpoint bills a cache read ~30x below a miss and the fan-out sustains ~60% hits |
+| `lead` / `worker` | `reported` when every call in the snapshot returned the gateway's own `usage.cost` (DeepSeek ids do); `computed` (local rate table, cache-aware) otherwise — GPT/Gemini ids and any call the gateway priced at $0 or left unpriced | the gateway re-prices this route often enough that its own per-call cost beats a rate table whenever it's available; the table is the fallback, not the default |
 | `sonar` | `reported` | Perplexity returns the USD; the cost is a per-request search fee, not tokens |
 | `tavily` | `none` | credits travel in `raw`; no verified USD-per-credit rate exists |
 | `lightpanda` / `ytdlp` / `wayback` | `none` | self-hosted or free — no marginal cost; `raw` carries calls, failures, `totalMs` (and the oldest snapshot age for Wayback) |

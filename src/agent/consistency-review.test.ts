@@ -624,6 +624,8 @@ describe('applyConsistencyGate', () => {
     reasoningTokens: 10,
     cachedInputTokens: 20,
     durationMs: 500,
+    reportedCostUsd: 0.01,
+    unreportedCalls: 0,
   }
   const reviewUsage = {
     inputTokens: 7,
@@ -632,6 +634,8 @@ describe('applyConsistencyGate', () => {
     reasoningTokens: 1,
     cachedInputTokens: 2,
     durationMs: 25,
+    reportedCostUsd: 0.002,
+    unreportedCalls: 1,
   }
 
   it('folds the review pass usage into the lead bucket', () => {
@@ -646,6 +650,8 @@ describe('applyConsistencyGate', () => {
       reasoningTokens: 11,
       cachedInputTokens: 22,
       durationMs: 525,
+      reportedCostUsd: 0.012,
+      unreportedCalls: 1,
     })
   })
 
