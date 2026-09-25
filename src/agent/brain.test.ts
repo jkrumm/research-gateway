@@ -15,6 +15,8 @@ import {
   buildExcerpt,
   buildNoteUrl,
   rankAndBuildNotes,
+  isJournalPath,
+  isJournalNote,
 } from './brain.js'
 import type { BrainCandidate, CorpusStats } from './brain.js'
 
@@ -62,6 +64,54 @@ describe('isNearDuplicateQuery', () => {
   it('is false when either side is empty', () => {
     expect(isNearDuplicateQuery([], ['deepseek'])).toBe(false)
     expect(isNearDuplicateQuery(['deepseek'], [])).toBe(false)
+  })
+})
+
+describe('isJournalPath', () => {
+  it('drops a note under a journal/daily/template directory, case-insensitively', () => {
+    expect(isJournalPath('wiki/02_Daily/2026-09-25.md')).toBe(true)
+    expect(isJournalPath('Inbox/journal/thoughts.md')).toBe(true)
+    expect(isJournalPath('Areas/Daily/foo.md')).toBe(true)
+    expect(isJournalPath('wiki/09_Templates/note.md')).toBe(true)
+    expect(isJournalPath('wiki/node_modules/x.md')).toBe(true)
+  })
+
+  it('drops a filename that is exactly a date', () => {
+    expect(isJournalPath('Inbox/2026-09-25.md')).toBe(true)
+  })
+
+  it('keeps a dated-and-titled note', () => {
+    expect(isJournalPath('Inbox/2026-09-25 Standup notes.md')).toBe(false)
+    expect(isJournalPath('Areas/Podcasts/2026-09-25 Episode.md')).toBe(false)
+  })
+
+  it('keeps an ordinary note', () => {
+    expect(isJournalPath('wiki/engineering/model-routing.md')).toBe(false)
+    expect(isJournalPath('Projects/research-gateway.md')).toBe(false)
+  })
+})
+
+describe('isJournalNote', () => {
+  it('drops a note whose frontmatter type is journal/daily/diary', () => {
+    expect(isJournalNote('type: journal')).toBe(true)
+    expect(isJournalNote('type: daily-note')).toBe(true)
+    expect(isJournalNote('type: diary')).toBe(true)
+  })
+
+  it('drops a note whose tags contain journal/daily/diary, inline or block list', () => {
+    expect(isJournalNote('tags: [journal, personal]')).toBe(true)
+    expect(isJournalNote('tags:\n  - daily\n  - personal')).toBe(true)
+  })
+
+  it('drops a note marked research: false', () => {
+    expect(isJournalNote('research: false')).toBe(true)
+    expect(isJournalNote('research: "false"')).toBe(true)
+  })
+
+  it('keeps a note with unrelated frontmatter', () => {
+    expect(isJournalNote('title: Model routing\ntimestamp: 2026-09-23')).toBe(false)
+    expect(isJournalNote('tags: [journalism, press]')).toBe(false)
+    expect(isJournalNote('research: true')).toBe(false)
   })
 })
 
@@ -375,6 +425,15 @@ describe('buildNoteUrl', () => {
     expect(buildNoteUrl('https://brain.mini.jkrumm.com/', 'wiki/a.md')).toBe('https://brain.mini.jkrumm.com/wiki/a')
   })
 
+  it('builds a valid reader URL for a non-wiki root', () => {
+    expect(buildNoteUrl('https://brain.mini.jkrumm.com', 'Projects/research-gateway.md')).toBe(
+      'https://brain.mini.jkrumm.com/Projects/research-gateway',
+    )
+    expect(buildNoteUrl('https://brain.mini.jkrumm.com', 'Inbox/2026-09-25 Standup notes.md')).toBe(
+      'https://brain.mini.jkrumm.com/Inbox/2026-09-25%20Standup%20notes',
+    )
+  })
+
   it('returns null when no base url is configured', () => {
     expect(buildNoteUrl(undefined, 'wiki/a.md')).toBeNull()
   })
@@ -504,5 +563,17 @@ describe('rankAndBuildNotes', () => {
     const corpus: CorpusStats = { size: 200, df: new Map([['research', 180], ['gateway', 150], ['deepseek', 3], ['pricing', 4]]) }
     const results = rankAndBuildNotes({ candidates, terms: ['research', 'gateway'], baseUrl, corpus })
     expect(results).toEqual([])
+  })
+
+  it('excludes journal paths and journal-frontmatter notes from results', () => {
+    const candidates = [
+      note('Inbox/2026-09-25.md', '---\ntitle: deepseek journal\n---\n\ndeepseek deepseek'),
+      note('wiki/02_Daily/notes.md', '---\ntitle: deepseek daily\n---\n\ndeepseek deepseek'),
+      note('Areas/health.md', '---\ntitle: deepseek health\ntype: journal\n---\n\ndeepseek deepseek'),
+      note('wiki/deepseek.md', '---\ntitle: deepseek reference\n---\n\ndeepseek deepseek'),
+      ...distractors(5),
+    ]
+    const results = rankAndBuildNotes({ candidates, terms: ['deepseek'], baseUrl, corpus: corpusFromCandidates(candidates) })
+    expect(results.map((r) => r.title)).toEqual(['deepseek reference'])
   })
 })

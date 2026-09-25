@@ -69,9 +69,10 @@ const Env = z.object({
   // Absolute path to the owner's second-brain vault (a git checkout of an Obsidian vault) —
   // mini-only, native LaunchAgent host. Unset everywhere else (VPS, local dev, tests), which
   // keeps the `brainNotes` tool unregistered entirely (agent/tools.ts), exactly like
-  // `libraryDocs` without CONTEXT7_API_KEY. Search is hard-scoped to `${BRAIN_DIR}/wiki/` in
-  // code (agent/brain-search.ts) — the vault's Projects/Areas/Inbox trees carry private data
-  // and must never be reachable from here, symlink escapes included.
+  // `libraryDocs` without CONTEXT7_API_KEY. Search is hard-scoped in code (agent/brain-search.ts)
+  // to the vault roots `wiki/`, `Projects/`, `Areas/` and `Inbox/`, with journals excluded
+  // (owner decision 2026-09-25); vault-root files, docs/ and dot-dirs are never roots, and a
+  // symlink escaping every root is dropped rather than followed.
   //
   // Empty-as-unset like GITHUB_TOKEN above: templates can't express "absent", only "".
   BRAIN_DIR: z
@@ -88,6 +89,27 @@ const Env = z.object({
   // `rg` resolves via PATH (Homebrew's ripgrep on the mini, /opt/homebrew/bin) — same pattern
   // as PDFTOTEXT_PATH below. Only meaningful when BRAIN_DIR is set.
   RG_PATH: z.string().default('rg'),
+  // Karakeep (the owner's self-hosted bookmark manager) is folded into `brainNotes`, not a new
+  // tool. Both vars are optional and mini-only: unset means the Karakeep half is disabled and
+  // the VPS/local dev/tests are unchanged. `KARAKEEP_URL` is the service base like
+  // `https://karakeep.example` — no `/api` suffix (the code appends `/api/v1/...`), trailing
+  // slash stripped. Empty-as-unset like GITHUB_TOKEN/BRAIN_DIR above, so a template can render
+  // an unresolved key as `""` without registering a broken half.
+  //
+  // The API key is a secret; the owner wires it through an optional mini overlay (same shape as
+  // the GitHub PAT overlay), so this repo carries no secret reference for it.
+  KARAKEEP_URL: z.preprocess(
+    (v) => (typeof v === 'string' && v.trim() === '' ? undefined : v),
+    z
+      .url()
+      .optional()
+      .transform((v) => (v ? v.replace(/\/+$/, '') : undefined)),
+  ),
+  KARAKEEP_API_KEY: z
+    .string()
+    .trim()
+    .optional()
+    .transform((v) => (v ? v : undefined)),
   // The JavaScript-rendering sidecar — a self-hosted browser engine, and the step that
   // replaced Jina Reader as fetchPage's renderer (see agent/lightpanda.ts, lightpanda/).
   //

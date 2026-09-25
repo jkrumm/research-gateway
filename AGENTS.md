@@ -125,8 +125,8 @@ bun test           # pure-function tests only — needs no secrets
 ```
 
 Anything importing `env.ts` is untested by design — factor pure logic out instead
-(`ledger`, `extract`, `archive`, `site-adapters`, `response-kind`, `youtube-captions`,
-`otel-format`, `brain` are the pattern). Do not mock `env`. `scripts/smoke.ts` runs one
+  (`ledger`, `extract`, `archive`, `site-adapters`, `response-kind`, `youtube-captions`,
+  `otel-format`, `brain`, `karakeep` are the pattern). Do not mock `env`. `scripts/smoke.ts` runs one
 `runResearch()` end to end without the HTTP server.
 
 ## File map
@@ -141,10 +141,16 @@ Anything importing `env.ts` is untested by design — factor pure logic out inst
   adding a source to an existing tool is cheap, a new tool definition is not (README §
   Source-of-truth lookups)
 - `src/agent/brain.ts` + `brain-search.ts` — `brainNotes`, mini-only (`BRAIN_DIR` +
-  `BRAIN_BASE_URL`): ripgrep over `${BRAIN_DIR}/wiki/` only, realpath-checked against symlink
-  escape (a real case in this vault: a wiki note symlinked to a file outside the vault entirely
-  is dropped, not followed) — never Projects/Areas/Inbox, which carry private data. Ranking/
-  excerpting is pure (brain.ts); the spawn+fs boundary is brain-search.ts.
+  `BRAIN_BASE_URL`): ripgrep over the vault roots `wiki/`, `Projects/`, `Areas/` and `Inbox/`
+  (owner decision 2026-09-25 — health and finance notes in scope, journals never),
+  realpath-checked against symlink escape (a note symlinked to a file outside every root is
+  dropped, not followed); journals are excluded by path and frontmatter, vault-root files and
+  `docs/` are never roots. Ranking/excerpting is pure (brain.ts); the spawn+fs boundary is
+  brain-search.ts.
+- `src/agent/karakeep.ts` + `karakeep-search.ts` — the owner's Karakeep bookmarks, folded into
+  the same `brainNotes` tool (no eleventh tool definition), mini-only and optional
+  (`KARAKEEP_URL` + `KARAKEEP_API_KEY`). Pure parsing/ranking/excerpting in karakeep.ts; the
+  fetch boundary never throws and degrades to brain-only results.
 - `src/agent/fetch-chain.ts` + `site-adapters.ts` + `lightpanda.ts` + `archive.ts` — the
   5-step `fetchPage` chain (Readability, or `pdftotext` for a PDF (`pdf.ts`) → site adapter →
   lightpanda sidecar → Tavily Extract → Wayback). Readability/site-adapter parsing runs off the event loop in a worker
