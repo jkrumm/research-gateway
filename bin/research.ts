@@ -260,9 +260,10 @@ export function reportSummaryLines(report: ResearchReport): string[] {
   return lines
 }
 
-function emitResult(io: CliIo, job: JobView, options: Options): void {
+function emitResult(io: CliIo, jobId: string, job: JobView, options: Options): void {
   if (options.json) {
-    io.out(`${JSON.stringify(job, null, 2)}\n`)
+    // GET /research/:jobId does not echo the id; a script piping --json needs it to re-query.
+    io.out(`${JSON.stringify({ jobId, ...job }, null, 2)}\n`)
     return
   }
   if (job.status === 'error') {
@@ -510,7 +511,7 @@ async function execute(
       return waitForJob(ctx, io, base, token, command.jobId, options)
     case 'status': {
       const job = await fetchJob(ctx.fetchFn, base, token, command.jobId)
-      if (options.json) io.out(`${JSON.stringify(job, null, 2)}\n`)
+      if (options.json) io.out(`${JSON.stringify({ jobId: command.jobId, ...job }, null, 2)}\n`)
       else io.out(`${renderJobHuman(job)}\n`)
       return isTerminal(job.status) ? exitCodeFor(job.status) : 0
     }
@@ -554,7 +555,7 @@ async function waitForJob(
       if (job.status === 'error' && !options.json) {
         io.err(`research: job ${jobId} error: ${job.error ?? 'unknown error'}\n`)
       }
-      emitResult(io, job, options)
+      emitResult(io, jobId, job, options)
       return exitCodeFor(job.status)
     }
     await wait(POLL_MS)

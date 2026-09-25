@@ -293,7 +293,7 @@ describe('run — status', () => {
     const { io, out } = makeIo()
     const code = await run(['status', 'job-12', '--json'], makeCtx({ fetchFn }), io)
     expect(code).toBe(1)
-    expect(JSON.parse(out.join(''))).toEqual({ status: 'error', result: null, error: 'boom' })
+    expect(JSON.parse(out.join(''))).toEqual({ jobId: 'job-12', status: 'error', result: null, error: 'boom' })
   })
 
   it('returns 0 for a non-terminal job', async () => {
