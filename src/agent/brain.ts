@@ -107,14 +107,80 @@ export function createBrainCallGuard(maxCalls = MAX_BRAIN_CALLS): BrainCallGuard
   }
 }
 
+// ── Scope: which vault notes brainNotes may read ─────────────────────────────
+//
+// The roots are wiki/, Projects/, Areas/ and Inbox/ (brain-search.ts) — vault-root files
+// (log.md, voice.md, index.md, AGENTS.md), docs/, dot-dirs and node_modules are never roots
+// and so are never read. Within a root, journals are excluded. Owner decision 2026-09-25:
+// health and finance notes ARE in scope; journals never.
+
+// Journal/diary/template directory names, matched case-insensitively against each path segment.
+const JOURNAL_SEGMENTS = new Set([
+  '02_daily', 'journal', 'journals', 'daily', 'diary', '09_templates', 'templates', 'node_modules',
+])
+// A filename that is EXACTLY a date. `2026-09-25.md` is a journal entry; `2026-09-25 <topic>.md`
+// is a normal dated-and-titled note (54 existing Inbox/Areas/Podcasts notes use that shape) and
+// is kept.
+const DATE_ONLY_FILENAME_RE = /^\d{4}-\d{2}-\d{2}\.md$/i
+const JOURNAL_KEYWORDS = new Set(['journal', 'journals', 'daily', 'diary'])
+
+/** Path-only journal exclusion — cheap enough to run over the whole IDF corpus without reading
+ * a file, which is why the corpus uses this rule and no frontmatter. A path segment named like
+ * a journal/diary/template dir, or a filename that is exactly a date, excludes the note.
+ * Case-insensitive. */
+export function isJournalPath(relPath: string): boolean {
+  const segments = relPath.split('/')
+  const filename = segments[segments.length - 1] ?? ''
+  if (segments.some((seg) => JOURNAL_SEGMENTS.has(seg.toLowerCase()))) return true
+  return DATE_ONLY_FILENAME_RE.test(filename)
+}
+
+/** True when `value` (a scalar or one YAML list item) tokenizes to journal/daily/diary. Whole
+ * tokens only, so `tags: [journalism]` is not mistaken for a journal. */
+function valueHasJournalKeyword(value: string): boolean {
+  return value
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .some((term) => JOURNAL_KEYWORDS.has(term))
+}
+
+/** Frontmatter-based journal exclusion, run only on candidates that would be excerpted (the
+ * IDF corpus uses isJournalPath alone, no file read). Reads the flat `key: value` block plus
+ * YAML block-list items: `type` or `tags` containing journal/daily/diary (case-insensitive)
+ * excludes a note, as does an explicit `research: false`. Continuation of a `tags:`/`type:`
+ * block is tracked so `tags:\n  - journal` is caught, not just `tags: [journal]`. */
+export function isJournalNote(frontmatterBlock: string): boolean {
+  let currentKey: string | null = null
+  for (const rawLine of frontmatterBlock.split(/\r?\n/)) {
+    const line = rawLine.trim()
+    if (line.length === 0) continue
+    if (line.startsWith('-')) {
+      if ((currentKey === 'type' || currentKey === 'tags') && valueHasJournalKeyword(line.replace(/^-\s*/, ''))) {
+        return true
+      }
+      continue
+    }
+    const kv = line.match(/^([A-Za-z_][A-Za-z0-9_-]*):\s*(.*)$/)
+    if (!kv) continue
+    const key = (kv[1] ?? '').toLowerCase()
+    const value = kv[2] ?? ''
+    currentKey = key
+    if (key === 'research' && /^['"]?false['"]?$/i.test(value.trim())) return true
+    if ((key === 'type' || key === 'tags') && valueHasJournalKeyword(value)) return true
+  }
+  return false
+}
+
 export interface BrainCandidate {
-  /** Path relative to BRAIN_DIR, e.g. "wiki/engineering/model-routing.md" — this doubles as the
-   * vault reader's slug (minus the extension), see buildNoteUrl. */
+  /** Path relative to BRAIN_DIR, e.g. "wiki/engineering/model-routing.md" or
+   * "Areas/health/foo.md" — this doubles as the vault reader's slug (minus the extension), see
+   * buildNoteUrl, which builds a valid reader URL for any in-scope root, not just wiki/. */
   relPath: string
   content: string
 }
 
 export interface BrainNoteResult {
+  kind: 'note'
   title: string
   url: string
   updated: string | null
@@ -182,7 +248,7 @@ const TITLE_BOOST = 5
 const FRONTMATTER_BOOST = 2
 
 export interface CorpusStats {
-  /** Number of in-scope wiki .md notes the df table below was computed over — the WHOLE vault,
+  /** Number of in-scope vault .md notes the df table below was computed over — the WHOLE vault,
    * not the candidate set a single query happened to match. */
   size: number
   /** Lowercase term -> number of corpus notes whose own tokenizeTerms() set contains it. A term
@@ -212,10 +278,11 @@ export function buildCorpusStats(notes: readonly { content: string }[]): CorpusS
 // (1) a single-candidate result — df=1, N=1, ratio 100% — regardless of how rare the term
 // actually is vault-wide; (2) ANY single-term query — ripgrep only returns candidates that
 // already contain the term, so df==N is guaranteed for a 1-term query no matter the candidate
-// count. Fix: compute df against the WHOLE wiki corpus (CorpusStats, built once per 5-minute
-// cache window by brain-search.ts — see its header comment for why exact-token df, not the
-// substring match countTermMatches/tf use, is the right tradeoff here) so N and df no longer
-// move with how many candidates one query happened to match.
+// count. Fix: compute df against the WHOLE vault corpus across every in-scope root
+// (CorpusStats, built once per 5-minute cache window by brain-search.ts — see its header
+// comment for why exact-token df, not the substring match countTermMatches/tf use, is the
+// right tradeoff here) so N and df no longer move with how many candidates one query happened
+// to match.
 // `df` is floored at 1 so a term absent from the corpus map (shouldn't happen for a term that
 // came from an actual ripgrep hit, but a stale/failed corpus build could still miss it) never
 // produces Infinity/NaN.
@@ -395,6 +462,9 @@ export function rankAndBuildNotes(args: {
   const excerptTerms = informativeTerms.length > 0 ? informativeTerms : terms
 
   const scored = candidates
+    // Path journal rules first (cheap, no frontmatter parse), then the frontmatter rules the
+    // corpus cannot apply without reading every file. See the scope block above.
+    .filter((c) => !isJournalPath(c.relPath))
     .map((c) => {
       const { frontmatter, body: rawBody } = parseFrontmatter(c.content)
       const body = normalizeText(rawBody)
@@ -402,6 +472,7 @@ export function rankAndBuildNotes(args: {
       const frontmatterBlock = c.content.match(FRONTMATTER_RE)?.[1] ?? ''
       return { relPath: c.relPath, title, body, frontmatter, frontmatterBlock }
     })
+    .filter((c) => !isJournalNote(c.frontmatterBlock))
     .filter((c) => isStrongMatch({ title: c.title, frontmatterBlock: c.frontmatterBlock, body: c.body, informativeTerms }))
     .map((c) => ({ ...c, score: scoreNote({ title: c.title, frontmatterBlock: c.frontmatterBlock, body: c.body, terms, idf }) }))
     .sort((a, b) => b.score - a.score)
@@ -416,7 +487,7 @@ export function rankAndBuildNotes(args: {
     if (cap <= 0) break
     const excerpt = buildExcerpt(c.body, excerptTerms).slice(0, cap)
     excerptBudget -= excerpt.length
-    results.push({ title: c.title, url, updated: resolveUpdatedDate(c.frontmatter), excerpt })
+    results.push({ kind: 'note', title: c.title, url, updated: resolveUpdatedDate(c.frontmatter), excerpt })
   }
   return results
 }

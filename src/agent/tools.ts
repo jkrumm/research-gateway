@@ -13,7 +13,10 @@ import { sonarSearch, type SonarContextSize } from './sonar.js'
 import { runFetchChain, hostOf } from './fetch-chain.js'
 import { normalizeUrl, type RetrievalLedger } from './ledger.js'
 import { searchBrain } from './brain-search.js'
+import { searchKarakeep } from './karakeep-search.js'
 import { parseQueryTerms, createBrainCallGuard } from './brain.js'
+import type { BrainNoteResult } from './brain.js'
+import type { KarakeepBookmarkResult } from './karakeep.js'
 
 const tvly = tavily({ apiKey: env.TAVILY_API_KEY })
 
@@ -646,22 +649,28 @@ const BRAIN_NO_MATCH_NOTE =
 const BRAIN_BUDGET_SPENT_NOTE =
   'brainNotes call budget for this worker is spent — use the notes already returned, or other tools.'
 
-// Mini-only: the owner's second brain (a git checkout of an Obsidian vault). Gated on BOTH
-// BRAIN_DIR (to read a note) and BRAIN_BASE_URL (to cite one) — a tool that could read a note
-// but never produce a citable URL for it is worse than absent, per the ledger lesson (every
-// finding needs a URL the ledger has actually seen). Unset either on the VPS/local dev/tests,
-// exactly like buildLibraryDocsTool above.
+// Mini-only: the owner's second brain (a git checkout of an Obsidian vault) plus their Karakeep
+// bookmarks. The brain half is gated on BOTH BRAIN_DIR (to read a note) and BRAIN_BASE_URL (to
+// cite one) — a tool that could read a note but never produce a citable URL for it is worse than
+// absent, per the ledger lesson (every finding needs a URL the ledger has actually seen). The
+// Karakeep half is gated on KARAKEEP_URL + KARAKEEP_API_KEY. The tool is registered when EITHER
+// half is configured; unset both on the VPS/local dev/tests, exactly like buildLibraryDocsTool
+// above.
 function buildBrainNotesTool(ledger: RetrievalLedger, jobId = '-'): AnyTool | null {
-  if (!env.BRAIN_DIR || !env.BRAIN_BASE_URL) return null
+  const brainConfigured = Boolean(env.BRAIN_DIR && env.BRAIN_BASE_URL)
+  const karakeepConfigured = Boolean(env.KARAKEEP_URL && env.KARAKEEP_API_KEY)
+  if (!brainConfigured && !karakeepConfigured) return null
 
   // Per-WORKER guard, same scoping as searchWeb's `searched` / fetchPage's `fetched` above
   // (`buildTools` is called once per worker) — call-budget + near-duplicate-rephrase policy
-  // lives in brain.ts's createBrainCallGuard so it's unit-testable without booting a tool.
+  // lives in brain.ts's createBrainCallGuard so it's unit-testable without booting a tool. One
+  // guard covers BOTH halves: a call spends one budget slot whether it reaches the vault, the
+  // bookmarks or both.
   const guard = createBrainCallGuard()
 
   return tool({
     description:
-      "Search the owner's own curated notes — prior conclusions and decisions already reached, not general web content. Treat a match as a strong lead and cite it, but verify anything time- or version-sensitive (a price, a current version, a live status) against a primary source before asserting it. Cite the returned `url` field verbatim — never a file path or note title.",
+      "Search the owner's own notes (their second brain) and saved Karakeep bookmarks — prior conclusions, decisions and curated reading already gathered, not general web content. Treat a match as a strong lead and cite it, but verify anything time- or version-sensitive (a price, a current version, a live status) against a primary source before asserting it. Cite the returned `url` field verbatim — never a file path, note title or an original page URL named inside an excerpt.",
     inputSchema: z.object({
       query: z.string().describe('What to look up, e.g. "model routing deepseek" or "research gateway grounding"'),
     }),
@@ -674,23 +683,63 @@ function buildBrainNotesTool(ledger: RetrievalLedger, jobId = '-'): AnyTool | nu
         return { query, results: [], note: gate.reason === 'budget' ? BRAIN_BUDGET_SPENT_NOTE : BRAIN_NO_MATCH_NOTE }
       }
 
-      const result = await searchBrain(query, jobId)
-      if (!result.ok) return { error: result.error }
-      if (result.notes.length === 0) {
+      let notes: BrainNoteResult[] = []
+      let bookmarks: KarakeepBookmarkResult[] = []
+      let error: string | null = null
+
+      if (brainConfigured) {
+        const result = await searchBrain(query, jobId)
+        if (result.ok) notes = result.notes
+        else error = result.error
+      }
+
+      if (karakeepConfigured) {
+        // A Karakeep failure must NEVER throw out of the tool: a throwing tool kills the worker
+        // and every digest it had gathered. searchKarakeep already returns an error result, this
+        // catch is defense in depth — a Karakeep miss degrades to brain-only results.
+        try {
+          const result = await searchKarakeep(query, terms, jobId)
+          if (result.ok) bookmarks = result.bookmarks
+          else error = error ?? result.error
+        } catch (err) {
+          log('tool.brainNotes', { jobId, query, karakeep: true, ok: false, error: String(err) })
+          error = error ?? String(err)
+        }
+      }
+
+      const results = [
+        ...notes,
+        ...bookmarks.map((b) => ({
+          kind: b.kind,
+          title: b.title,
+          url: b.url,
+          updated: b.updated,
+          excerpt: b.excerpt,
+          ...(b.originalUrl ? { originalUrl: b.originalUrl } : {}),
+          ...(b.highlights.length > 0 ? { highlights: b.highlights } : {}),
+        })),
+      ]
+
+      if (results.length === 0) {
+        if (error) return { error }
         guard.recordMiss(terms)
         return { query, results: [], note: BRAIN_NO_MATCH_NOTE }
       }
-      // The tool read the full note (not a snippet) — recordRetrieved, the "full text" tier,
-      // matching how fetchPage/libraryDocs record a page it actually read in full.
-      for (const n of result.notes) ledger.recordRetrieved(n.url)
+
+      // Each result was read in full (a note body, or an archived bookmark's content) — not a
+      // snippet — so recordRetrieved, the "full text" tier, matching how fetchPage/libraryDocs
+      // record a page they actually read. For a bookmark the citable URL is its Karakeep preview
+      // URL; the original page URL is only named inside the excerpt and is never recorded, so an
+      // archived copy can never vouch for the live original.
+      for (const r of results) ledger.recordRetrieved(r.url)
       return {
         query,
-        results: result.notes,
+        results,
         // Measured 2026-09-23: a job asked which model the gateway runs "today" and reported a
         // note's 2026-09-07 answer at high confidence — the note had simply not been updated
         // after the 2026-09-13 switch. A note is the owner's record AS OF its date, never proof
-        // of the present.
-        note: "These are the owner's own prior notes, each true as of its `updated` date — not proof of the present. For anything current (a version, a config, what runs 'today'), state the note's date and confirm it against a primary source (githubFile, packageInfo, the live page) before asserting it; if you cannot, say the note may be superseded. Cite the `url` field exactly as given — never a file path.",
+        // of the present; a saved bookmark is the same (its excerpt is of the archived copy).
+        note: "These are the owner's own prior notes and saved bookmarks, each true as of its `updated` date — not proof of the present. For anything current (a version, a config, what runs 'today'), state the date and confirm it against a primary source (githubFile, packageInfo, the live page) before asserting it; if you cannot, say it may be superseded. Cite the `url` field exactly as given — never a file path, note title or the original page URL shown inside a bookmark's excerpt.",
       }
     },
   }) as AnyTool

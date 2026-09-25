@@ -1,7 +1,7 @@
 // Spawn+fs wrapper for the `brainNotes` tool — ripgrep does candidate discovery, this module
-// enforces the scope boundary (realpath under `${BRAIN_DIR}/wiki/`, no dotfiles/dirs, no
-// symlink escape) and reads the winning files. Ranking/excerpting itself is pure (brain.ts),
-// kept env/fs-free the same way pdf-extract.ts/youtube-captions.ts are relative to
+// enforces the scope boundary (realpath under one of the vault roots, no dotfiles/dirs, no
+// symlink escape, no journal) and reads the winning files. Ranking/excerpting itself is pure
+// (brain.ts), kept env/fs-free the same way pdf-extract.ts/youtube-captions.ts are relative to
 // pdf.ts/ytdlp.ts.
 //
 // Contract shared with every tool builder in this file's callers (tools.ts): NEVER throw — an
@@ -12,8 +12,15 @@ import { isAbsolute, join, relative } from 'node:path'
 import { env } from '../env.js'
 import { log } from '../lib/log.js'
 import { readCappedText } from './pdf-extract.js'
-import { rankAndBuildNotes, parseQueryTerms, buildCorpusStats } from './brain.js'
+import { rankAndBuildNotes, parseQueryTerms, buildCorpusStats, isJournalPath } from './brain.js'
 import type { BrainCandidate, BrainNoteResult, CorpusStats } from './brain.js'
+
+// The vault trees brainNotes may read. Owner decision 2026-09-25: wiki, projects, areas and
+// inbox are in scope (health and finance notes included); journals never. Anything else under
+// BRAIN_DIR — vault-root files (log.md, voice.md, index.md, AGENTS.md), docs/, dot-dirs — is
+// not a root, so it is never searched, listed or read. A root that does not exist (Inbox/ may
+// be absent) is simply skipped.
+const BRAIN_ROOTS = ['wiki', 'Projects', 'Areas', 'Inbox'] as const
 
 // A hang guard, not a tuning default — ripgrep over a few hundred small markdown files should
 // resolve in well under a second; this only bounds a pathological case (a vault grown huge, a
@@ -115,39 +122,55 @@ async function spawnRg(args: string[], jobId: string, context: string): Promise<
   }
 }
 
-async function runRg(terms: string[], wikiDirReal: string, jobId: string): Promise<RgResult> {
+async function runRg(terms: string[], rootReals: readonly string[], jobId: string): Promise<RgResult> {
   const args = ['--files-with-matches', '--ignore-case', '--fixed-strings', '--glob', '*.md']
   for (const term of terms) args.push('-e', term)
-  args.push(wikiDirReal)
+  args.push(...rootReals)
   return spawnRg(args, jobId, 'search')
 }
 
-/** Lists every in-scope .md path under the wiki root — the candidate pool buildCorpusStats
+/** Lists every in-scope .md path under the roots — the candidate pool buildCorpusStats
  * tokenizes into whole-vault df numbers, see getCorpusStats below. */
-async function listAllWikiFiles(wikiDirReal: string, jobId: string): Promise<RgResult> {
-  return spawnRg(['--files', '--glob', '*.md', wikiDirReal], jobId, 'corpus listing')
+async function listAllFiles(rootReals: readonly string[], jobId: string): Promise<RgResult> {
+  if (rootReals.length === 0) return { ok: true, paths: [] }
+  return spawnRg(['--files', '--glob', '*.md', ...rootReals], jobId, 'corpus listing')
 }
 
-/** True when every path segment of `relPath` is a plain name — no dotfile, no dotdir, no empty
- * segment. Applied to the path already resolved relative to the wiki root, so this also catches
- * a symlink target that resolves BACK into a dotdir even if the original candidate's own path
- * did not mention one. */
+/** True when every path segment is a plain name — no dotfile, no dotdir, no empty segment.
+ * Applied to the path already resolved relative to a root, so this also catches a symlink
+ * target that resolves BACK into a dotdir even if the original candidate's own path did not
+ * mention one. */
 function hasDotSegment(relPath: string): boolean {
   return relPath.split('/').some((seg) => seg.length === 0 || seg.startsWith('.'))
 }
 
+/** Resolves each configured vault root to its realpath, skipping any that do not exist (a
+ * missing Inbox/ is normal). Returns [] when none of them is readable. */
+async function resolveRoots(brainDirReal: string): Promise<string[]> {
+  const roots: string[] = []
+  for (const name of BRAIN_ROOTS) {
+    try {
+      roots.push(await realpath(join(brainDirReal, name)))
+    } catch {
+      // Out of scope, not an error — this root is simply absent.
+    }
+  }
+  return roots
+}
+
 /**
- * Resolves each candidate path to its realpath and keeps only the ones that land under
- * `wikiDirReal` with no dotfile/dotdir segment — the hard scope boundary from the module header.
- * A note whose target escapes (symlink pointing outside the wiki tree — a real case in this
- * vault: `wiki/engineering/dotfiles-architecture.md` -> `../../../dotfiles/docs/architecture.md`,
- * which resolves OUTSIDE `${BRAIN_DIR}/wiki` entirely) is silently dropped, not reported as an
- * error — from the caller's perspective it simply did not match.
+ * Resolves each candidate path to its realpath and keeps only the ones that land under ONE of
+ * `rootReals` with no dotfile/dotdir segment and without a journal path — the hard scope
+ * boundary from the module header. A note whose target escapes (symlink pointing outside every
+ * root — a real case in this vault: `wiki/engineering/dotfiles-architecture.md` ->
+ * `../../../dotfiles/docs/architecture.md`, which resolves OUTSIDE `${BRAIN_DIR}` entirely) is
+ * silently dropped, not reported as an error — from the caller's perspective it simply did not
+ * match.
  */
 async function readScopedCandidates(
   paths: string[],
   brainDirReal: string,
-  wikiDirReal: string,
+  rootReals: readonly string[],
 ): Promise<BrainCandidate[]> {
   const candidates: BrainCandidate[] = []
   for (const p of paths) {
@@ -157,8 +180,19 @@ async function readScopedCandidates(
     } catch {
       continue
     }
-    const relToWiki = relative(wikiDirReal, real)
-    if (relToWiki.startsWith('..') || isAbsolute(relToWiki) || hasDotSegment(relToWiki)) continue
+
+    const underRoot = rootReals.some((root) => {
+      const rel = relative(root, real)
+      return !rel.startsWith('..') && !isAbsolute(rel) && !hasDotSegment(rel)
+    })
+    if (!underRoot) continue
+
+    // relPath is BRAIN_DIR-relative (carries the "wiki/"/"Projects/"/"Areas/"/"Inbox/" prefix),
+    // not root-relative — this is what the vault reader's own slug is built from (brain.ts's
+    // buildNoteUrl doc comment). Journal filtering is path-only here so it can also run over the
+    // whole corpus listing; the frontmatter rules live in rankAndBuildNotes.
+    const relPath = relative(brainDirReal, real)
+    if (isJournalPath(relPath)) continue
 
     const info = await stat(real).catch(() => null)
     if (!info || !info.isFile() || info.size > MAX_NOTE_BYTES) continue
@@ -166,48 +200,47 @@ async function readScopedCandidates(
     const content = await readFile(real, 'utf-8').catch(() => null)
     if (content === null) continue
 
-    // relPath is BRAIN_DIR-relative (carries the "wiki/" prefix), not wiki-relative — this is
-    // what the vault reader's own slug is built from (brain.ts's buildNoteUrl doc comment).
-    candidates.push({ relPath: relative(brainDirReal, real), content })
+    candidates.push({ relPath, content })
   }
   return candidates
 }
 
 // Cached in-process, not per-request: the vault syncs to the mini every 5 minutes, so rebuilding
-// the whole-corpus df table (buildCorpusStats over ~203 notes, ~1.9 MB) on every single
-// brainNotes call would be repeated work the vault's own update cadence never asks for. Keyed on
-// wikiDirReal so a config change mid-process (not expected, but env.ts is read once at boot
-// either way) can't serve a stale corpus for the wrong path.
+// the whole-corpus df table (buildCorpusStats over every in-scope note across all roots) on every
+// single brainNotes call would be repeated work the vault's own update cadence never asks for.
+// Keyed on the resolved roots so a config change mid-process (not expected, but env.ts is read
+// once at boot either way) can't serve a stale corpus for the wrong path.
 const CORPUS_CACHE_TTL_MS = 5 * 60 * 1000
-let corpusCache: { stats: CorpusStats; wikiDirReal: string; builtAt: number } | null = null
+let corpusCache: { stats: CorpusStats; rootsKey: string; builtAt: number } | null = null
 
 /** Returns the cached whole-corpus stats, rebuilding them (list + read + tokenize every in-scope
- * note) when the cache is missing, stale, or was built for a different wiki root. On a listing
- * failure (timeout/spawn/rg error — already logged by spawnRg), degrades to treating `candidates`
- * (this call's own search results) as the corpus rather than returning an empty one — worse than
- * a real whole-vault corpus, but strictly better than idf=0-for-everything, and matches this
- * module's "never throw, degrade gracefully" contract. That fallback is NOT cached — the next
- * call retries the real listing. */
+ * note across all roots) when the cache is missing, stale, or was built for a different root
+ * set. On a listing failure (timeout/spawn/rg error — already logged by spawnRg), degrades to
+ * treating `candidates` (this call's own search results) as the corpus rather than returning an
+ * empty one — worse than a real whole-vault corpus, but strictly better than
+ * idf=0-for-everything, and matches this module's "never throw, degrade gracefully" contract.
+ * That fallback is NOT cached — the next call retries the real listing. */
 async function getCorpusStats(args: {
   brainDirReal: string
-  wikiDirReal: string
+  rootReals: readonly string[]
   jobId: string
   fallbackCandidates: BrainCandidate[]
 }): Promise<CorpusStats> {
-  const { brainDirReal, wikiDirReal, jobId, fallbackCandidates } = args
+  const { brainDirReal, rootReals, jobId, fallbackCandidates } = args
+  const rootsKey = rootReals.join('\u0000')
   const now = Date.now()
-  if (corpusCache && corpusCache.wikiDirReal === wikiDirReal && now - corpusCache.builtAt < CORPUS_CACHE_TTL_MS) {
+  if (corpusCache && corpusCache.rootsKey === rootsKey && now - corpusCache.builtAt < CORPUS_CACHE_TTL_MS) {
     return corpusCache.stats
   }
 
-  const listing = await listAllWikiFiles(wikiDirReal, jobId)
+  const listing = await listAllFiles(rootReals, jobId)
   if (!listing.ok) {
     return buildCorpusStats(fallbackCandidates)
   }
 
-  const notes = await readScopedCandidates(listing.paths, brainDirReal, wikiDirReal)
+  const notes = await readScopedCandidates(listing.paths, brainDirReal, rootReals)
   const stats = buildCorpusStats(notes)
-  corpusCache = { stats, wikiDirReal, builtAt: now }
+  corpusCache = { stats, rootsKey, builtAt: now }
   return stats
 }
 
@@ -222,16 +255,20 @@ export async function searchBrain(query: string, jobId = '-'): Promise<BrainSear
   }
 
   let brainDirReal: string
-  let wikiDirReal: string
   try {
     brainDirReal = await realpath(env.BRAIN_DIR)
-    wikiDirReal = await realpath(join(brainDirReal, 'wiki'))
   } catch (err) {
-    log('tool.brainNotes', { jobId, ok: false, error: `BRAIN_DIR/wiki unreadable: ${String(err)}` })
+    log('tool.brainNotes', { jobId, ok: false, error: `BRAIN_DIR unreadable: ${String(err)}` })
     return { ok: false, error: 'brain vault is unreadable on this host' }
   }
 
-  const rg = await runRg(terms, wikiDirReal, jobId)
+  const rootReals = await resolveRoots(brainDirReal)
+  if (rootReals.length === 0) {
+    log('tool.brainNotes', { jobId, ok: false, error: 'no readable vault roots' })
+    return { ok: false, error: 'brain vault has no readable roots on this host' }
+  }
+
+  const rg = await runRg(terms, rootReals, jobId)
   if (!rg.ok) {
     return { ok: false, error: `brainNotes search failed: ${rg.error ?? 'unknown error'}` }
   }
@@ -240,8 +277,8 @@ export async function searchBrain(query: string, jobId = '-'): Promise<BrainSear
     return { ok: true, notes: [] }
   }
 
-  const candidates = await readScopedCandidates(rg.paths, brainDirReal, wikiDirReal)
-  const corpus = await getCorpusStats({ brainDirReal, wikiDirReal, jobId, fallbackCandidates: candidates })
+  const candidates = await readScopedCandidates(rg.paths, brainDirReal, rootReals)
+  const corpus = await getCorpusStats({ brainDirReal, rootReals, jobId, fallbackCandidates: candidates })
   // `notes` is now ONLY strong matches (rankAndBuildNotes drops everything else) — `strong`,
   // not `results`, is the honest field name for what this count means.
   const notes = rankAndBuildNotes({ candidates, terms, baseUrl: env.BRAIN_BASE_URL, corpus })
