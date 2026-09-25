@@ -230,27 +230,95 @@ function subjectTokens(entry: { topic: string; url: string | null }): Set<string
   return distinctiveTokens(`${entry.topic} ${path}`)
 }
 
+// ── 2026-09-25: the cap has to find the DOCUMENT, not the vocabulary ─────────────────
+//
+// The coverage ratio above still capped 61 of 88 retrieved citations in one deep Wild Rift
+// job (and 8-23 in four others) because the subjects there are SHORT — "Bilibili build/rune
+// guide videos for Patch 7.3" — and made of the report's own domain vocabulary: any claim
+// saying "build" and "patch" covered it. And a subject with a URL capped claims that merely
+// shared its topic words while citing a different, retrieved page — "Luden's Echo" claims
+// from Riot's patch notes, capped by an unread Liquipedia page about Luden's Echo. Three
+// rules, measured against the five 2026-09-25 jobs (61→5, 19→6, 9→1, 8→0, 22→11), with
+// every remaining cap one that names the unread document or cites a mirror of it:
+//
+// 1. Vocabulary is not a subject. A token found in ≥20% of the report's claims and
+//    unverified subjects (at least 3 of them) is the report's domain, not a document's name,
+//    and does not count toward a match. Tiny reports (every unit fixture) have no such token.
+// 2. A subject WITH a URL is a document. A claim rests on it only when (a) its cited URL is
+//    another copy of that document — the path's distinctive tokens all reappear in it (a
+//    mirror, `r.jina.ai/<url>`, an `?action=raw` variant: issue #4's own incident), or (b) it
+//    cites the same host or names the site, AND names part of the document's path its own
+//    cited page does not cover. A retrieved page on the same host about a different subject
+//    is its own evidence (the WildRiftFire Hecarim guide is not the unread Rakan guide).
+// 3. A subject WITHOUT a URL is a topic, not a document, so it needs a majority of its
+//    distinctive tokens, not a third.
+type Subject = { tokens: Set<string>; url: string | null }
+
+function hostOf(url: string): string {
+  try {
+    return new URL(url).hostname.replace(/^www\./, '')
+  } catch {
+    return ''
+  }
+}
+
+// The site's own name as prose writes it: `riftgg` for www.riftgg.app, `liquipedia` for
+// liquipedia.net. Approximate (no public-suffix list) — it only ever ADDS a way to match.
+function siteLabel(url: string): string {
+  const labels = hostOf(url).split('.')
+  return labels.length >= 2 ? (labels[labels.length - 2] ?? '') : ''
+}
+
+function pathTokens(url: string): Set<string> {
+  return distinctiveTokens(url.replace(/^[a-z][a-z0-9+.-]*:\/\/[^/]*\/?/, ''))
+}
+
+function countShared(subject: ReadonlySet<string>, words: ReadonlySet<string>): number {
+  let shared = 0
+  for (const token of subject) if (words.has(token)) shared++
+  return shared
+}
+
+function restsOn(claim: Finding, words: ReadonlySet<string>, subject: Subject, isVocabulary: (t: string) => boolean): boolean {
+  const tokens = new Set([...subject.tokens].filter((t) => !isVocabulary(t)))
+  if (tokens.size < 2) return false
+  const shared = countShared(tokens, words)
+  if (!subject.url) return shared >= Math.max(2, Math.ceil(tokens.size / 2))
+  if (shared < Math.max(2, Math.ceil(tokens.size / 3))) return false
+
+  const docPath = new Set([...pathTokens(subject.url)].filter((t) => !isVocabulary(t)))
+  const citedPath = pathTokens(claim.url)
+  const citedTokens = distinctiveTokens(claim.url)
+  const isCopy =
+    docPath.size > 0 &&
+    normalizeUrl(claim.url) !== normalizeUrl(subject.url) &&
+    [...docPath].every((t) => citedTokens.has(t))
+  if (isCopy) return true
+  const label = siteLabel(subject.url)
+  const anchored = hostOf(claim.url) === hostOf(subject.url) || (label.length >= 3 && words.has(label))
+  return anchored && [...docPath].some((t) => words.has(t) && !citedPath.has(t))
+}
+
 export function degradeClaimsOnUnverifiedSources(
   claims: readonly Finding[],
   unverified: ReadonlyArray<{ topic: string; url: string | null }>,
 ): { kept: Finding[]; degraded: ReadonlySet<number> } {
-  const subjects = unverified.map(subjectTokens).filter((s) => s.size >= 2)
-  if (subjects.length === 0) return { kept: [...claims], degraded: new Set() }
+  const subjects: Subject[] = unverified.map((entry) => ({ tokens: subjectTokens(entry), url: entry.url }))
+  if (subjects.every((s) => s.tokens.size < 2)) return { kept: [...claims], degraded: new Set() }
+
+  const claimWords = claims.map((claim) => distinctiveTokens(claim.claim))
+  const documentFrequency = new Map<string, number>()
+  for (const doc of [...claimWords, ...subjects.map((s) => s.tokens)]) {
+    for (const token of doc) documentFrequency.set(token, (documentFrequency.get(token) ?? 0) + 1)
+  }
+  const vocabularyAt = Math.max(3, Math.ceil((claims.length + subjects.length) * 0.2))
+  const isVocabulary = (token: string): boolean => (documentFrequency.get(token) ?? 0) >= vocabularyAt
 
   const degraded = new Set<number>()
   const kept = claims.map((claim, index) => {
     if (claim.confidence === 'low') return claim
-    const words = distinctiveTokens(claim.claim)
-    const rests = subjects.some((subject) => {
-      // A subject is matched only when the claim covers it, not merely overlaps it: the
-      // required share scales with the subject's size (a flat floor again once the subject
-      // is short). See the comment above.
-      const needed = Math.max(2, Math.ceil(subject.size / 3))
-      let shared = 0
-      for (const token of subject) if (words.has(token)) shared++
-      return shared >= needed
-    })
-    if (!rests) return claim
+    const words = claimWords[index] ?? new Set<string>()
+    if (!subjects.some((subject) => restsOn(claim, words, subject, isVocabulary))) return claim
     degraded.add(index)
     return { ...claim, confidence: 'low' as const }
   })
@@ -360,10 +428,13 @@ export function groundReport(
   const cited = new Set(kept.map((c) => normalizeUrl(c.url)))
   const unverified = dedupeUnverified([...submitted.unverified, ...dropped]).map((entry) => {
     if (!entry.url || !cited.has(normalizeUrl(entry.url))) return entry
+    // Say what the ledger actually holds: "retrieved" was asserted for snippet- and 404-tier
+    // pages too, which read as a contradiction next to a medium-capped citation.
+    const held = ledger.tierOf(entry.url) === 'retrieved' ? 'WAS retrieved' : 'was seen (search snippet or origin answer)'
     return {
       ...entry,
       url: null,
-      reason: `${entry.reason} (The page itself WAS retrieved elsewhere in this run and does support citations — this entry records an unverified topic, not an unusable source.)`,
+      reason: `${entry.reason} (The page itself ${held} elsewhere in this run and backs citations — this entry records an unverified topic, not an unusable source.)`,
     }
   })
 

@@ -645,12 +645,22 @@ describe('groundReport — the job boundary', () => {
       expect(degraded.size).toBe(0)
     })
 
-    it('matches subject tokens from the URL path, not the host', () => {
+    it('matches subject tokens from the URL path, not the host — when the claim names the site', () => {
+      const { kept } = degradeClaimsOnUnverifiedSources(
+        [{ claim: "the wiki's Module:Items is stale and unusable", url: 'https://other.example/x', confidence: 'high' }],
+        [{ topic: 'bulk delete docs', url: 'https://wiki.example/Module:Items?action=raw' }],
+      )
+      expect(kept[0]?.confidence).toBe('low')
+    })
+
+    it('does not cap a claim citing an unrelated retrieved page that only shares the document name (2026-09-25)', () => {
+      // Luden's Echo claims from Riot's patch notes were capped by an unread Liquipedia page
+      // about Luden's Echo: the claim is about the item, not about the unread document.
       const { kept } = degradeClaimsOnUnverifiedSources(
         [{ claim: 'Module:Items is stale and unusable', url: 'https://other.example/x', confidence: 'high' }],
         [{ topic: 'bulk delete docs', url: 'https://wiki.example/Module:Items?action=raw' }],
       )
-      expect(kept[0]?.confidence).toBe('low')
+      expect(kept[0]?.confidence).toBe('high')
     })
 
     it('does NOT degrade a claim about a document the ledger says was retrieved anyway (issue #1 direction)', () => {
@@ -899,5 +909,58 @@ describe('groundReport — ledger evidence outranks the model\'s own bookkeeping
       ledger,
     )
     expect(report.citations).toEqual([])
+  })
+})
+
+// ── Live 2026-09-25 Wild Rift jobs: 61/88, 19/72, 9/20, 8/15, 22/95 citations capped ────
+// Short `unverified` subjects built from the report's own vocabulary ("build", "patch",
+// "rune"), and URL subjects capping claims that cite a different, retrieved page.
+describe('degradeClaimsOnUnverifiedSources — the cap has to find the document (2026-09-25)', () => {
+  const claim = (text: string, url: string) => ({ claim: text, url, confidence: 'high' as const })
+  // Enough claims sharing the domain vocabulary for it to count as vocabulary (≥20%, ≥3).
+  const vocabulary = [
+    claim('wrchina.gg shows the Rammus build for patch 7.3 with Sunfire first', 'https://wrchina.gg/c/rammus/'),
+    claim('wrchina.gg shows the Nunu build for patch 7.3 with Frozen Heart', 'https://wrchina.gg/c/nunu-willump/'),
+    claim('wrchina.gg shows the Galio build and rune page for patch 7.3', 'https://wrchina.gg/c/galio/'),
+    claim('WildRiftFire patch notes list the 7.3 rune removals', 'https://wildriftfire.com/patch-notes'),
+  ]
+
+  it('domain vocabulary does not make a URL-less topic match', () => {
+    const { degraded } = degradeClaimsOnUnverifiedSources(vocabulary, [
+      { topic: 'Bilibili build/rune guide videos for Patch 7.3', url: null },
+    ])
+    expect(degraded.size).toBe(0)
+  })
+
+  it("a claim about the item, citing Riot, is not capped by an unread wiki page about the item", () => {
+    const { kept } = degradeClaimsOnUnverifiedSources(
+      [claim("In 7.3 Luden's Echo base damage went 140 -> 75", 'https://wildrift.leagueoflegends.com/en-us/news/game-updates/patch-7-3-notes/')],
+      [{ topic: "Liquipedia Wild Rift Luden's Echo data", url: "https://liquipedia.net/wildrift/Luden's_Echo" }],
+    )
+    expect(kept[0]?.confidence).toBe('high')
+  })
+
+  it('a retrieved page on the same host about another subject keeps its confidence', () => {
+    const { kept } = degradeClaimsOnUnverifiedSources(
+      [claim("WildRiftFire's Hecarim guide recommends Trinity Force and Black Cleaver", 'https://www.wildriftfire.com/guide/hecarim')],
+      [{ topic: 'Rakan 7.3 recommended rune page', url: 'https://www.wildriftfire.com/guide/rakan' }],
+    )
+    expect(kept[0]?.confidence).toBe('high')
+  })
+
+  it('still caps a claim citing a proxy copy of the unread document', () => {
+    const { kept } = degradeClaimsOnUnverifiedSources(
+      [claim('wrbase.com/build/vex renders server-side HTML chrome only', 'https://r.jina.ai/https://wrbase.com/build/vex/')],
+      [{ topic: 'wrbase.com raw HTML and JS bundle', url: 'https://wrbase.com/build/vex/' }],
+    )
+    expect(kept[0]?.confidence).toBe('low')
+  })
+
+  it('still caps a same-site claim that names the unread page', () => {
+    const { kept } = degradeClaimsOnUnverifiedSources(
+      [claim("RiftGG's curated Nautilus build page is creator-authored and stale", 'https://www.riftgg.app/en/tier-list/champions')],
+      [{ topic: 'RiftGG curated build page for Nautilus', url: 'https://www.riftgg.app/en/champions/nautilus/build' }],
+    )
+    expect(kept[0]?.confidence).toBe('low')
   })
 })
