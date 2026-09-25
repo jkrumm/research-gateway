@@ -3,6 +3,7 @@ import { z } from 'zod'
 import { JobLiveFields, ResearchInput, ResearchReport } from '../agent/schema.js'
 import { admission, cancelJob, createJob, findActiveJobByIdempotencyKey, getJob, liveFields } from '../lib/job-store.js'
 import { startResearchJob } from '../lib/run-job.js'
+import { inputWarnings } from '../lib/input-lint.js'
 import { log } from '../lib/log.js'
 import { env } from '../env.js'
 
@@ -55,7 +56,10 @@ export const researchRoutes = new Elysia({ prefix: '/research' })
       // Fire-and-forget: run the agent in the background without blocking the response.
       startResearchJob(job)
 
-      return { jobId: job.jobId, status: job.status }
+      const warnings = inputWarnings(body)
+      if (warnings.length === 0) return { jobId: job.jobId, status: job.status }
+      log('job.input_warning', { jobId: job.jobId, warnings })
+      return { jobId: job.jobId, status: job.status, warnings }
     },
     {
       body: ResearchSubmit,
@@ -63,6 +67,7 @@ export const researchRoutes = new Elysia({ prefix: '/research' })
         200: z.object({
           jobId: z.string(),
           status: z.string(),
+          warnings: z.array(z.string()).optional(),
         }),
         429: z.object({ error: z.string() }),
         503: z.object({ error: z.string() }),

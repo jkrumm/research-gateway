@@ -386,3 +386,15 @@ describe('liveStatusLine', () => {
     expect(liveStatusLine({ status: 'running', result: null, error: null }, now)).toBe('status: running')
   })
 })
+
+describe('run — submit warnings', () => {
+  it('prints a server input warning to stderr with the cancel command', async () => {
+    const fetchFn: FetchLike = async () =>
+      jsonResponse({ jobId: 'job-30', status: 'queued', warnings: ['`context` is an unexpanded shell variable'] })
+    const { io, out, err } = makeIo()
+    const code = await run(['q about zod', '--context', '$CTX', '--no-wait'], makeCtx({ fetchFn }), io)
+    expect(code).toBe(0)
+    expect(out.join('')).toBe('job-30\n')
+    expect(err.join('')).toContain('warning: `context` is an unexpanded shell variable (research cancel job-30)')
+  })
+})

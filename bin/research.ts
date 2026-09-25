@@ -370,6 +370,7 @@ export interface JobView {
 interface SubmitResult {
   jobId: string
   status: JobStatus
+  warnings?: string[]
 }
 
 function refusalMessage(r: HttpResponse): string {
@@ -390,9 +391,10 @@ async function submitJob(
     body: JSON.stringify(body),
   })
   if (r.status === 200) {
-    const data = r.data as { jobId?: unknown; status?: unknown }
+    const data = r.data as { jobId?: unknown; status?: unknown; warnings?: unknown }
     if (typeof data.jobId === 'string' && typeof data.status === 'string') {
-      return { jobId: data.jobId, status: data.status as JobStatus }
+      const warnings = Array.isArray(data.warnings) ? data.warnings.map(String) : []
+      return { jobId: data.jobId, status: data.status as JobStatus, ...(warnings.length > 0 ? { warnings } : {}) }
     }
     throw new CliServerError('submit succeeded but the response carried no jobId')
   }
@@ -557,7 +559,8 @@ async function execute(
         ...(contextText !== undefined ? { context: contextText } : {}),
         idempotencyKey,
       })
-      const { jobId } = await submitWithRetry(ctx, io, base, token, body)
+      const { jobId, warnings } = await submitWithRetry(ctx, io, base, token, body)
+      for (const warning of warnings ?? []) io.err(`research: warning: ${warning} (research cancel ${jobId})\n`)
       if (options.noWait) {
         if (options.json) io.out(`${JSON.stringify({ jobId }, null, 2)}\n`)
         else io.out(`${jobId}\n`)

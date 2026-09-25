@@ -13,6 +13,7 @@ import {
 } from '../lib/job-store.js'
 import { POLL_INTERVAL_MS, shouldKeepWaiting, waitDeadline } from '../lib/wait.js'
 import { startResearchJob } from '../lib/run-job.js'
+import { inputWarnings } from '../lib/input-lint.js'
 import { env } from '../env.js'
 import { log } from '../lib/log.js'
 import type { CallToolResult } from '@modelcontextprotocol/server'
@@ -171,10 +172,16 @@ function buildMcpServer(): McpServer {
       })
       startResearchJob(job)
 
+      const warnings = inputWarnings(args)
+      if (warnings.length > 0) log('job.input_warning', { jobId: job.jobId, warnings })
       const handle: z.infer<typeof JobHandle> = {
         jobId: job.jobId,
         status: job.status,
-        message: `Submitted as background research job. Call job_wait({ jobId: "${job.jobId}" }) once to block until it finishes and get the report, or job_status({ jobId: "${job.jobId}" }) for a one-shot check. This call did NOT return the report — do not treat it as the answer.`,
+        message:
+          warnings.length > 0
+            ? `Submitted, but the input looks wrong: ${warnings.join(' ')} To stop it: job_cancel({ jobId: "${job.jobId}" }).`
+            : `Submitted as background research job. Call job_wait({ jobId: "${job.jobId}" }) once to block until it finishes and get the report, or job_status({ jobId: "${job.jobId}" }) for a one-shot check. This call did NOT return the report — do not treat it as the answer.`,
+        ...(warnings.length > 0 ? { warnings } : {}),
       }
       return { content: [{ type: 'text', text: JSON.stringify(handle) }], structuredContent: handle }
     },

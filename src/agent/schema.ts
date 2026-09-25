@@ -252,6 +252,10 @@ export const JobHandle = z.object({
     'Initial status — "queued" (waiting behind the concurrency limit) or "running".',
   ),
   message: z.string().describe('Next step for the caller.'),
+  warnings: z
+    .array(z.string())
+    .optional()
+    .describe('Present when an input looks like a client mistake (unexpanded shell syntax, CLI @file syntax). The job was still submitted — cancel it if the warning is right.'),
 })
 export type JobHandle = z.infer<typeof JobHandle>
 
