@@ -74,6 +74,24 @@ export function buildKarakeepSearchUrl(baseUrl: string, query: string, limit: nu
   return `${stripTrailingSlash(baseUrl)}/api/v1/bookmarks/search?${params.toString()}`
 }
 
+/** The searches to issue for one brainNotes query. Karakeep's full-text search requires EVERY
+ * word to match, so a multi-word worker query ("Bun runtime Mac mini hosting") almost never hits
+ * an 18-bookmark library, while the single terms do. Search the full query plus up to three of
+ * its distinctive terms (longest first — the most specific), union the hits by id, and let
+ * `rankAndBuildBookmarks` decide relevance locally. Deduped, order preserved. */
+export function karakeepSearchQueries(query: string, terms: string[], maxTerms = 3): string[] {
+  const byLength = [...terms].sort((a, b) => b.length - a.length).slice(0, maxTerms)
+  const seen = new Set<string>()
+  const out: string[] = []
+  for (const q of [query.trim(), ...byLength]) {
+    const key = q.toLowerCase()
+    if (!q || seen.has(key)) continue
+    seen.add(key)
+    out.push(q)
+  }
+  return out
+}
+
 /** `{base}/dashboard/preview/{id}` — the human-openable Karakeep URL, and the only URL recorded
  * on the ledger. */
 export function buildKarakeepPreviewUrl(baseUrl: string, id: string): string {
@@ -238,7 +256,15 @@ export function rankAndBuildBookmarks(args: {
         countTermMatches(tagText, terms) * 2
       return { bookmark, resolvedTitle: resolveBookmarkTitle(title, text, originalUrl), originalUrl, text, score }
     })
-    .filter((entry) => entry.text.length > 0 && entry.score > 0)
+    // Per-term searches (karakeepSearchQueries) widen recall, so relevance is decided here: with
+    // two or more query terms, a bookmark must match at least two DISTINCT terms — one incidental
+    // mention of "bun" in an unrelated page is not a hit.
+    .filter((entry) => {
+      if (entry.text.length === 0 || entry.score === 0) return false
+      if (terms.length < 2) return true
+      const haystack = `${entry.resolvedTitle} ${entry.text} ${bookmarkTagNames(entry.bookmark).join(' ')}`
+      return terms.filter((term) => countTermMatches(haystack, [term]) > 0).length >= 2
+    })
     .sort((a, b) => b.score - a.score)
     .slice(0, maxResults)
 

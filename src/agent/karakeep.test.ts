@@ -6,6 +6,7 @@ import {
   parseHighlightsResponse,
   htmlToText,
   rankAndBuildBookmarks,
+  karakeepSearchQueries,
 } from './karakeep.js'
 import type { KarakeepBookmarkInput } from './karakeep.js'
 
@@ -97,6 +98,21 @@ describe('htmlToText', () => {
   })
 })
 
+describe('karakeepSearchQueries', () => {
+  it('searches the full query plus the three longest terms, deduped case-insensitively', () => {
+    expect(karakeepSearchQueries('Bun runtime Mac mini hosting', ['bun', 'runtime', 'mac', 'mini', 'hosting'])).toEqual([
+      'Bun runtime Mac mini hosting',
+      'runtime',
+      'hosting',
+      'mini',
+    ])
+  })
+
+  it('does not repeat a single-term query', () => {
+    expect(karakeepSearchQueries('Bun', ['bun'])).toEqual(['Bun'])
+  })
+})
+
 describe('rankAndBuildBookmarks', () => {
   const terms = ['deepseek']
 
@@ -166,5 +182,17 @@ describe('rankAndBuildBookmarks', () => {
   it('carries the modified date through', () => {
     const results = rankAndBuildBookmarks({ bookmarks: [bookmark({ id: 'bm_link' })], terms, baseUrl: BASE })
     expect(results[0]?.updated).toBe('2026-09-21T10:00:00.000Z')
+  })
+
+  it('with several query terms, drops a bookmark that mentions only one of them', () => {
+    const results = rankAndBuildBookmarks({
+      bookmarks: [
+        bookmark({ id: 'incidental', title: 'Omarchy on macOS', content: { htmlContent: '<p>install it with bun</p>' } }),
+        bookmark({ id: 'relevant', title: 'Bun runtime on a Mac mini', content: { htmlContent: '<p>bun runtime notes</p>' } }),
+      ],
+      terms: ['bun', 'runtime', 'mini'],
+      baseUrl: BASE,
+    })
+    expect(results.map((r) => r.id)).toEqual(['relevant'])
   })
 })

@@ -10,6 +10,7 @@ import { env } from '../env.js'
 import { log } from '../lib/log.js'
 import {
   buildKarakeepSearchUrl,
+  karakeepSearchQueries,
   parseBookmarkSearchResponse,
   parseHighlightsResponse,
   rankAndBuildBookmarks,
@@ -62,11 +63,21 @@ export async function searchKarakeep(query: string, terms: string[], jobId = '-'
     return { ok: false, error: 'karakeep is not configured on this host' }
   }
 
-  const searchUrl = buildKarakeepSearchUrl(env.KARAKEEP_URL, query, SEARCH_LIMIT)
-  const res = await getJson(searchUrl, jobId, 'search')
-  if (!res.ok) return { ok: false, error: res.error }
+  const baseUrl = env.KARAKEEP_URL
+  const responses = await Promise.all(
+    karakeepSearchQueries(query, terms).map((q) =>
+      getJson(buildKarakeepSearchUrl(baseUrl, q, SEARCH_LIMIT), jobId, 'search'),
+    ),
+  )
+  const failed = responses.find((r) => !r.ok)
+  if (failed && !failed.ok && responses.every((r) => !r.ok)) return { ok: false, error: failed.error }
 
-  const raw = parseBookmarkSearchResponse(res.data)
+  const byId = new Map<string, ReturnType<typeof parseBookmarkSearchResponse>[number]>()
+  for (const r of responses) {
+    if (!r.ok) continue
+    for (const bookmark of parseBookmarkSearchResponse(r.data)) byId.set(bookmark.id, bookmark)
+  }
+  const raw = [...byId.values()]
   const ranked = rankAndBuildBookmarks({ bookmarks: raw, terms, baseUrl: env.KARAKEEP_URL, maxResults: MAX_RESULTS })
 
   const highlightsById = new Map<string, string[]>()
