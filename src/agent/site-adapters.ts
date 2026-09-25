@@ -50,7 +50,7 @@
 // Dependency-free by design (no env/log/fetch import) so it stays unit-testable — same
 // convention as ledger.ts / extract.ts / cost.ts.
 
-import { extractRedditThread, type MinimalDocument } from './extract-reddit.js'
+import { extractRedditThread, extractRedlibThread, type MinimalDocument } from './extract-reddit.js'
 import { canonicalYoutubeWatchUrl } from './youtube.js'
 
 export interface SiteAdapter {
@@ -98,11 +98,15 @@ const youtubeAdapter: SiteAdapter = {
 
 // Keyed by lowercase host of the ORIGINAL url.
 const ADAPTERS: Record<string, SiteAdapter> = {
-  'www.reddit.com': { rewriteHost: 'old.reddit.com', extract: extractRedditThread },
-  'reddit.com': { rewriteHost: 'old.reddit.com', extract: extractRedditThread },
-  // old.reddit.com may also be cited directly by a model, in which case there is nothing to
-  // rewrite but the comment-tree extractor still applies.
-  'old.reddit.com': { extract: extractRedditThread },
+  // All Reddit hosts go to the safereddit.com Redlib mirror since 2026-09-25: old.reddit.com
+  // answers logged-out requests with a 302 to /login, so the old.reddit rewrite below this
+  // header's measurements no longer reads anything (extract-reddit.ts's Redlib section). The
+  // mirror is a third party — if it goes, the chain still falls through to lightpanda, Tavily
+  // Extract and Wayback on the mirror URL, and the original URL stays what the ledger records.
+  'www.reddit.com': { rewriteHost: 'safereddit.com', extract: extractRedlibThread },
+  'reddit.com': { rewriteHost: 'safereddit.com', extract: extractRedlibThread },
+  'old.reddit.com': { rewriteHost: 'safereddit.com', extract: extractRedlibThread },
+  'safereddit.com': { extract: extractRedlibThread },
   'youtube.com': youtubeAdapter,
   'www.youtube.com': youtubeAdapter,
   'm.youtube.com': youtubeAdapter,

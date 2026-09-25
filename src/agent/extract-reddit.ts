@@ -73,3 +73,28 @@ export function extractRedditThread(document: MinimalDocument): string | null {
 
   return [title, ...parts].filter(Boolean).join('\n\n')
 }
+
+// ── Redlib (safereddit.com) ──────────────────────────────────────────────────
+//
+// Measured 2026-09-25: old.reddit.com now answers a logged-out request with a 302 to
+// /login ("reason=lor2"), and www.reddit.com's JSON with 403 — every run reported "Reddit
+// blocked the request". A Redlib mirror serves the same thread server-rendered: safereddit.com
+// returned 200 / 59 KB for a 50-comment r/wildrift thread to this service's bot user agent
+// (a browser user agent gets an Anubis challenge instead). Readability on that page keeps only
+// the submission (1,086 chars) — the same article-vs-thread problem as above — so it gets its
+// own reader. Every comment (nested replies too) is a `.comment` whose FIRST `.comment_body`
+// descendant is its own text, and `.comment_score` sits beside it.
+export function extractRedlibThread(document: MinimalDocument): string | null {
+  const comments: string[] = []
+  for (const comment of Array.from(document.querySelectorAll('.comment'))) {
+    const body = text(comment.querySelector('.comment_body'))
+    if (!body) continue
+    const score = text(comment.querySelector('.comment_score'))
+    comments.push(score ? `[${score}] ${body}` : body)
+  }
+  const title = text(document.querySelector('.post_title'))
+  const post = text(document.querySelector('.post_body'))
+  if (!title && !post && comments.length === 0) return null
+  return [title, post, ...comments].filter(Boolean).join('\n\n')
+}
+

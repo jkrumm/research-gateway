@@ -2,7 +2,7 @@ import { describe, it, expect } from 'bun:test'
 import { parseHTML } from 'linkedom'
 // linkedom is a runtime dependency and needs no env, so the extractor can be exercised
 // against real markup rather than a hand-rolled DOM stub.
-import { extractRedditThread, type MinimalDocument } from './extract-reddit.js'
+import { extractRedditThread, extractRedlibThread, type MinimalDocument } from './extract-reddit.js'
 
 const doc = (html: string): MinimalDocument =>
   parseHTML(`<html><body>${html}</body></html>`).document as never
@@ -69,3 +69,34 @@ describe('extractRedditThread', () => {
     expect(extractRedditThread(html)).toContain('Fallback title')
   })
 })
+
+describe('extractRedlibThread', () => {
+  const doc = (html: string): MinimalDocument =>
+    parseHTML(`<html><body>${html}</body></html>`).document as never
+
+  it('keeps title, submission and every comment with its own score, nested replies included', () => {
+    const html = `
+      <h1 class="post_title">Is Sunfire still core on Rammus in 7.3?</h1>
+      <div class="post_body"><p>Asking after the patch.</p></div>
+      <div class="comment">
+        <div class="comment_left"><p class="comment_score">240</p></div>
+        <details class="comment_right" open>
+          <div class="comment_body"><p>Yes, rush it.</p></div>
+          <blockquote class="replies">
+            <div class="comment">
+              <div class="comment_left"><p class="comment_score">-3</p></div>
+              <details class="comment_right" open><div class="comment_body"><p>Thornmail first.</p></div></details>
+            </div>
+          </blockquote>
+        </details>
+      </div>`
+    expect(extractRedlibThread(doc(html))).toBe(
+      'Is Sunfire still core on Rammus in 7.3?\n\nAsking after the patch.\n\n[240] Yes, rush it.\n\n[-3] Thornmail first.',
+    )
+  })
+
+  it('returns null for a page that is not a Redlib thread', () => {
+    expect(extractRedlibThread(doc('<p>Verifying your browser…</p>'))).toBeNull()
+  })
+})
+
