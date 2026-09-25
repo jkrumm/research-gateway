@@ -1,0 +1,459 @@
+{
+  "startedAt": "2026-09-25T06:54:03.694Z",
+  "finishedAt": "2026-09-25T07:43:25.741Z",
+  "baseUrl": "http://127.0.0.1:7780",
+  "concurrency": 3,
+  "filter": null,
+  "gitSha": "9690ab4",
+  "summary": {
+    "total": 20,
+    "scored": 20,
+    "passed": 20,
+    "completed": 20,
+    "okRuns": 20,
+    "accuracy": 1,
+    "okRate": 1,
+    "totalUsd": 0.41193772399999995,
+    "p50WallMs": 20433
+  },
+  "rows": [
+    {
+      "index": 0,
+      "id": "rfc9110-413",
+      "query": "Which HTTP status code does RFC 9110 assign to 'Content Too Large'?",
+      "depth": "quick",
+      "pass": true,
+      "matched": "413",
+      "live": null,
+      "status": "ok",
+      "grounding": {
+        "pagesRetrieved": 1,
+        "pagesFailed": 0,
+        "citationsKept": 2,
+        "citationsDropped": 0,
+        "confidenceCapped": 0,
+        "citationsDegraded": 0
+      },
+      "costUsd": 0.025285731999999998,
+      "wallMs": 123856,
+      "error": null
+    },
+    {
+      "index": 1,
+      "id": "postgres-default-port",
+      "query": "What is the default TCP port of PostgreSQL?",
+      "depth": "quick",
+      "pass": true,
+      "matched": "5432",
+      "live": null,
+      "status": "ok",
+      "grounding": {
+        "pagesRetrieved": 1,
+        "pagesFailed": 0,
+        "citationsKept": 2,
+        "citationsDropped": 0,
+        "confidenceCapped": 0,
+        "citationsDegraded": 0
+      },
+      "costUsd": 0.007132462,
+      "wallMs": 10039,
+      "error": null
+    },
+    {
+      "index": 2,
+      "id": "redis-default-port",
+      "query": "What is the default TCP port of Redis?",
+      "depth": "quick",
+      "pass": true,
+      "matched": "6379",
+      "live": null,
+      "status": "ok",
+      "grounding": {
+        "pagesRetrieved": 2,
+        "pagesFailed": 0,
+        "citationsKept": 3,
+        "citationsDropped": 0,
+        "confidenceCapped": 0,
+        "citationsDegraded": 0
+      },
+      "costUsd": 0.009736702,
+      "wallMs": 19302,
+      "error": null
+    },
+    {
+      "index": 3,
+      "id": "jwt-rfc",
+      "query": "Which RFC defines JSON Web Token (JWT)?",
+      "depth": "quick",
+      "pass": true,
+      "matched": "RFC 7519",
+      "live": null,
+      "status": "ok",
+      "grounding": {
+        "pagesRetrieved": 1,
+        "pagesFailed": 0,
+        "citationsKept": 4,
+        "citationsDropped": 0,
+        "confidenceCapped": 0,
+        "citationsDegraded": 0
+      },
+      "costUsd": 0.010161982,
+      "wallMs": 15884,
+      "error": null
+    },
+    {
+      "index": 4,
+      "id": "pkce-rfc",
+      "query": "Which RFC defines PKCE (Proof Key for Code Exchange) for OAuth 2.0?",
+      "depth": "quick",
+      "pass": true,
+      "matched": "7636",
+      "live": null,
+      "status": "ok",
+      "grounding": {
+        "pagesRetrieved": 1,
+        "pagesFailed": 0,
+        "citationsKept": 4,
+        "citationsDropped": 0,
+        "confidenceCapped": 0,
+        "citationsDegraded": 0
+      },
+      "costUsd": 0.009772616,
+      "wallMs": 22716,
+      "error": null
+    },
+    {
+      "index": 5,
+      "id": "oauth2-rfc",
+      "query": "Which RFC defines the OAuth 2.0 Authorization Framework?",
+      "depth": "quick",
+      "pass": true,
+      "matched": "6749",
+      "live": null,
+      "status": "ok",
+      "grounding": {
+        "pagesRetrieved": 1,
+        "pagesFailed": 0,
+        "citationsKept": 5,
+        "citationsDropped": 0,
+        "confidenceCapped": 0,
+        "citationsDegraded": 0
+      },
+      "costUsd": 0.013440615999999999,
+      "wallMs": 36786,
+      "error": null
+    },
+    {
+      "index": 6,
+      "id": "http2-obsoleted-by",
+      "query": "Which RFC obsoleted RFC 7540 as the HTTP/2 specification?",
+      "depth": "quick",
+      "pass": true,
+      "matched": "9113",
+      "live": null,
+      "status": "ok",
+      "grounding": {
+        "pagesRetrieved": 1,
+        "pagesFailed": 0,
+        "citationsKept": 3,
+        "citationsDropped": 0,
+        "confidenceCapped": 0,
+        "citationsDegraded": 0
+      },
+      "costUsd": 0.010986632,
+      "wallMs": 19701,
+      "error": null
+    },
+    {
+      "index": 7,
+      "id": "retry-after-header",
+      "query": "Which HTTP response header tells a client how long to wait before retrying after a 429 or 503?",
+      "depth": "quick",
+      "pass": true,
+      "matched": "Retry-After",
+      "live": null,
+      "status": "ok",
+      "grounding": {
+        "pagesRetrieved": 1,
+        "pagesFailed": 0,
+        "citationsKept": 3,
+        "citationsDropped": 0,
+        "confidenceCapped": 0,
+        "citationsDegraded": 0
+      },
+      "costUsd": 0.007995782,
+      "wallMs": 13688,
+      "error": null
+    },
+    {
+      "index": 8,
+      "id": "rust-1.0-year",
+      "query": "In which year was Rust 1.0 released?",
+      "depth": "quick",
+      "pass": true,
+      "matched": "2015",
+      "live": null,
+      "status": "ok",
+      "grounding": {
+        "pagesRetrieved": 1,
+        "pagesFailed": 0,
+        "citationsKept": 2,
+        "citationsDropped": 0,
+        "confidenceCapped": 0,
+        "citationsDegraded": 0
+      },
+      "costUsd": 0.007032811999999999,
+      "wallMs": 11288,
+      "error": null
+    },
+    {
+      "index": 9,
+      "id": "node-sqlite-version",
+      "query": "Which Node.js version first added the node:sqlite module?",
+      "depth": "quick",
+      "pass": true,
+      "matched": "22.5.0",
+      "live": null,
+      "status": "ok",
+      "grounding": {
+        "pagesRetrieved": 1,
+        "pagesFailed": 0,
+        "citationsKept": 3,
+        "citationsDropped": 0,
+        "confidenceCapped": 0,
+        "citationsDegraded": 0
+      },
+      "costUsd": 0.031434382,
+      "wallMs": 158838,
+      "error": null
+    },
+    {
+      "index": 10,
+      "id": "euro-codepoint",
+      "query": "What is the Unicode code point of the euro sign?",
+      "depth": "quick",
+      "pass": true,
+      "matched": "U+20AC",
+      "live": null,
+      "status": "ok",
+      "grounding": {
+        "pagesRetrieved": 1,
+        "pagesFailed": 0,
+        "citationsKept": 3,
+        "citationsDropped": 0,
+        "confidenceCapped": 0,
+        "citationsDegraded": 0
+      },
+      "costUsd": 0.010055979999999999,
+      "wallMs": 33450,
+      "error": null
+    },
+    {
+      "index": 11,
+      "id": "sqlite-wal-pragma",
+      "query": "Which SQLite PRAGMA enables write-ahead logging?",
+      "depth": "quick",
+      "pass": true,
+      "matched": "journal_mode=WAL",
+      "live": null,
+      "status": "ok",
+      "grounding": {
+        "pagesRetrieved": 1,
+        "pagesFailed": 0,
+        "citationsKept": 3,
+        "citationsDropped": 0,
+        "confidenceCapped": 0,
+        "citationsDegraded": 0
+      },
+      "costUsd": 0.009041032000000001,
+      "wallMs": 20433,
+      "error": null
+    },
+    {
+      "index": 12,
+      "id": "pep779-free-threaded",
+      "query": "Which Python version made the free-threaded (no-GIL) build officially supported rather than experimental, per PEP 779?",
+      "depth": "standard",
+      "pass": true,
+      "matched": "3.14",
+      "live": null,
+      "status": "ok",
+      "grounding": {
+        "pagesRetrieved": 17,
+        "pagesFailed": 0,
+        "citationsKept": 18,
+        "citationsDropped": 0,
+        "confidenceCapped": 10,
+        "citationsDegraded": 10
+      },
+      "costUsd": 0.09219387799999999,
+      "wallMs": 131293,
+      "error": null
+    },
+    {
+      "index": 13,
+      "id": "bun-serve-idle-timeout",
+      "query": "What is the maximum value Bun.serve accepts for idleTimeout, in seconds?",
+      "depth": "standard",
+      "pass": true,
+      "matched": "255",
+      "live": null,
+      "status": "ok",
+      "grounding": {
+        "pagesRetrieved": 31,
+        "pagesFailed": 10,
+        "citationsKept": 10,
+        "citationsDropped": 0,
+        "confidenceCapped": 2,
+        "citationsDegraded": 2
+      },
+      "costUsd": 0.151169396,
+      "wallMs": 214603,
+      "error": null
+    },
+    {
+      "index": 14,
+      "id": "npm-hono-latest",
+      "query": "What is the latest published version of the npm package hono?",
+      "depth": "quick",
+      "pass": true,
+      "matched": "4.13.9",
+      "live": {
+        "resolver": "npm:hono",
+        "value": "4.13.9"
+      },
+      "status": "ok",
+      "grounding": {
+        "pagesRetrieved": 3,
+        "pagesFailed": 0,
+        "citationsKept": 2,
+        "citationsDropped": 0,
+        "confidenceCapped": 0,
+        "citationsDegraded": 0
+      },
+      "costUsd": 0.00183351,
+      "wallMs": 13059,
+      "error": null
+    },
+    {
+      "index": 15,
+      "id": "npm-ai-latest",
+      "query": "What is the latest published version of the npm package ai (Vercel AI SDK)?",
+      "depth": "quick",
+      "pass": true,
+      "matched": "7.0.114",
+      "live": {
+        "resolver": "npm:ai",
+        "value": "7.0.114"
+      },
+      "status": "ok",
+      "grounding": {
+        "pagesRetrieved": 2,
+        "pagesFailed": 0,
+        "citationsKept": 4,
+        "citationsDropped": 0,
+        "confidenceCapped": 0,
+        "citationsDegraded": 0
+      },
+      "costUsd": 0.004019832,
+      "wallMs": 24706,
+      "error": null
+    },
+    {
+      "index": 16,
+      "id": "pypi-requests-latest",
+      "query": "What is the latest version of the Python package requests on PyPI?",
+      "depth": "quick",
+      "pass": true,
+      "matched": "2.34.2",
+      "live": {
+        "resolver": "pypi:requests",
+        "value": "2.34.2"
+      },
+      "status": "ok",
+      "grounding": {
+        "pagesRetrieved": 2,
+        "pagesFailed": 0,
+        "citationsKept": 2,
+        "citationsDropped": 0,
+        "confidenceCapped": 0,
+        "citationsDegraded": 0
+      },
+      "costUsd": 0.0019226819999999998,
+      "wallMs": 12957,
+      "error": null
+    },
+    {
+      "index": 17,
+      "id": "crates-serde-latest",
+      "query": "What is the latest stable version of the Rust crate serde?",
+      "depth": "quick",
+      "pass": true,
+      "matched": "1.0.229",
+      "live": {
+        "resolver": "crates:serde",
+        "value": "1.0.229"
+      },
+      "status": "ok",
+      "grounding": {
+        "pagesRetrieved": 2,
+        "pagesFailed": 0,
+        "citationsKept": 2,
+        "citationsDropped": 0,
+        "confidenceCapped": 0,
+        "citationsDegraded": 0
+      },
+      "costUsd": 0.0030817320000000002,
+      "wallMs": 21015,
+      "error": null
+    },
+    {
+      "index": 18,
+      "id": "bun-runtime-latest",
+      "query": "What is the latest release version of the Bun runtime?",
+      "depth": "quick",
+      "pass": true,
+      "matched": "1.4.2",
+      "live": {
+        "resolver": "github-release:oven-sh/bun",
+        "value": "1.4.2"
+      },
+      "status": "ok",
+      "grounding": {
+        "pagesRetrieved": 3,
+        "pagesFailed": 0,
+        "citationsKept": 4,
+        "citationsDropped": 0,
+        "confidenceCapped": 0,
+        "citationsDegraded": 0
+      },
+      "costUsd": 0.0021362819999999998,
+      "wallMs": 13591,
+      "error": null
+    },
+    {
+      "index": 19,
+      "id": "npm-elysia-latest",
+      "query": "What is the latest release version of Elysia (the Bun web framework) on npm?",
+      "depth": "quick",
+      "pass": true,
+      "matched": "1.4.30",
+      "live": {
+        "resolver": "npm:elysia",
+        "value": "1.4.30"
+      },
+      "status": "ok",
+      "grounding": {
+        "pagesRetrieved": 2,
+        "pagesFailed": 0,
+        "citationsKept": 2,
+        "citationsDropped": 0,
+        "confidenceCapped": 0,
+        "citationsDegraded": 0
+      },
+      "costUsd": 0.0035036819999999997,
+      "wallMs": 22132,
+      "error": null
+    }
+  ]
+}
