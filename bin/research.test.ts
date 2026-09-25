@@ -1,7 +1,9 @@
 import { describe, it, expect } from 'bun:test'
 import {
   exitCodeFor,
+  finishedLine,
   liveStatusLine,
+  parseBatchFile,
   parseArgs,
   reportSummaryLines,
   resolveContextText,
@@ -396,5 +398,88 @@ describe('run — submit warnings', () => {
     expect(code).toBe(0)
     expect(out.join('')).toBe('job-30\n')
     expect(err.join('')).toContain('warning: `context` is an unexpanded shell variable (research cancel job-30)')
+  })
+})
+
+describe('batch and wait-all', () => {
+  it('parses batch with shared defaults and wait-all with several ids', () => {
+    expect(parseArgs(['batch', 'q.jsonl', '--depth', 'quick', '--context', '@facts.md']).command).toEqual({
+      kind: 'batch',
+      path: 'q.jsonl',
+      depth: 'quick',
+      context: { kind: 'file', path: 'facts.md' },
+    })
+    expect(parseArgs(['wait-all', 'a', 'b', 'c']).command).toEqual({ kind: 'wait-all', jobIds: ['a', 'b', 'c'] })
+    expect(() => parseArgs(['batch'])).toThrow()
+    expect(() => parseArgs(['batch', 'q.jsonl', '--key', 'k'])).toThrow()
+    expect(() => parseArgs(['wait-all'])).toThrow()
+  })
+
+  it('parseBatchFile skips blanks and comments, and rejects the whole file on one bad line', () => {
+    const text = [
+      '# Wild Rift items',
+      '{"query": "Frozen Heart 7.3 changes", "key": "fh"}',
+      '',
+      '{"query": "Sunfire Aegis 7.3 changes", "depth": "quick", "context": "patch 7.3"}',
+    ].join('\n')
+    expect(parseBatchFile(text)).toEqual([
+      { query: 'Frozen Heart 7.3 changes', key: 'fh' },
+      { query: 'Sunfire Aegis 7.3 changes', depth: 'quick', context: 'patch 7.3' },
+    ])
+    expect(() => parseBatchFile('{"query": "ok query"}\nnot json')).toThrow('batch line 2')
+    expect(() => parseBatchFile('{"query": "ok query", "depth": "huge"}')).toThrow('depth')
+    expect(() => parseBatchFile('{"q": "missing"}')).toThrow('query')
+    expect(() => parseBatchFile('# only a comment')).toThrow('no jobs')
+  })
+
+  it('batch submits every line with the shared context, reports a refused line, and exits 2', async () => {
+    const bodies: Array<Record<string, unknown>> = []
+    const fetchFn: FetchLike = async (_input, init) => {
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>
+      bodies.push(body)
+      if (body['query'] === 'second question') return jsonResponse({ error: 'Research queue is full' }, 429)
+      return jsonResponse({ jobId: `job-${bodies.length}`, status: 'queued' })
+    }
+    const files: Record<string, string> = {
+      'q.jsonl': '{"query": "first question", "key": "k1"}\n{"query": "second question"}\n{"query": "third question", "context": "own"}',
+      'facts.md': 'shared facts',
+    }
+    const { io, out, err } = makeIo()
+    const code = await run(
+      ['batch', 'q.jsonl', '--context', '@facts.md', '--depth', 'quick', '--json'],
+      makeCtx({ fetchFn, readFile: (path) => files[path] ?? '' }),
+      io,
+    )
+    expect(code).toBe(2)
+    expect(bodies.map((b) => [b['query'], b['context'], b['depth']])).toEqual([
+      ['first question', 'shared facts', 'quick'],
+      ['second question', 'shared facts', 'quick'],
+      ['third question', 'own', 'quick'],
+    ])
+    expect(bodies[0]?.['idempotencyKey']).toBe('k1')
+    const rows = out.join('').trim().split('\n').map((line) => JSON.parse(line) as { jobId: string; key: string })
+    expect(rows.map((r) => r.jobId)).toEqual(['job-1', 'job-3'])
+    expect(rows[0]?.key).toBe('k1')
+    expect(err.join('')).toContain('not submitted: second question')
+  })
+
+  it('wait-all prints each job as it finishes and exits 1 when one did not end done', async () => {
+    let polls = 0
+    const fetchFn: FetchLike = async (input) => {
+      polls++
+      const id = String(input).split('/').pop()
+      if (id === 'a') return jsonResponse({ status: 'done', result: report(), error: null })
+      // b finishes on its second poll, with an error.
+      if (polls < 3) return jsonResponse({ status: 'running', result: null, error: null })
+      return jsonResponse({ status: 'error', result: null, error: 'boom' })
+    }
+    const { io, out } = makeIo()
+    const code = await run(['wait-all', 'a', 'b'], makeCtx({ fetchFn }), io)
+    expect(code).toBe(1)
+    expect(out.join('')).toBe('a\tdone\tok\tcitations 0\tunverified 0\nb\terror\tboom\n')
+  })
+
+  it('finishedLine names a cancelled job', () => {
+    expect(finishedLine('c', { status: 'cancelled', result: null, error: 'x' })).toBe('c\tcancelled')
   })
 })

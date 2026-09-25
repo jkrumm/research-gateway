@@ -82,10 +82,28 @@ export interface CancelCommand {
   kind: 'cancel'
   jobId: string
 }
+/** Submit every line of a JSONL file; `depth`/`context` are the defaults a line can override. */
+export interface BatchCommand {
+  kind: 'batch'
+  path: string
+  depth?: Depth
+  context?: ContextSpec
+}
+export interface WaitAllCommand {
+  kind: 'wait-all'
+  jobIds: string[]
+}
 export interface HelpCommand {
   kind: 'help'
 }
-export type Command = SubmitCommand | WaitCommand | StatusCommand | CancelCommand | HelpCommand
+export type Command =
+  | SubmitCommand
+  | WaitCommand
+  | StatusCommand
+  | CancelCommand
+  | BatchCommand
+  | WaitAllCommand
+  | HelpCommand
 
 export interface Options {
   json: boolean
@@ -175,6 +193,28 @@ export function parseArgs(argv: string[]): Parsed {
     return { command: { kind: first, jobId: rest[0] as string }, options }
   }
 
+  if (first === 'batch') {
+    if (rest.length !== 1 || (rest[0] ?? '').length === 0) {
+      throw new CliUsageError('research batch requires exactly one <file.jsonl>')
+    }
+    if (idempotencyKey !== undefined) throw new CliUsageError('--key does not apply to batch; set "key" per line')
+    if (options.noWait) throw new CliUsageError('batch never waits; use wait-all on its job ids')
+    return {
+      command: {
+        kind: 'batch',
+        path: rest[0] as string,
+        ...(depth !== undefined ? { depth } : {}),
+        ...(context !== undefined ? { context } : {}),
+      },
+      options,
+    }
+  }
+
+  if (first === 'wait-all') {
+    if (rest.length === 0) throw new CliUsageError('research wait-all requires one or more <jobId>')
+    return { command: { kind: 'wait-all', jobIds: rest }, options }
+  }
+
   if (rest.length > 0) {
     throw new CliUsageError('a submit takes one query argument (quote it if it contains spaces)')
   }
@@ -237,6 +277,56 @@ export function submitRequestBody(
   if (command.depth !== undefined) body['depth'] = command.depth
   if (resolved.context !== undefined) body['context'] = resolved.context
   return body
+}
+
+/** One line of a batch file. */
+export interface BatchItem {
+  query: string
+  depth?: Depth
+  key?: string
+  context?: string
+}
+
+/** Parse and validate a whole batch file up front — a bad line 12 must not leave lines 1-11
+ *  already submitted. Blank lines and `#` comments are skipped. */
+export function parseBatchFile(text: string): BatchItem[] {
+  const items: BatchItem[] = []
+  const lines = text.split('\n')
+  for (let i = 0; i < lines.length; i++) {
+    const line = (lines[i] ?? '').trim()
+    if (line.length === 0 || line.startsWith('#')) continue
+    const where = `batch line ${i + 1}`
+    let raw: unknown
+    try {
+      raw = JSON.parse(line)
+    } catch {
+      throw new CliUsageError(`${where} is not valid JSON`)
+    }
+    if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+      throw new CliUsageError(`${where} must be a JSON object`)
+    }
+    const { query, depth, key, context } = raw as Record<string, unknown>
+    if (typeof query !== 'string' || query.trim().length < 3) {
+      throw new CliUsageError(`${where} needs a "query" of at least 3 characters`)
+    }
+    if (depth !== undefined && (typeof depth !== 'string' || !(DEPTHS as readonly string[]).includes(depth))) {
+      throw new CliUsageError(`${where}: "depth" must be one of quick | standard | deep`)
+    }
+    if (key !== undefined && (typeof key !== 'string' || key.length === 0 || key.length > 200)) {
+      throw new CliUsageError(`${where}: "key" must be a 1..200 character string`)
+    }
+    if (context !== undefined && (typeof context !== 'string' || context.length === 0)) {
+      throw new CliUsageError(`${where}: "context" must be a non-empty string`)
+    }
+    items.push({
+      query,
+      ...(depth !== undefined ? { depth: depth as Depth } : {}),
+      ...(key !== undefined ? { key } : {}),
+      ...(context !== undefined ? { context } : {}),
+    })
+  }
+  if (items.length === 0) throw new CliUsageError('batch file has no jobs')
+  return items
 }
 
 /** Exit code for a job that reached a terminal state: 0 done, 1 error or cancelled. */
@@ -576,6 +666,10 @@ async function execute(
       else io.out(`${renderJobHuman(job)}\n`)
       return isTerminal(job.status) ? exitCodeFor(job.status) : 0
     }
+    case 'batch':
+      return submitBatch(ctx, io, base, token, command, options)
+    case 'wait-all':
+      return waitForAll(ctx, io, base, token, command.jobIds, options)
     case 'cancel': {
       // Idempotent server-side: a job that already finished comes back with its own status,
       // which is reported as-is — exit 0 either way, the job is no longer running.
@@ -631,6 +725,107 @@ async function waitForJob(
   }
 }
 
+/** Submit every line, sharing the default depth/context. A refused line (queue full, 5xx) is
+ *  reported and the rest still go in — exit 2 if any line was not submitted. */
+async function submitBatch(
+  ctx: CliContext,
+  io: CliIo,
+  base: string,
+  token: string,
+  command: BatchCommand,
+  options: Options,
+): Promise<number> {
+  const readFile = ctx.readFile ?? ((path: string) => readFileSync(path, 'utf8'))
+  let text: string
+  try {
+    text = readFile(command.path)
+  } catch (err) {
+    throw new CliUsageError(`could not read batch file ${command.path}: ${err instanceof Error ? err.message : String(err)}`)
+  }
+  const items = parseBatchFile(text)
+  const sharedContext = resolveContextText(command.context, readFile)
+
+  let failed = 0
+  for (const item of items) {
+    const idempotencyKey = item.key ?? crypto.randomUUID()
+    const context = item.context ?? sharedContext
+    const depth = item.depth ?? command.depth
+    const body = submitRequestBody(
+      { kind: 'submit', query: item.query, ...(depth !== undefined ? { depth } : {}) },
+      { ...(context !== undefined ? { context } : {}), idempotencyKey },
+    )
+    try {
+      const { jobId, warnings } = await submitWithRetry(ctx, io, base, token, body)
+      for (const warning of warnings ?? []) io.err(`research: warning (${jobId}): ${warning}\n`)
+      const row = { jobId, key: idempotencyKey, depth: depth ?? 'standard', query: item.query }
+      io.out(options.json ? `${JSON.stringify(row)}\n` : `${jobId}\t${idempotencyKey}\t${item.query.slice(0, 80)}\n`)
+    } catch (err) {
+      // Unreachable after the retries means every later line would fail the same way.
+      if (err instanceof CliUnreachableError) throw err
+      failed++
+      io.err(`research: not submitted: ${item.query.slice(0, 80)} — ${err instanceof Error ? err.message : String(err)}\n`)
+    }
+  }
+  if (failed > 0) io.err(`research: ${failed} of ${items.length} not submitted (resubmitting is safe — same keys)\n`)
+  return failed > 0 ? 2 : 0
+}
+
+/** Poll a set of jobs and report each the moment it finishes — one line per job, human or
+ *  JSON — so a fan-out consumer can start on early results. Same retry rule as waitForJob.
+ *  Exit 0 only if every job ended `done`. */
+async function waitForAll(
+  ctx: CliContext,
+  io: CliIo,
+  base: string,
+  token: string,
+  jobIds: string[],
+  options: Options,
+): Promise<number> {
+  const wait = ctx.sleepFn ?? sleep
+  const pending = new Set(jobIds)
+  let worst = 0
+  let pollFailures = 0
+
+  while (pending.size > 0) {
+    for (const jobId of [...pending]) {
+      let job: JobView
+      try {
+        job = await fetchJob(ctx.fetchFn, base, token, jobId)
+      } catch (err) {
+        if (err instanceof CliUnreachableError && pollFailures < MAX_POLL_RETRIES) {
+          pollFailures++
+          if (pollFailures === 1) io.err(`research: poll failed (${err.message}) — retrying…\n`)
+          await wait(Math.min(POLL_RETRY_BASE_MS * 2 ** (pollFailures - 1), POLL_RETRY_CAP_MS))
+          continue
+        }
+        if (err instanceof CliUnreachableError) throw err
+        // Unknown id (404) or a server error for one job must not abandon the others.
+        pending.delete(jobId)
+        worst = Math.max(worst, 1)
+        io.err(`research: ${jobId}: ${err instanceof Error ? err.message : String(err)}\n`)
+        continue
+      }
+      pollFailures = 0
+      if (!isTerminal(job.status)) continue
+      pending.delete(jobId)
+      worst = Math.max(worst, exitCodeFor(job.status))
+      io.out(options.json ? `${JSON.stringify({ jobId, ...job })}\n` : `${finishedLine(jobId, job)}\n`)
+    }
+    if (pending.size > 0) await wait(POLL_MS)
+  }
+  return worst
+}
+
+/** One human line for a finished job in wait-all: the id, and the one fact to act on. */
+export function finishedLine(jobId: string, job: JobView): string {
+  if (job.status === 'done' && job.result) {
+    const r = job.result
+    return `${jobId}\tdone\t${r.status}\tcitations ${r.citations.length}\tunverified ${r.unverified.length}`
+  }
+  if (job.status === 'error') return `${jobId}\terror\t${job.error ?? 'unknown error'}`
+  return `${jobId}\t${job.status}`
+}
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
@@ -645,6 +840,8 @@ Usage:
   research wait <jobId> [--json]
   research status <jobId> [--json]
   research cancel <jobId> [--json]
+  research batch <file.jsonl> [--depth …] [--context <text>|@file] [--json]
+  research wait-all <jobId>… [--json]
 
 Submits to POST /research and (by default) waits by polling GET /research/:jobId until the
 job is done, then prints the report markdown to stdout and status/warnings/unverified to
@@ -652,12 +849,20 @@ stderr. --no-wait prints only the jobId. --json prints the full job JSON. wait r
 known job id without re-submitting; status is a single non-blocking check; cancel stops a
 queued or running job (idempotent — an already-finished job is left as it is).
 
+batch submits one job per JSONL line — {"query", "depth"?, "key"?, "context"?} — with
+--depth/--context as the defaults a line can override (the whole file is validated before
+anything is submitted), and prints one "jobId key query" row per job (--json: one JSON object
+per line). wait-all polls the given jobs and prints one line per job as each finishes (--json:
+the full job per line); fetch a report with 'research status <jobId>'. Fan-out:
+  research batch q.jsonl --context @facts.md --json | jq -r .jobId | xargs research wait-all
+
 Environment:
   RESEARCH_GATEWAY_URL    base URL (default http://127.0.0.1:7780)
   RESEARCH_GATEWAY_TOKEN  bearer token; falls back to the macOS Keychain generic password
                           service "research-gateway-token".
 
-Exit codes: 0 done · 1 job error or cancelled · 2 usage/auth/refused · 3 unreachable.`
+Exit codes: 0 done · 1 job error or cancelled · 2 usage/auth/refused · 3 unreachable.
+batch: 2 if any line was refused. wait-all: 0 only if every job is done.`
 
 if (import.meta.main) {
   process.exitCode = await run(

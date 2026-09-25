@@ -48,7 +48,8 @@ Everything is submit-then-poll — never expect a synchronous result.
   tool accept an optional `idempotencyKey` (1..200 chars): a retried submit with the same key
   returns the original job, and the dedupe runs before admission so it is never shed.
 - The CLI (`bin/research.ts`, `make install-cli`) talks the same REST door with no session
-  state: `research "<query>"` submits and polls, `research wait <jobId>` resumes a known id. It
+  state: `research "<query>"` submits and polls, `research wait <jobId>` resumes a known id,
+  `research batch <file.jsonl>` / `research wait-all <ids…>` are the fan-out pair. It
   is the door for Codex/OpenCode/Hermes/cron and the fallback when the MCP tools are missing.
 
 ## Models
