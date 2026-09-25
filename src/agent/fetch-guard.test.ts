@@ -1,14 +1,29 @@
 import { describe, it, expect } from 'bun:test'
-import { createPageBudget, describeAttempts, isProxyUrl } from './fetch-guard.js'
+import { commitRead, createPageBudget, describeAttempts, isProxyUrl } from './fetch-guard.js'
+import { createLedger } from './ledger.js'
 
 describe('createPageBudget', () => {
   it('passes pages through whole until the budget runs out, then cuts with a note', () => {
     const budget = createPageBudget(10_000) // 22,000 chars
     expect(budget.take('a'.repeat(15_000))).toHaveLength(15_000)
     const cut = budget.take('b'.repeat(15_000))
-    expect(cut.startsWith('b'.repeat(7_000))).toBe(true)
+    expect(cut?.startsWith('b'.repeat(7_000))).toBe(true)
     expect(cut).toContain('cut at 7000 of 15000 characters')
     expect(budget.hasRoom()).toBe(false)
+  })
+
+  it('withholds a page entirely once the budget is spent — parallel fetches pass hasRoom first', () => {
+    const budget = createPageBudget(10_000)
+    expect(budget.hasRoom()).toBe(true)
+    budget.take('a'.repeat(30_000))
+    expect(budget.take('late page')).toBeNull()
+  })
+
+  it('charges CJK text at its token weight, not its character count', () => {
+    const budget = createPageBudget(10_000) // 22,000 units; a CJK char costs 4
+    const page = '龙'.repeat(8_000) // 32,000 units
+    const cut = budget.take(page)
+    expect(cut).toContain('cut at 5500 of 8000 characters')
   })
 
   it('reports no room once less than a useful page is left', () => {
@@ -51,3 +66,28 @@ describe('isProxyUrl', () => {
     expect(isProxyUrl('not a url')).toBe(false)
   })
 })
+
+describe('commitRead', () => {
+  const stagedWith = () => {
+    const staged = createLedger()
+    staged.recordRetrieved('https://wrchina.gg/c/rammus/')
+    staged.recordFailed('https://riftgg.app/api/x', 'readability: HTTP 403')
+    staged.recordMissing('https://wrbase.com/gone', 'HTTP 404')
+    return staged.snapshot()
+  }
+
+  it('commits the page as retrieved when the model received its text', () => {
+    const ledger = createLedger()
+    commitRead({ staged: stagedWith(), into: ledger, delivered: true })
+    expect(ledger.tierOf('https://wrchina.gg/c/rammus/')).toBe('retrieved')
+  })
+
+  it('never commits a withheld page as retrieved, but keeps failures and 404s', () => {
+    const ledger = createLedger()
+    commitRead({ staged: stagedWith(), into: ledger, delivered: false })
+    expect(ledger.tierOf('https://wrchina.gg/c/rammus/')).toBe('unseen')
+    expect(ledger.tierOf('https://riftgg.app/api/x')).toBe('failed')
+    expect(ledger.tierOf('https://wrbase.com/gone')).toBe('missing')
+  })
+})
+

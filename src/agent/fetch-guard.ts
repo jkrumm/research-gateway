@@ -12,6 +12,7 @@
 // worker can take in, and tell the model when it is spent, so it submits on its own terms.
 
 import type { FetchAttempt } from './fetch-chain.js'
+import type { LedgerSnapshot, RetrievalLedger } from './ledger.js'
 
 // Page text is the one input that grows without bound; everything else in a worker's context
 // (instructions, the sub-question, search results, its own reasoning) is roughly fixed. ~4
@@ -27,8 +28,19 @@ export interface PageBudget {
   /** False once the budget is spent — check BEFORE starting a fetch, so no fetch runs for nothing. */
   hasRoom(): boolean
   /** Charge a page's text against the budget and return what the model gets: whole, or cut at
-   * the remaining budget with an explicit note. */
-  take(text: string): string
+   * the remaining budget with an explicit note — or null when the budget is already spent
+   * (parallel fetches all pass `hasRoom` before any of them is charged). A null page was NOT
+   * read and must not be recorded as retrieved (see `commitRead`). */
+  take(text: string): string | null
+}
+
+// CJK text runs ~1 token per character against ~0.25 for Latin prose, so a character-only
+// budget would let a Chinese page overflow the context it exists to protect.
+const CJK_RE = /[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af\uf900-\ufaff]/g
+const CJK_EXTRA_WEIGHT = 3
+
+function weightOf(text: string): number {
+  return text.length + (text.match(CJK_RE)?.length ?? 0) * CJK_EXTRA_WEIGHT
 }
 
 export function createPageBudget(maxContextTokens: number): PageBudget {
@@ -36,15 +48,29 @@ export function createPageBudget(maxContextTokens: number): PageBudget {
   return {
     hasRoom: () => remaining >= MIN_USEFUL_CHARS,
     take(text) {
-      if (text.length <= remaining) {
-        remaining -= text.length
+      if (remaining < MIN_USEFUL_CHARS) return null
+      const weight = weightOf(text)
+      if (weight <= remaining) {
+        remaining -= weight
         return text
       }
-      const cut = Math.max(0, remaining)
+      const cut = Math.floor((text.length * remaining) / weight)
       remaining = 0
       return `${text.slice(0, cut)}\n\n[cut at ${cut} of ${text.length} characters: this worker's page-text budget ran out on this page. Anything further down was NOT read — do not treat its absence as evidence. Submit your digest next.]`
     },
   }
+}
+
+/** Move one fetch's staged ledger records into the worker's ledger. `retrieved` is committed
+ * only when the model actually received the page text: a page the budget withheld was fetched
+ * but never read, and the grounding invariant is about what the MODEL read. A failure or a
+ * 404 is committed either way — those are facts about the URL, not about this worker. */
+export function commitRead(args: { staged: LedgerSnapshot; into: RetrievalLedger; delivered: boolean }): void {
+  const { staged, into, delivered } = args
+  if (delivered) for (const url of staged.retrieved) into.recordRetrieved(url)
+  for (const m of staged.missing) into.recordMissing(m.url, m.reason)
+  for (const url of staged.snippet) into.recordSnippet(url)
+  for (const f of staged.failed) into.recordFailed(f.url, f.reason)
 }
 
 /** The whole chain's failure, step by step — "readability: HTTP 403 · lightpanda: HTTP 403 ·

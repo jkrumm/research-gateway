@@ -326,7 +326,9 @@ export async function readBrainNote(reference: string, jobId = '-'): Promise<Bra
   const listing = await listAllFiles(rootReals, jobId)
   if (!listing.ok) return { ok: false, error: `brain listing failed: ${listing.error}` }
 
-  const relPaths = listing.paths.map((p) => relative(brainDirReal, p))
+  // Journals out BEFORE resolving: a journal must never be the match, and never be named in an
+  // "ambiguous" candidate list either.
+  const relPaths = listing.paths.map((p) => relative(brainDirReal, p)).filter((p) => !isJournalPath(p))
   const pick = pickNoteByRef(relPaths, ref)
   if (pick.kind === 'none') {
     log('tool.brainNotes', { jobId, read: ref, ok: false, error: 'no such note' })
@@ -337,8 +339,7 @@ export async function readBrainNote(reference: string, jobId = '-'): Promise<Bra
   }
 
   const [candidate] = await readScopedCandidates([join(brainDirReal, pick.relPath)], brainDirReal, rootReals)
-  const frontmatterBlock = candidate?.content.match(/^---\r?\n([\s\S]*?)\r?\n---/)?.[1] ?? ''
-  if (!candidate || isJournalNote(frontmatterBlock)) {
+  if (!candidate || isJournalNote(candidate.content.match(/^---\r?\n([\s\S]*?)\r?\n---/)?.[1] ?? '')) {
     log('tool.brainNotes', { jobId, read: ref, ok: false, error: 'out of scope' })
     return { ok: false, error: `the note "${ref}" is outside what research may read` }
   }

@@ -8,7 +8,8 @@ import { getActiveSpan, withSpan } from '../lib/otel.js'
 import { reportTavilyUsage, reportSonarUsage, reportRenderUsage, reportYtdlpUsage, reportArchiveUsage } from '../lib/usage.js'
 import { reportTavilyAccountUsage } from '../lib/tavily-account.js'
 import { capText, TEXT_CAP } from './extract.js'
-import { createPageBudget, isProxyUrl, PAGE_BUDGET_SPENT, PROXY_REFUSED, type PageBudget } from './fetch-guard.js'
+import { commitRead, createPageBudget, isProxyUrl, PAGE_BUDGET_SPENT, PROXY_REFUSED, type PageBudget } from './fetch-guard.js'
+import { createLedger } from './ledger.js'
 import { buildDirectSourceTools } from './direct-sources.js'
 import { sonarSearch, type SonarContextSize } from './sonar.js'
 import { runFetchChain, hostOf } from './fetch-chain.js'
@@ -555,9 +556,11 @@ function buildFetchPageTool(ledger: RetrievalLedger, pageBudget: PageBudget, job
         if (!pageBudget.hasRoom()) return { url, error: PAGE_BUDGET_SPENT }
         const read = await readBrainNote(url, jobId)
         if (!read.ok) return { url, error: read.error }
+        const text = pageBudget.take(read.note.content)
+        if (text === null) return { url, error: PAGE_BUDGET_SPENT }
         ledger.recordRetrieved(read.note.url)
         fetched.add(url)
-        return { url: read.note.url, text: pageBudget.take(read.note.content) }
+        return { url: read.note.url, text }
       }
 
       // Neither is a fetch failure, so neither touches the ledger: a refused proxy URL was never
@@ -575,8 +578,11 @@ function buildFetchPageTool(ledger: RetrievalLedger, pageBudget: PageBudget, job
       // an LLM in the loop (scripts/fetch-bench.ts). This tool owns only what is specific to
       // being a tool: the per-run dedup above, and turning the result into a model-facing
       // shape. The chain never throws and records the ledger itself.
+      // The chain records into a per-fetch ledger, committed below once it is known whether the
+      // model actually receives the text (fetch-guard.ts's commitRead).
+      const staged = createLedger()
       const result = await runFetchChain(url, {
-        ledger,
+        ledger: staged,
         jobId,
         onTavilyCredits: (credits) => recordTavilyExtract(jobId, credits),
         onRender: (r) => meterRender.add(jobId, { renders: 1, failures: r.ok ? 0 : 1, totalMs: r.ms }),
@@ -602,9 +608,12 @@ function buildFetchPageTool(ledger: RetrievalLedger, pageBudget: PageBudget, job
         'fetch.ok': result.via !== null,
       })
 
+      const text = result.text === null ? null : pageBudget.take(result.text)
+      commitRead({ staged: staged.snapshot(), into: ledger, delivered: text !== null })
       if (result.text === null) return { url, error: result.error ?? 'fetch failed' }
+      if (text === null) return { url, error: PAGE_BUDGET_SPENT }
       fetched.add(url)
-      return { url, text: pageBudget.take(result.text) }
+      return { url, text }
     },
   })
 }
@@ -717,15 +726,17 @@ function buildBrainNotesTool(ledger: RetrievalLedger, pageBudget: PageBudget, jo
     execute: async ({ query, path }) => {
       const reference = path ?? (query && env.BRAIN_BASE_URL && isNoteRef(query, env.BRAIN_BASE_URL) ? query : undefined)
       if (reference !== undefined && brainConfigured) {
-        reads++
-        if (reads > MAX_BRAIN_READS) return { path: reference, error: BRAIN_BUDGET_SPENT_NOTE }
+        if (reads >= MAX_BRAIN_READS) return { path: reference, error: BRAIN_BUDGET_SPENT_NOTE }
         if (!pageBudget.hasRoom()) return { path: reference, error: PAGE_BUDGET_SPENT }
         const read = await readBrainNote(reference, jobId)
         if (read.ok) {
+          const content = pageBudget.take(read.note.content)
+          if (content === null) return { path: reference, error: PAGE_BUDGET_SPENT }
+          reads++
           ledger.recordRetrieved(read.note.url)
           return {
             path: reference,
-            results: [{ ...read.note, content: pageBudget.take(read.note.content) }],
+            results: [{ ...read.note, content, truncated: read.note.truncated || content !== read.note.content }],
             note: "The owner's own note, read in full — true as of its `updated` date, not proof of the present. Cite its `url` exactly as given.",
           }
         }
