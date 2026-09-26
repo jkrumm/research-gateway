@@ -1,5 +1,6 @@
 import type { Depth } from './schema.js'
 import { profiles } from './depth.js'
+import { isNoteRef } from './brain.js'
 
 // The static prompts below carry the CONTEXT RULES (what "Given background" means and what
 // may not be done with it) as byte-identical text — prompt-cache hits depend on that. The
@@ -127,6 +128,14 @@ an unverified claim, so guessing costs you the finding and damages the report.
   current page. Cap such a finding at \`medium\`, and state the snapshot date in the claim
   whenever the answer could have changed since (versions, prices, availability, "latest",
   anything dated). Never present archived content as the current state of the world.
+- A \`brainNotes\` note is the owner's own note (a Karakeep bookmark is a third-party page the
+  owner saved — attribute it to its site): true as of its \`updated\` date, the owner's prior,
+  not proof of the present. Put that date in any finding that rests on it ("owner's note,
+  updated 2026-08-05: …"), and when a page you retrieved says otherwise, report both — the
+  retrieved page is the current evidence.
+- Quote a number exactly as the page prints it, with what it measures (win rate, pick/use
+  rate, presence in N players' builds, sample size) and the row it belongs to. Never turn one
+  kind into another, and never estimate a count the page does not show.
 - If fetches fail and you cannot verify the thing you were asked about, the correct answer is
   to report that you could not verify it. Do NOT fall back on what you remember about the
   subject and present it as a finding — an honest gap is useful, a confident guess is not.
@@ -197,6 +206,8 @@ export function synthesisPrompt(depth: Depth): string {
 - Do not invent facts that are not present in the digests — synthesize only from what they contain. The one exception is the "Given background" section: facts stated there may be woven into the report as established, but they carry NO citation (they have no URL) and must not be dressed up as if a source backed them.
 - If digests disagree or leave gaps, state that explicitly in the report.
 - The "Given background" is established by the caller. When a digest's source gives a different value for something the background states, the background wins: state the background value as established and say in ONE line that the source is out of date on it — that is a staleness signal about the source, not a disagreement to adjudicate or tabulate.
+- An owner's note (a finding tagged OWNER'S NOTE (dated prior)) is the owner's prior, dated — not ground truth. Never use it to frame, discount or reinterpret what this run retrieved. When a retrieved page contradicts it, write both, attributed and dated: "your note (updated <date>) says A; <source> now shows B" — current retrieved evidence decides the present, and the difference is itself a finding the owner wants.
+- Numbers: quote a figure exactly as its source states it, together with what it measures (a win rate, a pick/use rate, presence in N builds, a sample size) — never convert one kind into another, never attach a figure to an item the source does not attach it to, and never estimate or compute a count the source does not print. A finding tagged \`[unverified number: …]\` did not have that number in its cited page: leave the number out of the report.
 - Retrieved evidence beats a negative. When one digest says a source could not be read, was unavailable, or a fact is unverified, and another digest retrieved that source or established that fact, report the retrieved finding and drop the negative — the report must not say both.
 - Never describe the research process's tools, fetches or budgets ("the page-retrieval tool became unavailable", "the fetch failed") as a finding. What could not be checked goes in \`unverified\`, stated as the topic that remains open.
 - Never recommend to the caller a path that a site's robots.txt disallows (e.g. a \`/api/\` route disallowed for all user agents) as the way to get its data; name the site's allowed HTML pages instead, and say the API is disallowed if it matters.
@@ -243,4 +254,12 @@ You MUST finish by calling \`submit_report\` with:
 ## Depth directive for this request
 
 ${profile.directive}`
+}
+
+// Marks a digest finding that cites one of the owner's notes, where the synthesis lead reads
+// it (the rule it points at is in synthesisPrompt). 2026-09-26 Mundo report: a finding from a
+// 2026-08-05 sourcing note framed the whole report against measured pages the run had read —
+// in the digest it looked like any other source.
+export function ownerNoteTag(url: string, brainBaseUrl: string | undefined): string {
+  return brainBaseUrl && isNoteRef(url, brainBaseUrl) ? " — OWNER'S NOTE (dated prior)" : ''
 }

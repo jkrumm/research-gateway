@@ -2,7 +2,7 @@ import { generateText, tool } from 'ai'
 import type { Tool } from 'ai'
 import { synthesisModel, leadModelWithDoubledBudget, leadSubmitChoice, ROLE_BUDGETS } from '../lib/llm.js'
 import type { IuLanguageModel } from '../lib/llm.js'
-import { synthesisPrompt, backgroundSection } from './prompt.js'
+import { synthesisPrompt, backgroundSection, ownerNoteTag } from './prompt.js'
 import { resolveSynthesisReport } from './extract.js'
 import { SubmittedReport, WorkerDigest } from './schema.js'
 import type { Depth } from './schema.js'
@@ -39,7 +39,7 @@ function renderDigests(
   undigested: readonly string[],
 ): string {
   const sections = digests.map((d) => {
-    const findings = d.findings.map((f) => `- ${f.claim} — ${f.url} (${f.confidence})`).join('\n')
+    const findings = d.findings.map((f) => `- ${f.claim} — ${f.url} (${f.confidence})${ownerNoteTag(f.url, env.BRAIN_BASE_URL)}`).join('\n')
     const sourcesRead = d.sourcesRead.join(', ')
     const blockedSources = d.blockedSources
       .map((b) => `- ${b.topic} — ${b.url ?? '(no url)'} (${b.reason})`)
