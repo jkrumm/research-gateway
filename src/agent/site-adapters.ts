@@ -52,6 +52,7 @@
 
 import { extractRedditThread, extractRedlibThread, type MinimalDocument } from './extract-reddit.js'
 import { canonicalYoutubeWatchUrl } from './youtube.js'
+import { annotateWrchina } from './extract-wrchina.js'
 
 export interface SiteAdapter {
   /** Rewrite the address actually dialled. The caller keeps the original for the ledger. */
@@ -96,6 +97,15 @@ const youtubeAdapter: SiteAdapter = {
   },
 }
 
+// wrchina.gg reads fine through Readability; its failure is SEMANTIC — two percentage tables
+// (set win/use rate, top-player presence) flatten into bare numbers a worker mixed up (the
+// 2026-09-26 Pyke report). The reader labels them in place and returns null, so Readability
+// runs on the annotated document (parse-worker.ts) — `extract` may mutate before declining.
+// The cast: MinimalDocument is the read-only view; annotation also needs attributes/siblings.
+const wrchinaAdapter: SiteAdapter = {
+  extract: (document) => annotateWrchina(document as unknown as Parameters<typeof annotateWrchina>[0]),
+}
+
 // Keyed by lowercase host of the ORIGINAL url.
 const ADAPTERS: Record<string, SiteAdapter> = {
   // All Reddit hosts go to the safereddit.com Redlib mirror since 2026-09-25: old.reddit.com
@@ -112,6 +122,8 @@ const ADAPTERS: Record<string, SiteAdapter> = {
   'm.youtube.com': youtubeAdapter,
   'music.youtube.com': youtubeAdapter,
   'youtu.be': youtubeAdapter,
+  'wrchina.gg': wrchinaAdapter,
+  'www.wrchina.gg': wrchinaAdapter,
   'dpreview.com': dpreviewAdapter,
   'www.dpreview.com': dpreviewAdapter,
 }
