@@ -2,6 +2,7 @@ import { Elysia } from 'elysia'
 import { z } from 'zod'
 import { createLedger } from '../agent/ledger.js'
 import { runFetchChain, FETCH_STEPS } from '../agent/fetch-chain.js'
+import { humanSolver } from '../agent/human-solve.js'
 
 // Diagnostics: run ONE url through the real fetch chain and report which step terminated it.
 //
@@ -32,6 +33,9 @@ export const probeRoutes = new Elysia().post(
       onTavilyCredits: (credits) => {
         tavilyCredits += credits
       },
+      // Opt-in only: the human stage pops a dialog on the owner's MacBook, which a bench replaying
+      // a corpus must never do. Absent on the VPS (no solver) regardless of the flag.
+      ...(body.human && humanSolver ? { humanSolve: humanSolver } : {}),
     })
 
     return {
@@ -53,6 +57,7 @@ export const probeRoutes = new Elysia().post(
   {
     body: z.object({
       url: z.string().describe('The URL to run through the fetch chain'),
+      human: z.boolean().optional().describe('Allow the human-solve stage (mini only) — pops a dialog on the owner\'s MacBook'),
     }),
     response: z.object({
       url: z.string(),
