@@ -76,7 +76,9 @@ claim citing a merely `retrieved` page caps at `medium` (issue #3's false negati
 runs in code at the worker boundary and the job boundary — never in a prompt alone (prompt-only
 citation rules did not hold, twice, before this existed). If you touch `src/agent/ground.ts`,
 `src/agent/tools.ts`, or add a new tool: run `src/agent/ground.test.ts` and don't merge a
-regression against issue #1's case. Full model: README § Grounding.
+regression against issue #1's case. A quoted number that is not in the page text `fetchPage`
+delivered for the cited URL caps that citation at `low` (`numbers.ts`) — also in code, for the
+same reason. Full model: README § Grounding.
 
 ## Two instances
 

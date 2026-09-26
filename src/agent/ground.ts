@@ -1,6 +1,7 @@
 import type { Finding, Grounding, ResearchReport, SubmittedReport, WorkerDigest } from './schema.js'
 import { normalizeUrl } from './ledger.js'
 import type { RetrievalLedger, RetrievalTier } from './ledger.js'
+import { unmatchedNumbers } from './numbers.js'
 
 // Grounding — the code-side gate between what a model CLAIMS it verified and what the run
 // actually retrieved. Applied twice: at the worker boundary (findings, before they can
@@ -61,6 +62,9 @@ export interface GroundedClaims {
   // positions, not a count, so the job boundary can union them with the subject-degrade
   // pass's indices and never double-count a claim that was capped here and degraded there.
   capped: ReadonlySet<number>
+  // Kept claims quoting a number that occurs nowhere in the text the run retrieved for their
+  // citation (numbers.ts). Indices into `kept`; in `capped` too unless already at `low`.
+  unmatched: ReadonlyArray<{ index: number; numbers: string[] }>
 }
 
 // The single rule both boundaries share.
@@ -85,6 +89,7 @@ export function groundClaims(
   const kept: Finding[] = []
   const dropped: GroundedClaims['dropped'] = []
   const capped = new Set<number>()
+  const unmatched: Array<{ index: number; numbers: string[] }> = []
 
   for (const claim of claims) {
     const tier = ledger.tierOf(claim.url)
@@ -146,19 +151,42 @@ export function groundClaims(
     let ceiling: Confidence = CEILING[tier]
     if (isAbsenceClaim(claim.claim)) ceiling = 'medium'
 
+    // A number the claim quotes that is not in the text the run retrieved for this URL was not
+    // read there — invented, carried over from another page or the caller's background (measured
+    // 2026-09-26: a 09-25 snapshot in `context` cited as the live page, which had moved), or computed. Capped at `low`, not
+    // dropped: a derived figure can be right, and the claim's other content still rests on the
+    // page. Only checked where the page's text was recorded (fetchPage); see numbers.ts.
+    const pageNumbers = ledger.numbersOf(claim.url)
+    const missingNumbers = pageNumbers ? unmatchedNumbers(claim.claim, pageNumbers) : []
+    if (missingNumbers.length > 0) {
+      ceiling = 'low'
+      unmatched.push({ index: kept.length, numbers: missingNumbers })
+    }
+
     const cappedClaim = capConfidence(claim.confidence, ceiling)
     if (cappedClaim !== claim.confidence) capped.add(kept.length)
     kept.push({ ...claim, confidence: cappedClaim })
   }
 
-  return { kept, dropped, capped }
+  return { kept, dropped, capped, unmatched }
+}
+
+function notOnPage(numbers: readonly string[]): string {
+  return `${numbers.join(', ')} ${numbers.length === 1 ? 'does' : 'do'} not occur in the text retrieved from the cited page`
 }
 
 // Worker boundary. Fabricated findings are stripped here rather than at the end, so the
 // synthesis prompt never sees them — which keeps the invented claim out of the report
 // PROSE too, not just out of the citation list.
 export function groundDigest(digest: WorkerDigest, ledger: RetrievalLedger): WorkerDigest {
-  const { kept, dropped } = groundClaims(digest.findings, ledger)
+  const grounded = groundClaims(digest.findings, ledger)
+  const { dropped } = grounded
+  // Say it in the finding itself: the synthesis model reads claim text, and a bare `low` did
+  // not stop "~5,565 matches" from reaching the report prose.
+  const kept = grounded.kept.map((finding, index) => {
+    const miss = grounded.unmatched.find((u) => u.index === index)
+    return miss ? { ...finding, claim: `${finding.claim} [unverified number: ${notOnPage(miss.numbers)}]` } : finding
+  })
 
   // A digest whose every finding was ungrounded is a summary written from priors. Say so
   // in the summary itself: that text flows into the synthesis prompt and, via the
@@ -392,7 +420,7 @@ export function groundReport(
       .filter((url) => ledger.tierOf(url) !== 'retrieved'),
   )
 
-  const { kept: citedClaims, dropped, capped } = groundClaims(submitted.citations, ledger, ineligible)
+  const { kept: citedClaims, dropped, capped, unmatched } = groundClaims(submitted.citations, ledger, ineligible)
   // Issue #4, second gate: a kept citation can still ASSERT facts about a document the run
   // could not read, via a different URL. Confidence degrades; the claim and its citation
   // stay, so a wrong subject match costs caution, not evidence. The same ledger-vindication
@@ -419,6 +447,7 @@ export function groundReport(
     citationsDropped: dropped.length,
     confidenceCapped,
     citationsDegraded: degraded.size,
+    citationsNumberUnmatched: unmatched.length,
   }
 
   // Keep the invariant total: a URL that survived into `citations` must not also sit in
@@ -426,7 +455,17 @@ export function groundReport(
   // the entry is kept (its TOPIC may genuinely be unverified) but detached from the URL, so
   // the transparency note survives without contradicting the citation next to it.
   const cited = new Set(kept.map((c) => normalizeUrl(c.url)))
-  const unverified = dedupeUnverified([...submitted.unverified, ...dropped]).map((entry) => {
+  // A mismatched number is an unverified FACT on a usable page, so its entry carries no URL:
+  // the citation stays, and `url` in `unverified` means "this source could not be used".
+  const numberEntries = unmatched.map(({ index, numbers }) => {
+    const claim = kept[index]
+    return {
+      topic: claim?.claim ?? '',
+      url: null,
+      reason: `Number check: ${notOnPage(numbers)} (${claim?.url ?? ''}) — the figure may be invented, taken from another page or the given background, or computed; confirm before relying on it.`,
+    }
+  })
+  const unverified = dedupeUnverified([...submitted.unverified, ...dropped, ...numberEntries]).map((entry) => {
     if (!entry.url || !cited.has(normalizeUrl(entry.url))) return entry
     // Say what the ledger actually holds: "retrieved" was asserted for snippet- and 404-tier
     // pages too, which read as a contradiction next to a medium-capped citation.
@@ -464,6 +503,11 @@ export function groundReport(
   if (degraded.size > 0) {
     warnings.push(
       `${degraded.size} citation(s) were capped at low confidence because they appear to assert facts about a source this run listed as unverifiable — the claim text matched the subject of an \`unverified\` entry.`,
+    )
+  }
+  if (unmatched.length > 0) {
+    warnings.push(
+      `${unmatched.length} citation(s) quote a number that does not occur in the text retrieved from the page they cite — capped at low confidence and listed in \`unverified\`.`,
     )
   }
   if (grounding.pagesRetrieved === 0 && grounding.pagesMissing > 0) {

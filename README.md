@@ -142,6 +142,14 @@ A job that retrieved **nothing at all** is not a `partial` report: it is a termi
 retry already spent trying to recover it.
 An archived (Wayback) page is `retrieved` but the worker is told to cap it at `medium` and
 name the snapshot date.
+A number a citation quotes (a percentage, or any other number ≥ 100) must occur in the text
+the model was actually handed for that URL by `fetchPage` (`src/agent/numbers.ts`, recorded
+per URL in the ledger). One that does not — invented, carried over from another page, or
+computed — caps the citation at `low`, adds an `unverified` entry naming the number, and counts
+in `grounding.citationsNumberUnmatched`; at the worker boundary the finding's text is tagged
+`[unverified number: …]` so synthesis leaves it out. It catches invented figures (the
+2026-09-26 Pyke report's "~5,565 matches"), not a real figure read with the wrong meaning —
+that is fixed at the source, e.g. the wrchina.gg reader labelling win rate vs presence.
 
 Regression-tested in `src/agent/ground.test.ts` against the run that motivated it
 ([#1](https://github.com/jkrumm/research-gateway/issues/1)), and against the false-negative

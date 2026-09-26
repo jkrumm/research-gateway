@@ -6,7 +6,7 @@ import { profiles } from './depth.js'
 import { workerPrompt, backgroundSection } from './prompt.js'
 import { WorkerDigest } from './schema.js'
 import type { Depth } from './schema.js'
-import { createLedger, type LedgerSnapshot } from './ledger.js'
+import { createLedger, type LedgerSnapshot, type RetrievalLedger } from './ledger.js'
 import { groundDigest } from './ground.js'
 import { shouldForceSubmit, buildSalvageMessages, buildSalvageInstruction, SALVAGE_TOOL_NAME } from './salvage.js'
 import { log } from '../lib/log.js'
@@ -117,6 +117,7 @@ export async function runWorker(args: {
           onStepEnd: (step) => {
             stepCount++
             idle.arm()
+            recordDeliveredText(step.toolResults, ledger)
             log('worker.step', { jobId, round, tools: step.toolCalls.map((c) => c.toolName), finishReason: step.finishReason })
             // A starved step (empty/truncated output) reads exactly like a step that simply
             // chose not to call a tool unless finishReason is checked — this is the one signal
@@ -270,4 +271,20 @@ export async function runWorker(args: {
     },
     'internal',
   )
+}
+
+// The text a model was actually handed for a page is what a number in its claim must come
+// from (numbers.ts). Read off the step's tool results rather than inside fetchPage so the
+// record is exactly the delivered text — after the page-text budget cut — and nothing else.
+// Only fetchPage returns a single page's text under its own URL; the other tools' outputs
+// are left unrecorded, which makes the numeric check skip their citations, never fail them.
+function recordDeliveredText(results: ReadonlyArray<{ toolName: string; output: unknown }>, ledger: RetrievalLedger): void {
+  for (const r of results) {
+    if (r.toolName !== 'fetchPage') continue
+    const out = r.output as { url?: unknown; text?: unknown } | null
+    if (typeof out?.url !== 'string' || typeof out.text !== 'string') continue
+    // fetchPage's per-worker cache answers a repeat with a stub, not the page (tools.ts).
+    if (out.text.startsWith('Already fetched earlier in this conversation')) continue
+    ledger.recordText(out.url, out.text)
+  }
 }

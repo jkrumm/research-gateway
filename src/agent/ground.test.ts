@@ -469,6 +469,7 @@ describe('groundReport — the job boundary', () => {
       citationsDropped: 0,
       confidenceCapped: 0,
       citationsDegraded: 0,
+      citationsNumberUnmatched: 0,
     })
   })
 
@@ -962,5 +963,89 @@ describe('degradeClaimsOnUnverifiedSources — the cap has to find the document 
       [{ topic: 'RiftGG curated build page for Nautilus', url: 'https://www.riftgg.app/en/champions/nautilus/build' }],
     )
     expect(kept[0]?.confidence).toBe('low')
+  })
+})
+
+describe('numeric claims must occur in the cited page (2026-09-26 Pyke report)', () => {
+  const PYKE = 'https://wrchina.gg/c/pyke/'
+  const PAGE = 'Core items 49.8% WR 41.78% use · Top-30: Youmuu\'s Ghostblade 96% · Armorcrusher Boots 83% · Unflinching 70%'
+
+  function pykeLedger() {
+    const ledger = createLedger()
+    ledger.recordRetrieved(PYKE)
+    ledger.recordText(PYKE, PAGE)
+    return ledger
+  }
+
+  it('caps a citation whose number is not in the page text, and restates it in unverified', () => {
+    const report = groundReport(
+      submitted({
+        citations: [
+          { claim: 'Youmuu top-win at ~83% win over ~5,565 matches', url: PYKE, confidence: 'medium' },
+          { claim: "Youmuu's Ghostblade appears in 96% of top builds", url: PYKE, confidence: 'high' },
+        ],
+      }),
+      pykeLedger(),
+    )
+    expect(report.citations.map((c) => c.confidence)).toEqual(['low', 'high'])
+    expect(report.grounding.citationsNumberUnmatched).toBe(1)
+    expect(report.grounding.confidenceCapped).toBe(1)
+    // A capped number is a caution, not lost evidence.
+    expect(report.status).toBe('ok')
+    const entry = report.unverified.find((u) => u.reason.startsWith('Number check'))
+    expect(entry?.url).toBeNull()
+    expect(entry?.reason).toContain('~5,565')
+    expect(entry?.reason).toContain(PYKE)
+    expect(report.warnings.some((w) => w.includes('quote a number'))).toBe(true)
+  })
+
+  it('skips the check when no text was recorded for the URL — unknown is not absent', () => {
+    const ledger = createLedger()
+    ledger.recordRetrieved(PYKE)
+    const report = groundReport(
+      submitted({ citations: [{ claim: 'over ~5,565 matches', url: PYKE, confidence: 'high' }] }),
+      ledger,
+    )
+    expect(report.citations[0]?.confidence).toBe('high')
+    expect(report.grounding.citationsNumberUnmatched).toBe(0)
+  })
+
+  it('survives mergeLedgers, and matches the page across URL spellings', () => {
+    const merged = mergeLedgers([pykeLedger().snapshot()])
+    const report = groundReport(
+      submitted({ citations: [{ claim: 'over 5,565 matches', url: 'https://www.wrchina.gg/c/pyke', confidence: 'high' }] }),
+      merged,
+    )
+    expect(report.citations[0]?.confidence).toBe('low')
+  })
+
+  it('marks the finding text at the worker boundary so synthesis sees it', () => {
+    const out = groundDigest(
+      digest({ findings: [{ claim: 'Duskblade CN win 70.4%', url: PYKE, confidence: 'high' }] }),
+      pykeLedger(),
+    )
+    expect(out.findings[0]?.confidence).toBe('low')
+    expect(out.findings[0]?.claim).toContain('[unverified number: 70.4% does not occur')
+  })
+})
+
+describe('numeric check — review fixes', () => {
+  it('an empty delivery records nothing, so the check is skipped rather than failing every number', () => {
+    const ledger = createLedger()
+    ledger.recordRetrieved('https://example.com/a')
+    ledger.recordText('https://example.com/a', '   ')
+    expect(ledger.numbersOf('https://example.com/a')).toBeNull()
+  })
+
+  it('an already-low unmatched claim is flagged but not counted as capped', () => {
+    const ledger = createLedger()
+    ledger.recordRetrieved('https://example.com/a')
+    ledger.recordText('https://example.com/a', 'win rate 50.1%')
+    const report = groundReport(
+      submitted({ citations: [{ claim: 'over 5,565 matches', url: 'https://example.com/a', confidence: 'low' }] }),
+      ledger,
+    )
+    expect(report.grounding.citationsNumberUnmatched).toBe(1)
+    expect(report.grounding.confidenceCapped).toBe(0)
   })
 })

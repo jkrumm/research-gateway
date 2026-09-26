@@ -6,8 +6,10 @@
 // same response listed as unfetchable (issue #1). Prose said "could not fetch"; the
 // structured citations said "verified". Citations are what a consuming agent trusts.
 //
-// Dependency-free by design (no project imports) so it is unit-testable without booting
+// Dependency-free by design (only the pure numbers.ts) so it is unit-testable without booting
 // the env/LLM import chain — same convention as `assemble.ts` / `extract.ts`.
+
+import { extractNumbers } from './numbers.js'
 
 // Precedence when a URL lands in more than one bucket: retrieved > missing > failed > snippet.
 // A page that was successfully read outranks an earlier failed attempt (fetchPage falls
@@ -23,6 +25,9 @@ export interface LedgerSnapshot {
   missing: Array<{ url: string; reason: string }>
   snippet: string[]
   failed: Array<{ url: string; reason: string }>
+  /** Numeric values in the text a model was actually given for a URL (numbers.ts). Optional:
+   *  a snapshot from a path that records no text simply has nothing to check against. */
+  numbers?: Array<{ url: string; values: number[] }>
 }
 
 export interface RetrievalLedger {
@@ -34,6 +39,14 @@ export interface RetrievalLedger {
   recordSnippet(url: string): void
   /** A fetch of this URL was attempted and failed (error, refusal, rate limit, empty). */
   recordFailed(url: string, reason: string): void
+  /** The text of this URL that a model actually received (fetchPage). Only its numbers are
+   *  kept — enough for the numeric-claim check in ground.ts, without holding page text. */
+  recordText(url: string, text: string): void
+  /** Already-extracted numbers — how mergeLedgers carries a worker's record into the job's. */
+  recordNumbers(url: string, values: readonly number[]): void
+  /** Numbers the model was shown for this URL, or null when no text was recorded for it — an
+   *  unknown page must never read as a page that lacks the number. */
+  numbersOf(url: string): readonly number[] | null
   tierOf(url: string): RetrievalTier
   failureReason(url: string): string | null
   /** URLs whose full text was retrieved, in first-seen order, in their original form. */
@@ -66,6 +79,14 @@ export function createLedger(): RetrievalLedger {
   const missing = new Map<string, { url: string; reason: string }>()
   const snippet = new Map<string, string>()
   const failed = new Map<string, { url: string; reason: string }>()
+  const numbers = new Map<string, { url: string; values: Set<number> }>()
+
+  const addNumbers = (url: string, values: Iterable<number>): void => {
+    const key = normalizeUrl(url)
+    const entry = numbers.get(key) ?? { url, values: new Set<number>() }
+    for (const v of values) entry.values.add(v)
+    numbers.set(key, entry)
+  }
 
   return {
     recordRetrieved(url) {
@@ -83,6 +104,19 @@ export function createLedger(): RetrievalLedger {
     recordFailed(url, reason) {
       const key = normalizeUrl(url)
       if (!failed.has(key)) failed.set(key, { url, reason })
+    },
+    recordText(url, text) {
+      // Empty text is not a page that lacks every number — recording it would cap every
+      // numeric claim on this URL (review: Tavily Extract can deliver '').
+      if (text.trim() === '') return
+      addNumbers(url, extractNumbers(text))
+    },
+    recordNumbers(url, values) {
+      addNumbers(url, values)
+    },
+    numbersOf(url) {
+      const entry = numbers.get(normalizeUrl(url))
+      return entry ? [...entry.values] : null
     },
     tierOf(url) {
       const key = normalizeUrl(url)
@@ -107,6 +141,7 @@ export function createLedger(): RetrievalLedger {
         missing: [...missing.values()],
         snippet: [...snippet.values()],
         failed: [...failed.values()],
+        numbers: [...numbers.values()].map((e) => ({ url: e.url, values: [...e.values] })),
       }
     },
   }
@@ -123,6 +158,7 @@ export function mergeLedgers(snapshots: LedgerSnapshot[]): RetrievalLedger {
     for (const m of snap.missing) merged.recordMissing(m.url, m.reason)
     for (const url of snap.snippet) merged.recordSnippet(url)
     for (const f of snap.failed) merged.recordFailed(f.url, f.reason)
+    for (const n of snap.numbers ?? []) merged.recordNumbers(n.url, n.values)
   }
   return merged
 }

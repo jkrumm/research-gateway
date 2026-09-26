@@ -100,6 +100,12 @@ export const Grounding = z.object({
     .describe(
       'Of the capped citations, those whose claim names the subject of an `unverified` entry. A cap is not lost evidence, so this alone does not make a run `partial`; it is the transparency signal for why a citation sits at `low`.',
     ),
+  citationsNumberUnmatched: z
+    .number()
+    .default(0)
+    .describe(
+      'Of the capped citations, those quoting a number that does not occur in the text retrieved from the page they cite (invented, carried over from another page, or computed). Each is capped at `low` and restated in `unverified`.',
+    ),
 })
 export type Grounding = z.infer<typeof Grounding>
 
