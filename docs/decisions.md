@@ -104,6 +104,36 @@ browser, or Anthropic's `Claude-User` agent). Two rules hold anyway:
 
 Revisit if the service ever does anything crawl-shaped (scheduled refreshes, bulk fetches).
 
+## Browser impersonation and human solve (2026-09-26)
+
+Two escalations sit either side of Tavily Extract in the chain now, both gated by the same
+per-host reputation logic rather than layered on top of it.
+
+- **TLS/HTTP2 impersonation (`impit`, `browser: 'chrome'`) is a second origin rung, not a
+  replacement for the first.** The plain, self-identifying bot request always goes first —
+  fetch-chain.ts still tells the origin who it is before ever presenting a browser's
+  fingerprint. Only once that request is refused (401/403/503, with or without a
+  `classifyBlock` vendor marker — idealo.de's bare 403 carries none) does the chain retry
+  through impit's Chrome TLS/HTTP2 handshake, and only with THAT browser's own headers: no
+  custom User-Agent is ever layered on top, because a bot UA on a genuine Chrome handshake is
+  itself a fingerprinting tell. Measured 2026-09-26 (mini, Bun 1.4.1, impit 0.14.5):
+  idealo.de 403s the plain fetch and returns the real page (200, 825 KB search results / 764 KB
+  category page) via impit; ebay.com/ebay.de (Akamai), g2.com and mpb.com (Cloudflare managed
+  challenge) 403 both ways — no origin rung passes those, hence their `host-policy.ts` entries
+  skipping origin/render outright. A 429 never triggers the rung — a rate limit means slow
+  down, not "try again as someone else" — and a host already in cooldown from an EARLIER chain
+  is left alone rather than spending a second probe on a certain miss.
+- **The per-host gate makes this gentler than the old single-rung chain, not riskier.** Both
+  rungs run through the same `hostGate` (1s min interval / 2 concurrent by default) and the
+  same cooldown bookkeeping — a learned "impersonation works here" (24h TTL, capped at 1000
+  hosts, `impersonate.ts`) skips the plain probe entirely on the next chain for that host, so a
+  known-blocking host costs one gated origin hit per chain, never two.
+- **Human solve is owner-initiated per host, not automatic.** It sits after Tavily Extract
+  fails and is only offered when this chain has direct or inherited evidence of a block
+  (`sawBlock`); a human solving a Cloudflare challenge on the MacBook says nothing about
+  whether the mini's own IP is un-blocked, so a successful human solve does NOT clear the
+  host's cooldown the way a successful impersonation does.
+
 ## Non-goals, still
 
 No deterministic pipeline, no per-client tokens, no query caching, no streaming, no

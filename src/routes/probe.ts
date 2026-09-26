@@ -1,7 +1,7 @@
 import { Elysia } from 'elysia'
 import { z } from 'zod'
 import { createLedger } from '../agent/ledger.js'
-import { runFetchChain } from '../agent/fetch-chain.js'
+import { runFetchChain, FETCH_STEPS } from '../agent/fetch-chain.js'
 
 // Diagnostics: run ONE url through the real fetch chain and report which step terminated it.
 //
@@ -57,19 +57,17 @@ export const probeRoutes = new Elysia().post(
     response: z.object({
       url: z.string(),
       fetchUrl: z.string().describe('The address actually dialled — differs when a site adapter rewrites it'),
-      via: z
-        .enum(['raw', 'site-adapter', 'readability', 'pdf', 'lightpanda', 'yt-dlp', 'tavily-extract', 'wayback'])
-        .nullable()
-        .describe('The step that terminated the chain, or null if every step failed'),
+      via: z.enum(FETCH_STEPS).nullable().describe('The step that terminated the chain, or null if every step failed'),
       chars: z.number(),
       preview: z.string().nullable(),
       error: z.string().nullable(),
       attempts: z.array(
         z.object({
-          step: z.enum(['raw', 'site-adapter', 'readability', 'pdf', 'lightpanda', 'yt-dlp', 'tavily-extract', 'wayback']),
+          step: z.enum(FETCH_STEPS),
           ok: z.boolean(),
           chars: z.number().optional(),
           error: z.string().optional(),
+          blocked: z.string().optional(),
           ms: z.number(),
         }),
       ),

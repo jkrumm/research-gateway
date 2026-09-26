@@ -21,6 +21,7 @@
     "@upstash/context7-sdk": "0.4.1",
     "ai": "7.0.107",
     "elysia": "1.4.30",
+    "impit": "0.14.5",
     "linkedom": "0.18.13",
     "zod": "4.6.5"
   },

@@ -13,6 +13,7 @@ import { createLedger } from './ledger.js'
 import { buildDirectSourceTools } from './direct-sources.js'
 import { sonarSearch, type SonarContextSize } from './sonar.js'
 import { runFetchChain, hostOf } from './fetch-chain.js'
+import { humanSolver } from './human-solve.js'
 import { normalizeUrl, type RetrievalLedger } from './ledger.js'
 import { readBrainNote, searchBrain } from './brain-search.js'
 import { searchKarakeep } from './karakeep-search.js'
@@ -541,7 +542,11 @@ function buildFetchPageTool(ledger: RetrievalLedger, pageBudget: PageBudget, job
     inputSchema: z.object({
       url: z.string().describe('The URL to fetch'),
     }),
-    execute: async ({ url }) => {
+    // Takes the AI SDK's 2nd `options` argument (previously ignored) so the job/tool
+    // abortSignal reaches the chain — `instrument()` above already forwards it unchanged;
+    // this is the one execute that had a reason to read it (a fetch chain can run the ~90s
+    // FETCH_CHAIN_BUDGET_MS on its own, and a cancelled job should cancel that too).
+    execute: async ({ url }, options) => {
       if (fetched.has(url)) {
         getActiveSpan().setAttributes({ 'fetch.url': url, 'fetch.via': 'cache', 'fetch.ok': true })
         log('tool.fetchPage', { jobId, url, via: 'cache' })
@@ -584,6 +589,7 @@ function buildFetchPageTool(ledger: RetrievalLedger, pageBudget: PageBudget, job
       const result = await runFetchChain(url, {
         ledger: staged,
         jobId,
+        signal: options?.abortSignal,
         onTavilyCredits: (credits) => recordTavilyExtract(jobId, credits),
         onRender: (r) => meterRender.add(jobId, { renders: 1, failures: r.ok ? 0 : 1, totalMs: r.ms }),
         onYtdlp: (r) => meterYtdlp.add(jobId, { calls: 1, failures: r.ok ? 0 : 1, totalMs: r.ms }),
@@ -594,10 +600,14 @@ function buildFetchPageTool(ledger: RetrievalLedger, pageBudget: PageBudget, job
             totalMs: r.ms,
             oldestSnapshotDays: r.snapshotAgeDays,
           }),
+        // Undefined off the mini (HUMAN_SOLVE_SSH_HOST unset) — the chain then has no human stage.
+        ...(humanSolver ? { humanSolve: humanSolver } : {}),
+        onHuman: (r) => log('tool.fetchPage.human', { jobId, url, ok: r.ok, ms: r.ms, mode: r.mode, reason: r.reason }),
       })
 
       // The per-step waterfall is already on this span as `fetch.step` events, emitted by
       // runFetchChain itself; these are the dimensions you group by around them.
+      const blockedAttempt = result.attempts.find((a) => a.blocked)
       getActiveSpan().setAttributes({
         'fetch.url': url,
         'fetch.host': hostOf(result.fetchUrl),
@@ -606,6 +616,7 @@ function buildFetchPageTool(ledger: RetrievalLedger, pageBudget: PageBudget, job
         'fetch.attempts': result.attempts.length,
         'fetch.error': result.error ?? undefined,
         'fetch.ok': result.via !== null,
+        'fetch.blocked': blockedAttempt?.blocked ?? undefined,
       })
 
       const text = result.text === null ? null : pageBudget.take(result.text)

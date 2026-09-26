@@ -11,6 +11,7 @@ import { log } from './lib/log.js'
 import { flushOtel } from './lib/otel.js'
 import { startMemoryWatch } from './lib/memory-watch.js'
 import { beginDraining, jobCounts, waitForDrain, setMemoryPressure } from './lib/job-store.js'
+import { createSafeProxy } from './lib/safe-proxy.js'
 
 // ── Process-level diagnostics ────────────────────────────────────────────────
 // On 2026-07-31 the container exited with code 0, mid-flight, during a deep job,
@@ -136,6 +137,21 @@ process.on('unhandledRejection', (reason) => {
   log('process.unhandledRejection', { reason: String(reason), stack })
 })
 startMemoryWatch(setMemoryPressure, env.MEMORY_LIMIT_MB)
+// The human-solve escalation path's solver Chrome (bin/solver.ts, mini-only) is told to route
+// every connection through this proxy — see src/lib/safe-proxy.ts's header. Only started when
+// there is a solver Chrome to protect (HUMAN_SOLVE_SSH_HOST unset on the VPS/local dev/tests);
+// a bind failure is loud but not fatal to the rest of the gateway — solver.ts itself refuses to
+// run rather than browse unfiltered when it can't reach this port (see its own `proxy_unavailable`
+// check), so failing this open here still fails the actual browsing closed.
+if (env.HUMAN_SOLVE_SSH_HOST) {
+  createSafeProxy({ port: env.HUMAN_SOLVE_PROXY_PORT })
+    .then((proxy) => {
+      log('human_solve.proxy_listening', { url: proxy.url })
+    })
+    .catch((err) => {
+      log('human_solve.proxy_failed', { error: String(err) })
+    })
+}
 // The drain window is only real while the compose `stop_grace_period` (vps repo) stays above
 // it, and those two numbers live in two repos. If they ever drift the wrong way, Docker
 // SIGKILLs before `drainThenExit` gets to log anything — the identical silent shape this file

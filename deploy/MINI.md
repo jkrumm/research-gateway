@@ -65,3 +65,66 @@ Monitoring: the `research-gateway` component of dotfiles' `devhost-health-check.
 `/health` + renderer via `/health/render`, into the "MacMini Dev Host - Push" Kuma monitor) and a
 crash-loop row for both KeepAlive labels. Memory: no cgroup on macOS, so `MEMORY_LIMIT_MB=4096`
 drives the same watchdog + load shedding off process RSS (`memory.source: "rss"` on `/health`).
+
+## Human solve
+
+A challenged page (Cloudflare managed challenge, DataDome, …) can be solved by the owner: the
+gateway ssh's to `HUMAN_SOLVE_SSH_HOST` (`iumac`) **only** to show a JXA dialog; **Open** runs
+`open vnc://mini` there, and the owner clicks through the challenge in the mini's dedicated
+solver Chrome (`~/.research-gateway/solver-chrome`, CDP on `127.0.0.1:9422`, separate from
+any everyday Chrome). The browser — and so the `cf_clearance` cookie — lives on the mini, so
+later reads of that host go through the same browser with no dialog and no MacBook, from the
+mini's own IP. The MacBook never fetches anything (it is an IU-managed device on a corporate
+network). Requirements: the console GUI session stays logged in, Screen Sharing stays enabled.
+The solver polls `/json/list` titles and attaches a CDP client only once the challenge title is
+gone — an attached debugger is the main thing anti-bot scripts detect. Suppression: a skipped or
+unanswered host is not re-asked for 6h; an unreachable MacBook pauses prompts for 5 min; the
+solver Chrome or the SSRF proxy below failing to come up pauses prompts globally for the same 5
+min, under its own 'solver unavailable' reason (never conflated with an unreachable MacBook,
+even though the effect — a short blanket pause — is the same shape).
+
+**HTTP(S)/WebSocket SSRF filter, plus a separate WebRTC restriction — not one blanket
+"network-level" boundary.** The solver Chrome is LLM-chosen-URL-driven (attacker-influenced by
+construction), so a URL-level check alone (`assertPublicHttpUrl` on the request in and the
+settled `location.href` on the way out) leaves a gap: a redirect or a `fetch()` the challenged
+page's own script issues in between is unchecked. `src/lib/safe-proxy.ts` closes that gap for
+HTTP(S) and WebSocket traffic — a loopback-only HTTP+CONNECT proxy hosted INSIDE the gateway
+process (started from `src/index.ts` only when `HUMAN_SOLVE_SSH_HOST` is set), listening on
+`127.0.0.1:${HUMAN_SOLVE_PROXY_PORT}` (default 9423). It resolves DNS itself and connects to the
+RESOLVED address (defeating DNS rebinding — a hostname that resolved safely cannot later connect
+anywhere unsafe through it), refusing if ANY resolved address is unsafe. The solver Chrome is
+launched with `--proxy-server=http://127.0.0.1:9423` and `--proxy-bypass-list=<-loopback>` (the
+latter removes Chrome's own implicit loopback bypass, so a page reaching for
+`localhost`/`127.0.0.1` is refused too, not routed direct). Adapted from agentrhq/webcmd's
+`src/fetch/safe-proxy.ts` (Apache-2.0); the private/reserved-range table is shared with
+`src/lib/ssrf.ts` (`isPrivateAddress` for `assertPublicHttpUrl`'s existing callers,
+`isPrivateAddressStrict` — the fuller, TEST-NET-closing table — for this proxy only, which has no
+TEST-NET-fixture caller to preserve). CONNECT tunnels TLS end-to-end, so this does NOT change the
+Cloudflare-visible TLS/HTTP fingerprint or the egress IP the target site sees — it guards the
+DESTINATION Chrome can reach, not what it looks like once it gets there.
+
+WebRTC is a SEPARATE network path this proxy never sees — a page could otherwise open a direct
+UDP/TCP connection via `getUserMedia`/`RTCPeerConnection` straight past it, with no DNS or SSRF
+check in between. bin/solver.ts's Chrome is launched with
+`--force-webrtc-ip-handling-policy=disable_non_proxied_udp` and
+`--webrtc-ip-handling-policy=disable_non_proxied_udp` instead, restricting WebRTC's own candidate
+gathering to proxied UDP only. HTTP(S)/WebSocket via the proxy above, plus WebRTC restricted to
+proxied, are the two network paths page JS running in Chrome can reach — there is no other raw
+TCP/UDP socket API available to it, so say precisely which mechanism covers which path rather
+than one undifferentiated "network-level boundary".
+
+Since the profile persists across launches but command-line flags don't, `bin/solver.ts` records
+the proxy port it last launched Chrome with in a sidecar file next to the profile
+(`~/.research-gateway/solver-chrome.launch-args.json`) and compares it on every run; a mismatch
+(or an instance that predates the proxy entirely) is killed and relaunched with the flags the
+current run needs — Chrome is never left browsing unfiltered. If the proxy itself isn't
+listening, the solver refuses to run at all (`reason: 'proxy_unavailable'`) rather than fail
+open. A `mode: 'warm'` solver run (launch/verify only, no tab, no human) checks both — proxy
+listening, then Chrome up with matching launch args — BEFORE the MacBook dialog, so a broken
+solver never prompts the owner for a browser session that was never coming up.
+
+State is in-memory by design: a deploy or restart forgets cleared and declined hosts, so a
+declined host can be asked about again after the next deploy. Prompts are capped at 6 per
+rolling hour. Trust boundary: the solver Chrome renders LLM-chosen URLs on the dev host with a
+warm cookie profile. The settled URL is re-checked against the SSRF guard before anything is
+returned, and the profile is used for nothing else. Never sign in to anything in it.

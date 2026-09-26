@@ -197,6 +197,9 @@ do not mock env. `scripts/smoke.ts` runs one `runResearch()` end to end without 
 | `JOB_DB_PATH` | no (`./data/jobs.sqlite`) | `/app/data` in the container, a named volume |
 | `SHUTDOWN_DRAIN_MS` | no (1 800 000) | how long SIGTERM waits for RUNNING jobs before force-exiting. **Must stay below the compose `stop_grace_period` (1860s)** or SIGKILL wins and the drain buys nothing. Sized off the 30-day span record, not a guess — see Restarts |
 | `YTDLP_PATH` / `YTDLP_MAX_CONCURRENCY` / `YTDLP_TIMEOUT_MS` | no | bundled binary; concurrency 2 because YouTube rate-limits the datacenter IP under burst |
+| `HUMAN_SOLVE_SSH_HOST` | no (off) | mini only: ssh alias of the owner's MacBook, used **only** to show the "solve this challenge?" dialog. Unset takes the human stage out of the chain (VPS) |
+| `HUMAN_SOLVE_VIEW_URL` | no | what the dialog's **Open** runs on the MacBook — `vnc://mini` (Screen Sharing into the mini, where the solver Chrome is) |
+| `HUMAN_SOLVE_WAIT_MS` | no (300 000) | hang guard for one human solve — a wait for a person, not an agent budget |
 
 Production values come from `vps/apps/research-gateway/.env.tpl` via `op inject`, which
 **resolves `op://` refs inside comments too** — never park an unused ref behind a `#`.
@@ -245,11 +248,13 @@ tool is not. Podcasts needed no code: episode pages are ordinary web pages Reada
 | Step | Handles | Notes |
 |-|-|-|
 | 1. `@mozilla/readability` | ordinary article pages | serves the large majority; 404/410 short-circuit here (`response-kind.ts`) |
+| 1a. browser impersonation | origins that 403 our bot request at the TLS layer | `impersonate.ts` (`impit`, Chrome TLS/HTTP2 fingerprint + its UA). Only after a plain 401/403/503, never a 429; a host where it worked goes straight to it for 24h. Measured: idealo.de 403 → 200 |
 | 1b. `pdftotext` | a PDF (by Content-Type or `%PDF-` magic) | `pdf.ts`, poppler, bytes never decoded as text; skips the renderer; a scanned PDF below the floor falls to Tavily Extract |
 | 2. site adapter | pages the generic path structurally cannot read | `site-adapters.ts`: Reddit (`old.reddit.com`), dpreview forum threads, YouTube (yt-dlp transcript) |
 | 3. lightpanda sidecar | pages whose text is not in the HTML at all | self-hosted browser, own container and memory budget; on when `LIGHTPANDA_URL` is set |
 | 4. Tavily Extract | static pages Readability could not parse | costs a credit |
-| 5. Wayback Machine | origins that refuse this crawler outright | `archive.ts`; free; only after every live step failed, never for a 404 |
+| 5. human solve (mini) | Cloudflare/anti-bot challenges nothing automated passes | `human-solve.ts` + `bin/solver.ts`: a dialog on the MacBook, **Open** → Screen Sharing into the mini, solve in the mini's dedicated solver Chrome; the page comes back from that browser. Only when this chain saw a block. A solved host is re-read through the same browser (no dialog) for 12h, so the clearance stays on the mini's IP |
+| 6. Wayback Machine | origins that refuse this crawler outright | `archive.ts`; free; only after every live step failed, never for a 404 |
 
 Every renderer reports failure by not failing — a PDF decoded as UTF-8 (1.98M chars of binary recorded as a `readability` success until 2026-09-23; `looksBinary` now fails any such body), Reddit's 200 + JS shell, lightpanda's `exit 0`
 on a dead domain, a Medium paywall that returns the lede above the 200-char floor — and each
@@ -257,6 +262,15 @@ shape is detected and unit-tested against the measured bytes. The fetch-level be
 (`scripts/fetch-bench.ts`) is the instrument here; a job-level A/B cannot resolve fetch
 effects (`pagesFailed` cv 1.00). Everything the chain recovers, and why the third-party
 renderer was retired: [measurements](./docs/measurements.md#fetching-pages).
+
+**Blocks and politeness.** `challenge.ts` classifies a response as an anti-bot block (adapted
+from webcmd's two-tier rule: a decisive marker — `cf-mitigated: challenge`, "Just a moment…" —
+counts at any status, a corroborating one only on 403/429/503; CSP and `report-to` headers are
+never evidence). Every origin hit — plain, impersonated, rendered — passes a process-wide
+per-host gate (`host-gate.ts`: 2 concurrent, 1s between starts) and a block puts the host in
+cooldown (`Retry-After`, else 10 min → 30 min → 2 h), during which the chain goes straight to
+Tavily/human/Wayback instead of spending the IP's reputation on a certain miss. Static per-host
+overrides (skip origin/render for measured fingerprint-blocked hosts) live in `host-policy.ts`.
 
 ## Telemetry
 

@@ -110,6 +110,51 @@ const Env = z.object({
     .trim()
     .optional()
     .transform((v) => (v ? v : undefined)),
+  // The mini's ssh alias for the owner's MacBook (a dedicated key, `IdentityAgent none`,
+  // BatchMode) — agent/human-solve.ts's escalation path: when a page is behind a
+  // Cloudflare/anti-bot challenge, the mini asks the human (over this ssh connection, a fixed
+  // `osascript -l JavaScript -` invocation, never the browser itself) whether to open Screen
+  // Sharing into the mini's own console session and solve it there. The browser that actually
+  // fetches the page is bin/solver.ts running LOCALLY on the mini (see human-solve.ts) — the
+  // MacBook is an IU-managed device on a corporate network and must never be the fetch egress
+  // (measured 2026-09-26: TLS resets against Cloudflare-fronted example.com from that network).
+  // Unset (VPS, local dev, tests) makes `humanSolver` undefined and takes the whole escalation
+  // path out of the fetch chain — the VPS has no MacBook to prompt. Empty-as-unset like
+  // GITHUB_TOKEN/BRAIN_DIR above.
+  HUMAN_SOLVE_SSH_HOST: z
+    .string()
+    .trim()
+    .optional()
+    .transform((v) => (v ? v : undefined)),
+  // What the MacBook's dialog tells the human to open once they click "Open" — Screen Sharing
+  // into the mini's console session, where the solver Chrome actually runs. Unset by default
+  // (VPS/local dev/tests, where the whole feature is off); .env.mini.tpl sets this to
+  // `vnc://mini` (the mini's tailnet MagicDNS name, :5900 is the default VNC port macOS
+  // Screen Sharing listens on so it needs no explicit port here).
+  //
+  // Empty-as-unset like GITHUB_TOKEN/BRAIN_DIR above: a bare `z.url()` rejects `""` outright,
+  // which fails the whole `Env.parse` and refuses to boot the gateway (VPS included, since this
+  // var is unset there too but templates/orchestrators can still render an unresolved key as
+  // `""`) — the same trap LIGHTPANDA_URL's own comment documents.
+  HUMAN_SOLVE_VIEW_URL: z.preprocess(
+    (v) => (typeof v === 'string' && v.trim() === '' ? undefined : v),
+    z.url().optional(),
+  ),
+  // Hang guard for the whole solve flow (the MacBook prompt, then the local solver run) — a
+  // wait for a HUMAN to click a dialog and solve a challenge, not an agent turn/time budget
+  // (rules/agent-limits.md). 300_000 (5 min) covers the 90s dialog giving-up window plus real
+  // time to open Screen Sharing and solve it; the local solver.ts spawn is told to finish 10s
+  // before whatever budget remains so its own `{ok:false, reason:'timeout'}` beats a hard kill.
+  HUMAN_SOLVE_WAIT_MS: z.coerce.number().default(300_000),
+  // Loopback port for the SSRF-filtering proxy (src/lib/safe-proxy.ts) that the solver Chrome's
+  // `--proxy-server` flag points at — every byte that Chrome sends anywhere, including a
+  // redirect or a fetch() the challenged page's own script issues, is decided against the same
+  // private/reserved-range table `assertPublicHttpUrl` uses, not just the one URL the solver
+  // was told to open. Only read/started when HUMAN_SOLVE_SSH_HOST is set (src/index.ts) — the
+  // VPS has no solver Chrome to protect. 9423 (not 9422, the CDP port already in use) is
+  // otherwise an arbitrary fixed choice, kept fixed so Chrome's launch flag never needs to
+  // discover it at runtime.
+  HUMAN_SOLVE_PROXY_PORT: z.coerce.number().default(9423),
   // The JavaScript-rendering sidecar — a self-hosted browser engine, and the step that
   // replaced Jina Reader as fetchPage's renderer (see agent/lightpanda.ts, lightpanda/).
   //

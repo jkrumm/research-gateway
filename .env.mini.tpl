@@ -43,3 +43,13 @@ RESEARCH_MAX_CONCURRENCY=5
 # can't live here — templates can't expand $HOME — so scripts/launch.sh exports it directly,
 # next to JOB_DB_PATH/YTDLP_PATH, only when the vault checkout exists.
 BRAIN_BASE_URL=https://brain.mini.jkrumm.com
+
+# Human-solve escalation (agent/human-solve.ts): the ssh alias to the owner's MacBook, which
+# reaches it non-interactively (dedicated key, IdentityAgent none, BatchMode) ONLY to prompt —
+# a dialog asking whether to open Screen Sharing into the mini's own console session, where the
+# actual solver Chrome runs (bin/solver.ts, spawned locally). Unset on the VPS, which has no
+# MacBook to prompt.
+HUMAN_SOLVE_SSH_HOST=iumac
+# The mini's tailnet MagicDNS name over the macOS Screen Sharing URL scheme — what the
+# MacBook's dialog opens on "Open". :5900 is Screen Sharing's default port, so no port needed.
+HUMAN_SOLVE_VIEW_URL=vnc://mini

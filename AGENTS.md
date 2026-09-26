@@ -158,13 +158,21 @@ Anything importing `env.ts` is untested by design — factor pure logic out inst
   `docs/` are never roots. `brainNotes({ path })` (and `fetchPage` on a reader URL) reads one
   note in full under the same scope, charged to the worker's page-text budget. Ranking/excerpting is pure (brain.ts); the spawn+fs boundary is
   brain-search.ts.
+- `src/agent/challenge.ts` + `host-gate.ts` + `host-policy.ts` + `impersonate.ts` — block
+  classification (webcmd's decisive/corroborating rule), the process-wide per-host gate
+  (concurrency, interval, cooldown), static per-host overrides, and the `impit` TLS-impersonation
+  rung. All pure except `impersonate.ts`'s native client.
+- `src/agent/human-solve.ts` + `human-solve-state.ts` + `bin/solver.ts` — mini-only human solve:
+  MacBook dialog over ssh, solve over Screen Sharing in the mini's solver Chrome, stealth CDP
+  polling; `deploy/MINI.md` § Human solve.
 - `src/agent/karakeep.ts` + `karakeep-search.ts` — the owner's Karakeep bookmarks, folded into
   the same `brainNotes` tool (no eleventh tool definition), mini-only and optional
   (`KARAKEEP_URL` + `KARAKEEP_API_KEY`). Pure parsing/ranking/excerpting in karakeep.ts; the
   fetch boundary never throws and degrades to brain-only results.
 - `src/agent/fetch-chain.ts` + `site-adapters.ts` + `lightpanda.ts` + `archive.ts` — the
-  5-step `fetchPage` chain (Readability, or `pdftotext` for a PDF (`pdf.ts`) → site adapter →
-  lightpanda sidecar → Tavily Extract → Wayback). Readability/site-adapter parsing runs off the event loop in a worker
+  `fetchPage` chain (Readability, or `pdftotext` for a PDF (`pdf.ts`) → site adapter → `impit`
+  impersonation on a 401/403/503 → lightpanda sidecar → Tavily Extract → human solve (mini) →
+  Wayback), every origin hit behind the per-host gate. Readability/site-adapter parsing runs off the event loop in a worker
   pool (`html-parse.ts` + `parse-worker.ts`); the whole chain is bounded by a per-fetch
   budget (`FETCH_CHAIN_BUDGET_MS`).
 - `src/lib/job-store.ts` + `job-db.ts` — sqlite job durability + heartbeat reaping; also owns
