@@ -26,12 +26,17 @@ export interface HumanSolverPorts {
    * Sharing and solve a challenge. Never touches the target page itself. */
   promptUser: (req: HumanSolveRequest) => Promise<{ ok: true } | { ok: false; reason: HumanSolveReason }>
   /** Runs bin/solver.ts (spawned locally on the mini in production) in one of three modes:
-   * 'warm' launches/verifies Chrome and the SSRF proxy with no tab and no page fetch; 'fetch'
-   * tries the already-warm cleared cookie with no human involved; 'solve' opens the tab the
-   * human is asked to click through. */
+   * 'warm' launches/verifies Chrome and the SSRF proxy with no tab and no page fetch (kept as a
+   * protocol mode bin/solver.ts still answers, but no longer called from this file — see the
+   * browser-first attempt below, which establishes the same thing as a side effect); 'fetch' is
+   * the browser-first attempt itself — the real solver Chrome alone, no dialog, whether or not
+   * the host was ever cleared before (measured 2026-09-26: MPB's Cloudflare managed challenge
+   * was passed this way with no human involved at all); 'solve' opens the tab the human is asked
+   * to click through, tried only once a 'fetch' attempt has come back 'challenge'. */
   runSolver: (mode: 'solve' | 'fetch' | 'warm', req: HumanSolveRequest, timeoutMs: number) => Promise<SolverOutput>
-  /** A bounded concurrency slot for 'fetch-cleared' runs (a real semaphore in production, up to
-   * `MAX_CONCURRENT_CLEARED` at once) — `false` means the wait elapsed with no slot granted. */
+  /** A bounded concurrency slot for the browser-first ('fetch' mode) attempts (a real semaphore
+   * in production, up to `MAX_CONCURRENT_CLEARED` at once) — `false` means the wait elapsed with
+   * no slot granted. */
   acquireClearedSlot: () => Promise<boolean>
   releaseClearedSlot: () => void
 }
@@ -46,10 +51,6 @@ export const SOLVER_SAFETY_MARGIN_MS = 10_000
 // Never hand the local solver a deadline so small a real Chrome round trip has no chance to
 // finish before it fires.
 const MIN_SOLVER_TIMEOUT_MS = 1_000
-// Generous for a cold Chrome launch (CHROME_LAUNCH_WAIT_MS in bin/solver.ts is 20s) plus the
-// SSRF-proxy listening probe — no tab, no human, no page fetch, so this is independent of
-// `waitMs`, which budgets the parts of the flow the human actually waits on.
-const WARM_TIMEOUT_MS = 25_000
 
 /** How much of `waitMs` the local solver spawn gets, given `elapsedMs` already spent on prior
  * steps (the dialog round trip) — never less than MIN_SOLVER_TIMEOUT_MS, and always leaving
@@ -187,17 +188,6 @@ export function createHumanSolver(ports: HumanSolverPorts): HumanSolve {
     return acquirePromise
   }
 
-  // Launch/verify Chrome and the SSRF proxy, no tab opened — run before the dialog so a
-  // Chrome/proxy failure short-circuits to a suppression instead of prompting the human for a
-  // browser session that was never coming up.
-  async function runWarm(req: HumanSolveRequest): Promise<{ ok: true } | { ok: false; reason: HumanSolveReason }> {
-    const result = await ports.runSolver('warm', req, WARM_TIMEOUT_MS)
-    if (result.ok) return { ok: true }
-    const outcome = REASON_TO_OUTCOME[result.reason]
-    if (outcome) ports.state.record(req.host, outcome, ports.now())
-    return result
-  }
-
   async function runLocalSolver(mode: 'solve' | 'fetch', req: HumanSolveRequest, timeoutMs: number): Promise<HumanSolveResult> {
     const result = await ports.runSolver(mode, req, timeoutMs)
     if (result.ok && result.mode === 'warm') {
@@ -208,7 +198,11 @@ export function createHumanSolver(ports: HumanSolverPorts): HumanSolve {
     return result
   }
 
-  async function runCleared(req: HumanSolveRequest): Promise<HumanSolveResult> {
+  // The browser-first attempt: the real solver Chrome alone, mode 'fetch', no dialog — tried for
+  // EVERY host this call reaches at all (unknown or previously cleared alike, see plan()'s
+  // header comment), before ever asking the human. Escalates to the dialog + a human-driven
+  // 'solve' only when the browser itself comes back 'challenge'.
+  async function runBrowser(req: HumanSolveRequest): Promise<HumanSolveResult> {
     const gotSlot = await acquireClearedSlotOrAbort(req.signal)
     if (!gotSlot) {
       const reason = req.signal.aborted ? 'aborted' : 'busy'
@@ -222,10 +216,17 @@ export function createHumanSolver(ports: HumanSolverPorts): HumanSolve {
       ports.log('human_solve.start', { host: req.host, mode: 'fetch' })
       result = await runLocalSolver('fetch', req, solverBudgetMs(ports.waitMs, 0))
     } finally {
-      // Released here — BEFORE any escalation — so a multi-minute solve below never holds a
-      // cleared-mode slot another concurrent host's cheap fetch-cleared attempt is waiting on.
+      // Released here — BEFORE any escalation — so a multi-minute solve below never holds this
+      // slot another concurrent host's own browser-first attempt is waiting on.
       ports.releaseClearedSlot()
     }
+
+    // The solver's own 'cleared' label implies reusing a warm cookie — misleading now that this
+    // path runs for every host, so a success here can just as well be a FIRST-ever pass with no
+    // prior clearance at all (measured 2026-09-26: MPB's Cloudflare managed challenge cleared
+    // this way with no human ever involved). Relabeled before anything downstream — the outcome
+    // log below, fetch-chain.ts's `onHuman` — reads it.
+    if (result.ok) result = { ...result, mode: 'browser' }
 
     const outcome = outcomeForResult('fetch', result)
     if (outcome) ports.state.record(req.host, outcome, ports.now())
@@ -237,11 +238,16 @@ export function createHumanSolver(ports: HumanSolverPorts): HumanSolve {
     })
 
     if (!result.ok && result.reason === 'challenge') {
-      // Escalate through the SAME admission decision `state.record` just updated (a
-      // cleared-challenge outcome clears `clearedAt`) — never a direct bypass to runSolve,
-      // which could otherwise re-solve a host `state.plan` would now call suppressed (the
-      // dialog rate limit, or a suppression a concurrent attempt for another host just set).
-      return attemptSolve(req)
+      // The browser alone could not pass the challenge — escalate to the consent dialog through
+      // `state.planDialog`, a SEPARATE admission check from `state.plan` above (macbook-
+      // unreachable / the dialog rate limit / a host-level suppression a concurrent attempt for
+      // this or another host may just have set) — never a direct bypass to runSolve.
+      const dialogDecision = ports.state.planDialog(req.host, ports.now())
+      if (dialogDecision.action === 'suppressed') {
+        ports.log('human_solve.suppressed', { host: req.host, reason: dialogDecision.reason })
+        return { ok: false, reason: dialogDecision.reason }
+      }
+      return runSolve(req)
     }
     return result
   }
@@ -259,12 +265,11 @@ export function createHumanSolver(ports: HumanSolverPorts): HumanSolve {
       const startedAt = ports.now()
       ports.log('human_solve.start', { host: req.host, mode: 'solve' })
 
-      const warm = await runWarm(req)
-      if (!warm.ok) {
-        ports.log('human_solve.done', { host: req.host, mode: 'solve', ms: ports.now() - startedAt, outcome: warm.reason })
-        return warm
-      }
-
+      // No separate warm check here (the pre-browser-first design used to run one): this point
+      // is only ever reached after a browser-first ('fetch' mode) attempt already came back
+      // 'challenge', which itself proves Chrome and the SSRF proxy are up — a chrome/proxy
+      // failure there would have surfaced as chrome_unavailable/proxy_unavailable, never as
+      // 'challenge'.
       const consent = await ports.promptUser(req)
       if (!consent.ok) {
         const outcome = outcomeForResult('solve', consent)
@@ -293,8 +298,9 @@ export function createHumanSolver(ports: HumanSolverPorts): HumanSolve {
       ports.log('human_solve.suppressed', { host: req.host, reason: decision.reason })
       return Promise.resolve({ ok: false, reason: decision.reason })
     }
-    if (decision.action === 'fetch-cleared') return runCleared(req)
-    return runSolve(req)
+    // plan() never returns 'solve' — see its own header comment — so anything not suppressed
+    // here is 'browser'.
+    return runBrowser(req)
   }
 
   return (req) => runExclusiveForHost(req.host, req.signal, () => attemptSolve(req))

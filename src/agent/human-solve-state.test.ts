@@ -3,7 +3,6 @@ import {
   createHumanSolveState,
   parseSolverOutput,
   parseDialogOutput,
-  CLEARED_TTL_MS,
   SUPPRESS_HOST_MS,
   UNREACHABLE_SUPPRESS_MS,
   DIALOG_RATE_LIMIT_MAX,
@@ -11,34 +10,29 @@ import {
   HUMAN_SOLVE_REASONS,
 } from './human-solve-state.js'
 
-describe('createHumanSolveState — plan', () => {
-  it('defaults to solve for an unknown host', () => {
+describe('createHumanSolveState — plan (browser-first)', () => {
+  it('defaults to browser for an unknown host — never straight to solve', () => {
     const state = createHumanSolveState()
-    expect(state.plan('example.com', 1_000)).toEqual({ action: 'solve' })
+    expect(state.plan('example.com', 1_000)).toEqual({ action: 'browser' })
   })
 
-  it('goes fetch-cleared right after a solve, and expires back to solve after CLEARED_TTL_MS', () => {
+  it('a previously-solved host still goes through browser first, same as an unknown one', () => {
     const state = createHumanSolveState()
     state.record('example.com', 'solved', 1_000)
-    expect(state.plan('example.com', 1_000)).toEqual({ action: 'fetch-cleared' })
-    expect(state.plan('example.com', 1_000 + CLEARED_TTL_MS - 1)).toEqual({ action: 'fetch-cleared' })
-    expect(state.plan('example.com', 1_000 + CLEARED_TTL_MS + 1)).toEqual({ action: 'solve' })
+    expect(state.plan('example.com', 1_000)).toEqual({ action: 'browser' })
   })
 
-  it('cleared-ok extends the cleared window like solved does', () => {
+  it('cleared-ok, cleared-challenge and error all leave the host on the browser path', () => {
     const state = createHumanSolveState()
     state.record('example.com', 'cleared-ok', 5_000)
-    expect(state.plan('example.com', 5_000)).toEqual({ action: 'fetch-cleared' })
+    expect(state.plan('example.com', 5_000)).toEqual({ action: 'browser' })
+    state.record('example.com', 'cleared-challenge', 6_000)
+    expect(state.plan('example.com', 6_000)).toEqual({ action: 'browser' })
+    state.record('example.com', 'error', 7_000)
+    expect(state.plan('example.com', 7_000)).toEqual({ action: 'browser' })
   })
 
-  it('cleared-challenge drops cleared status so the next plan is solve', () => {
-    const state = createHumanSolveState()
-    state.record('example.com', 'solved', 1_000)
-    state.record('example.com', 'cleared-challenge', 2_000)
-    expect(state.plan('example.com', 2_000)).toEqual({ action: 'solve' })
-  })
-
-  it('suppresses a declined host for SUPPRESS_HOST_MS then reopens to solve', () => {
+  it('suppresses a declined host for SUPPRESS_HOST_MS then reopens to browser', () => {
     const state = createHumanSolveState()
     state.record('example.com', 'declined', 1_000)
     expect(state.plan('example.com', 1_000)).toEqual({ action: 'suppressed', reason: 'declined' })
@@ -46,7 +40,7 @@ describe('createHumanSolveState — plan', () => {
       action: 'suppressed',
       reason: 'declined',
     })
-    expect(state.plan('example.com', 1_000 + SUPPRESS_HOST_MS + 1)).toEqual({ action: 'solve' })
+    expect(state.plan('example.com', 1_000 + SUPPRESS_HOST_MS + 1)).toEqual({ action: 'browser' })
   })
 
   it('unanswered and timeout suppress the same way as declined', () => {
@@ -57,72 +51,23 @@ describe('createHumanSolveState — plan', () => {
     expect(state.plan('b.example', 1_000)).toEqual({ action: 'suppressed', reason: 'timeout' })
   })
 
-  it('unreachable suppresses every host globally for UNREACHABLE_SUPPRESS_MS', () => {
+  it('unreachable (MacBook/dialog path) does NOT block a browser-only attempt — no dialog is involved', () => {
     const state = createHumanSolveState()
     state.record('a.example', 'unreachable', 1_000)
-    expect(state.plan('a.example', 1_000)).toEqual({ action: 'suppressed', reason: 'macbook unreachable' })
-    expect(state.plan('never-seen-before.example', 1_000)).toEqual({
-      action: 'suppressed',
-      reason: 'macbook unreachable',
-    })
-    expect(state.plan('a.example', 1_000 + UNREACHABLE_SUPPRESS_MS + 1)).toEqual({ action: 'solve' })
+    expect(state.plan('a.example', 1_000)).toEqual({ action: 'browser' })
+    expect(state.plan('never-seen-before.example', 1_000)).toEqual({ action: 'browser' })
   })
 
-  it('error does not change host state', () => {
+  it('a browser-only plan() never consumes the dialog rate limit budget', () => {
     const state = createHumanSolveState()
-    state.record('example.com', 'solved', 1_000)
-    state.record('example.com', 'error', 2_000)
-    expect(state.plan('example.com', 2_000)).toEqual({ action: 'fetch-cleared' })
-  })
-
-  it('suppresses further dialogs once DIALOG_RATE_LIMIT_MAX prompts fire within the window, across distinct hosts', () => {
-    const state = createHumanSolveState()
-    for (let i = 0; i < DIALOG_RATE_LIMIT_MAX; i++) {
-      expect(state.plan(`host-${i}.example`, 1_000)).toEqual({ action: 'solve' })
+    for (let i = 0; i < DIALOG_RATE_LIMIT_MAX + 5; i++) {
+      expect(state.plan(`host-${i}.example`, 1_000)).toEqual({ action: 'browser' })
     }
-    expect(state.plan('one-too-many.example', 1_000)).toEqual({ action: 'suppressed', reason: 'dialog rate limit' })
-    // A never-seen host that would otherwise get 'solve' is suppressed too — the limit is
-    // global, not per-host.
-    expect(state.plan('also-new.example', 1_000)).toEqual({ action: 'suppressed', reason: 'dialog rate limit' })
+    // Still un-consumed — planDialog for a fresh host still gets 'solve'.
+    expect(state.planDialog('fresh.example', 1_000)).toEqual({ action: 'solve' })
   })
 
-  it('the dialog rate limit rolls off after DIALOG_RATE_LIMIT_WINDOW_MS', () => {
-    const state = createHumanSolveState()
-    for (let i = 0; i < DIALOG_RATE_LIMIT_MAX; i++) {
-      state.plan(`host-${i}.example`, 1_000)
-    }
-    expect(state.plan('over-limit.example', 1_000 + DIALOG_RATE_LIMIT_WINDOW_MS - 1)).toEqual({
-      action: 'suppressed',
-      reason: 'dialog rate limit',
-    })
-    expect(state.plan('back-to-normal.example', 1_000 + DIALOG_RATE_LIMIT_WINDOW_MS + 1)).toEqual({ action: 'solve' })
-  })
-
-  it('a plan() that returns fetch-cleared or a host-level suppression does not consume the dialog rate limit budget', () => {
-    const state = createHumanSolveState()
-    state.record('cleared.example', 'solved', 1_000)
-    for (let i = 0; i < DIALOG_RATE_LIMIT_MAX; i++) {
-      // fetch-cleared, not solve — must not eat into the global dialog budget.
-      expect(state.plan('cleared.example', 1_000)).toEqual({ action: 'fetch-cleared' })
-    }
-    expect(state.plan('fresh.example', 1_000)).toEqual({ action: 'solve' })
-  })
-
-  it('a warm-cleared host still gets fetch-cleared even while the MacBook is marked unreachable (mini-local, no dialog needed)', () => {
-    const state = createHumanSolveState()
-    state.record('example.com', 'solved', 1_000)
-    state.record('other.example', 'unreachable', 1_000) // marks the MacBook unreachable globally
-    expect(state.plan('example.com', 1_000)).toEqual({ action: 'fetch-cleared' })
-  })
-
-  it('local-unavailable still suppresses even a warm-cleared host, since fetch-cleared also needs chrome/proxy locally', () => {
-    const state = createHumanSolveState()
-    state.record('example.com', 'solved', 1_000)
-    state.record('example.com', 'local-unavailable', 1_000)
-    expect(state.plan('example.com', 1_000)).toEqual({ action: 'suppressed', reason: 'solver unavailable' })
-  })
-
-  it('local-unavailable (chrome/proxy down) suppresses every host globally, distinct from macbook-unreachable', () => {
+  it('local-unavailable (chrome/proxy down) suppresses every host globally for browser too, distinct from macbook-unreachable', () => {
     const state = createHumanSolveState()
     state.record('a.example', 'local-unavailable', 1_000)
     expect(state.plan('a.example', 1_000)).toEqual({ action: 'suppressed', reason: 'solver unavailable' })
@@ -130,7 +75,7 @@ describe('createHumanSolveState — plan', () => {
       action: 'suppressed',
       reason: 'solver unavailable',
     })
-    expect(state.plan('a.example', 1_000 + UNREACHABLE_SUPPRESS_MS + 1)).toEqual({ action: 'solve' })
+    expect(state.plan('a.example', 1_000 + UNREACHABLE_SUPPRESS_MS + 1)).toEqual({ action: 'browser' })
   })
 
   it('bounds the map: the oldest host is evicted once the cap is exceeded', () => {
@@ -140,8 +85,62 @@ describe('createHumanSolveState — plan', () => {
     }
     // host-0 was the first inserted; it should have been evicted, so it is no longer
     // suppressed.
-    expect(state.plan('host-0.example', 1_000)).toEqual({ action: 'solve' })
+    expect(state.plan('host-0.example', 1_000)).toEqual({ action: 'browser' })
     expect(state.plan('host-500.example', 1_000)).toEqual({ action: 'suppressed', reason: 'declined' })
+  })
+})
+
+describe('createHumanSolveState — planDialog (the escalation gate)', () => {
+  it('defaults to solve for a fresh host', () => {
+    const state = createHumanSolveState()
+    expect(state.planDialog('example.com', 1_000)).toEqual({ action: 'solve' })
+  })
+
+  it('suppresses a declined/unanswered/timeout host the same 6h window plan() does', () => {
+    const state = createHumanSolveState()
+    state.record('example.com', 'declined', 1_000)
+    expect(state.planDialog('example.com', 1_000)).toEqual({ action: 'suppressed', reason: 'declined' })
+    expect(state.planDialog('example.com', 1_000 + SUPPRESS_HOST_MS + 1)).toEqual({ action: 'solve' })
+  })
+
+  it('unreachable suppresses every host globally for UNREACHABLE_SUPPRESS_MS', () => {
+    const state = createHumanSolveState()
+    state.record('a.example', 'unreachable', 1_000)
+    expect(state.planDialog('a.example', 1_000)).toEqual({ action: 'suppressed', reason: 'macbook unreachable' })
+    expect(state.planDialog('never-seen-before.example', 1_000)).toEqual({
+      action: 'suppressed',
+      reason: 'macbook unreachable',
+    })
+    expect(state.planDialog('a.example', 1_000 + UNREACHABLE_SUPPRESS_MS + 1)).toEqual({ action: 'solve' })
+  })
+
+  it('local-unavailable suppresses the dialog gate too', () => {
+    const state = createHumanSolveState()
+    state.record('a.example', 'local-unavailable', 1_000)
+    expect(state.planDialog('a.example', 1_000)).toEqual({ action: 'suppressed', reason: 'solver unavailable' })
+  })
+
+  it('suppresses further dialogs once DIALOG_RATE_LIMIT_MAX prompts fire within the window, across distinct hosts', () => {
+    const state = createHumanSolveState()
+    for (let i = 0; i < DIALOG_RATE_LIMIT_MAX; i++) {
+      expect(state.planDialog(`host-${i}.example`, 1_000)).toEqual({ action: 'solve' })
+    }
+    expect(state.planDialog('one-too-many.example', 1_000)).toEqual({ action: 'suppressed', reason: 'dialog rate limit' })
+    // A never-seen host that would otherwise get 'solve' is suppressed too — the limit is
+    // global, not per-host.
+    expect(state.planDialog('also-new.example', 1_000)).toEqual({ action: 'suppressed', reason: 'dialog rate limit' })
+  })
+
+  it('the dialog rate limit rolls off after DIALOG_RATE_LIMIT_WINDOW_MS', () => {
+    const state = createHumanSolveState()
+    for (let i = 0; i < DIALOG_RATE_LIMIT_MAX; i++) {
+      state.planDialog(`host-${i}.example`, 1_000)
+    }
+    expect(state.planDialog('over-limit.example', 1_000 + DIALOG_RATE_LIMIT_WINDOW_MS - 1)).toEqual({
+      action: 'suppressed',
+      reason: 'dialog rate limit',
+    })
+    expect(state.planDialog('back-to-normal.example', 1_000 + DIALOG_RATE_LIMIT_WINDOW_MS + 1)).toEqual({ action: 'solve' })
   })
 })
 
@@ -178,6 +177,24 @@ describe('parseSolverOutput', () => {
 
   it('parses a warm-mode ok result (no html/finalUrl)', () => {
     expect(parseSolverOutput(JSON.stringify({ ok: true, mode: 'warm' }))).toEqual({ ok: true, mode: 'warm' })
+  })
+
+  it('parses an ok result carrying the settled page status', () => {
+    const out = JSON.stringify({ ok: true, html: '<html></html>', finalUrl: 'https://example.com/', mode: 'cleared', status: 404 })
+    expect(parseSolverOutput(out)).toEqual({
+      ok: true,
+      html: '<html></html>',
+      finalUrl: 'https://example.com/',
+      mode: 'cleared',
+      status: 404,
+    })
+  })
+
+  it('an ok result with no status field still parses (status is optional — Chrome <109 or unknown)', () => {
+    const out = JSON.stringify({ ok: true, html: '<html></html>', finalUrl: 'https://example.com/', mode: 'solved' })
+    const parsed = parseSolverOutput(out)
+    expect(parsed.ok).toBe(true)
+    if (parsed.ok && parsed.mode !== 'warm') expect(parsed.status).toBeUndefined()
   })
 
   it('every reason in the closed set round-trips', () => {

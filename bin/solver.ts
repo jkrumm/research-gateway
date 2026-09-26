@@ -40,7 +40,7 @@ export interface SolverRequest {
 }
 
 type SolverOutput =
-  | { ok: true; html: string; finalUrl: string; mode: 'solved' | 'cleared' }
+  | { ok: true; html: string; finalUrl: string; mode: 'solved' | 'cleared'; status?: number }
   | { ok: true; mode: 'warm' }
   | { ok: false; reason: string }
 
@@ -103,8 +103,10 @@ const LAUNCH_ARGS_PATH = `${PROFILE_DIR}.launch-args.json`
 // can reach — the proxy port alone doesn't detect that: an instance launched before the WebRTC
 // flags below were added would keep matching on proxyPort even though it still leaks direct
 // WebRTC UDP. Compared alongside proxyPort in the sidecar (see `launchArgsMatch`) so any flag
-// change forces a relaunch, not just a port change.
-const LAUNCH_ARGS_VERSION = 2
+// change forces a relaunch, not just a port change. v3 added `--start-maximized` — cosmetic, not
+// a network-reach change, but still needs a relaunch to take effect on an already-running
+// instance, so it goes through the same comparison rather than a separate mechanism.
+const LAUNCH_ARGS_VERSION = 3
 // How long to wait for a graceful SIGTERM exit before escalating to SIGKILL when replacing a
 // stale (wrongly-flagged) Chrome instance.
 const CHROME_KILL_WAIT_MS = 5_000
@@ -325,6 +327,9 @@ function chromeLaunchArgs(proxyPort: number): string[] {
     '--remote-debugging-address=127.0.0.1',
     '--no-first-run',
     '--no-default-browser-check',
+    // So Screen Sharing shows essentially one browser window during a human solve — the human
+    // is asked to click through a challenge over VNC, not to first find and resize the window.
+    '--start-maximized',
     // Chrome's HTTP(S) and WebSocket traffic — not just the one URL it was told to open, every
     // subsequent navigation, redirect, and fetch() a page's own script issues too — is decided
     // by src/lib/safe-proxy.ts against the SSRF guard's table. `<-loopback>` removes Chrome's
@@ -647,10 +652,14 @@ interface EvalResult {
   textLen: number
   title: string
   url: string
+  /** The settled page's HTTP status, read off the Navigation Timing entry (Chrome >=109) in the
+   * same evaluate call — `undefined` on an older Chrome or when the browser never recorded one
+   * (a `0` is normalized away here too, since it carries the same "unknown" meaning). */
+  status?: number
 }
 
 const EVAL_EXPRESSION =
-  "JSON.stringify({ html: document.documentElement.outerHTML, textLen: (document.body && document.body.innerText || '').length, title: document.title, url: location.href })"
+  "JSON.stringify({ html: document.documentElement.outerHTML, textLen: (document.body && document.body.innerText || '').length, title: document.title, url: location.href, status: (function () { try { var e = performance.getEntriesByType('navigation')[0]; return e && e.responseStatus ? e.responseStatus : undefined } catch (err) { return undefined } })() })"
 
 // One WebSocket attach can serve several Runtime.evaluate calls (the DOM-settle check below
 // needs two, 1.5s apart) — but NEVER Runtime.enable/Page.enable, and never while the title
@@ -837,6 +846,7 @@ async function processRequest(req: SolverRequest): Promise<SolverOutput> {
         html: capHtml(settled.html),
         finalUrl: settled.url,
         mode: req.mode === 'solve' ? 'solved' : 'cleared',
+        ...(typeof settled.status === 'number' && settled.status > 0 ? { status: settled.status } : {}),
       }
     }
     return { ok: false, reason: 'timeout' }

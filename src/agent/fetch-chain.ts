@@ -221,7 +221,21 @@ export interface HumanSolveRequest {
   signal: AbortSignal
 }
 
-export type HumanSolveResult = { ok: true; html: string; finalUrl: string; mode: 'solved' | 'cleared' } | { ok: false; reason: string }
+export type HumanSolveResult =
+  | {
+      ok: true
+      html: string
+      finalUrl: string
+      // 'browser' is a solver-side success with no human ever prompted (human-solver.ts relabels
+      // the solver's own 'cleared' this way once it comes back through the browser-first attempt
+      // — see that file's header) — 'cleared' is kept as a value for the type's own sake (the
+      // zod schema in human-solve-state.ts still accepts it from the wire) but human-solver.ts
+      // never returns it upward anymore.
+      mode: 'solved' | 'cleared' | 'browser'
+      /** The settled page's HTTP status, when the solver could read one — absent means unknown. */
+      status?: number | undefined
+    }
+  | { ok: false; reason: string }
 
 export type HumanSolve = (req: HumanSolveRequest) => Promise<HumanSolveResult>
 
@@ -890,6 +904,27 @@ export async function runFetchChain(url: string, opts: FetchChainOptions): Promi
       } catch {
         const reason2 = 'unsafe final url'
         const ms = attempt(attempts, 'human', tH, { ok: false, error: reason2, blocked: reason2 })
+        onHuman?.({ ok: false, ms, mode: result.mode, reason: reason2 })
+        return null
+      }
+      // A settled page can still BE a 404/410 — bin/solver.ts reads
+      // `performance.getEntriesByType('navigation')[0]?.responseStatus` alongside the HTML, so a
+      // definitively-missing page (MPB's German "Seite nicht gefunden", 211 chars — thin enough
+      // to have cleared MIN_USABLE_CHARS at other steps but not this one) is caught here instead
+      // of being recorded as a successful read. Mirrors the origin step's `isDefinitivelyMissing`
+      // branch exactly: `fail`, no Wayback rescue afterward — a 404 origin stops the whole chain
+      // there too. `result.status` absent/0 means unknown, never treated as missing or an error.
+      if (result.status === 404 || result.status === 410) {
+        const reason2 = `HTTP ${result.status} — the resource does not exist at this URL`
+        const ms = attempt(attempts, 'human', tH, { ok: false, error: reason2 })
+        onHuman?.({ ok: false, ms, mode: result.mode, reason: reason2 })
+        ledger.recordMissing(result.finalUrl, reason2)
+        log('tool.fetchPage', { jobId, url, via: 'missing', status: result.status })
+        return fail(reason2)
+      }
+      if (result.status !== undefined && result.status >= 400) {
+        const reason2 = `HTTP ${result.status}`
+        const ms = attempt(attempts, 'human', tH, { ok: false, error: reason2 })
         onHuman?.({ ok: false, ms, mode: result.mode, reason: reason2 })
         return null
       }

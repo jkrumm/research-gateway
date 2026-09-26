@@ -91,21 +91,32 @@ describe('solverBudgetMs', () => {
   })
 })
 
-describe('createHumanSolver — the warm step', () => {
-  it('runs warm (no dialog) before prompting, and proceeds to the dialog on success', async () => {
+describe('createHumanSolver — browser-first', () => {
+  it('an unknown host runs a browser-only fetch before any dialog, and never prompts when it succeeds outright', async () => {
+    const h = makeHarness()
+    h.setRunSolverResult(async () => ({ ok: true, html: '<html>ok</html>', finalUrl: 'https://example.com/page', mode: 'cleared' }))
+    const solver = createHumanSolver(h.ports)
+    const result = await solver(makeRequest())
+    // The solver's own 'cleared' label is relabeled 'browser' — no human was ever involved.
+    expect(result).toEqual({ ok: true, html: '<html>ok</html>', finalUrl: 'https://example.com/page', mode: 'browser' })
+    expect(h.runSolverCalls.map((c) => c.mode)).toEqual(['fetch'])
+    expect(h.promptCalls.length).toBe(0)
+  })
+
+  it('escalates to the dialog only once the browser-only fetch comes back challenge', async () => {
     const h = makeHarness()
     h.setRunSolverResult(async (mode) => {
-      if (mode === 'warm') return { ok: true, mode: 'warm' }
+      if (mode === 'fetch') return { ok: false, reason: 'challenge' }
       return { ok: true, html: '<html>ok</html>', finalUrl: 'https://example.com/page', mode: 'solved' }
     })
     const solver = createHumanSolver(h.ports)
     const result = await solver(makeRequest())
     expect(result.ok).toBe(true)
-    expect(h.runSolverCalls.map((c) => c.mode)).toEqual(['warm', 'solve'])
+    expect(h.runSolverCalls.map((c) => c.mode)).toEqual(['fetch', 'solve'])
     expect(h.promptCalls.length).toBe(1)
   })
 
-  it('a warm failure (chrome_unavailable) never prompts the human, and suppresses globally', async () => {
+  it('a browser-only failure (chrome_unavailable) never prompts the human, and suppresses globally', async () => {
     const h = makeHarness()
     h.setRunSolverResult(async () => ({ ok: false, reason: 'chrome_unavailable' }))
     const solver = createHumanSolver(h.ports)
@@ -120,10 +131,10 @@ describe('createHumanSolver — the warm step', () => {
     const second = await solver(makeRequest({ host: 'b.example' }))
     expect(second.ok).toBe(false)
     if (!second.ok) expect(second.reason).toBe('solver unavailable')
-    expect(h.runSolverCalls.length).toBe(callsBefore) // never even tried to warm up again
+    expect(h.runSolverCalls.length).toBe(callsBefore) // never even tried the browser again
   })
 
-  it('logs exactly one human_solve.done for a warm failure', async () => {
+  it('logs exactly one human_solve.done for a browser-only failure', async () => {
     const h = makeHarness()
     h.setRunSolverResult(async () => ({ ok: false, reason: 'proxy_unavailable' }))
     const solver = createHumanSolver(h.ports)
@@ -134,10 +145,9 @@ describe('createHumanSolver — the warm step', () => {
   })
 })
 
-describe('createHumanSolver — runCleared escalation', () => {
-  it('releases the cleared slot BEFORE escalating to a solve on a challenge result', async () => {
+describe('createHumanSolver — browser-then-solve escalation', () => {
+  it('releases the browser slot BEFORE escalating to the dialog on a challenge result', async () => {
     const h = makeHarness()
-    h.ports.state.record('example.com', 'solved', h.clock.now) // plan() will choose fetch-cleared first
     const releaseOrder: string[] = []
     const originalRelease = h.ports.releaseClearedSlot
     h.ports.releaseClearedSlot = () => {
@@ -146,7 +156,6 @@ describe('createHumanSolver — runCleared escalation', () => {
     }
     h.setRunSolverResult(async (mode) => {
       if (mode === 'fetch') return { ok: false, reason: 'challenge' }
-      if (mode === 'warm') return { ok: true, mode: 'warm' }
       return { ok: true, html: '<html>solved</html>', finalUrl: 'https://example.com/page', mode: 'solved' }
     })
     h.setPromptResult(async () => {
@@ -163,13 +172,11 @@ describe('createHumanSolver — runCleared escalation', () => {
     expect(h.slotActive).toBe(0)
   })
 
-  it('escalates through the same admission decision, so a dialog-rate-limited host does not get a second dialog', async () => {
+  it('escalates through planDialog, so a dialog-rate-limited host does not get a second dialog', async () => {
     const h = makeHarness()
-    h.ports.state.record('example.com', 'solved', h.clock.now)
-    // Exhaust the global dialog budget on OTHER hosts first — plan() for example.com will still
-    // see fetch-cleared (its own clearedAt is fresh), but once that clears and re-plans, the
-    // dialog rate limit should now apply.
-    for (let i = 0; i < 6; i++) h.ports.state.plan(`filler-${i}.example`, h.clock.now)
+    // Exhaust the global dialog budget on OTHER hosts first — this never happens via plan()
+    // (a browser-only attempt must not consume the dialog rate limit), only via planDialog.
+    for (let i = 0; i < 6; i++) h.ports.state.planDialog(`filler-${i}.example`, h.clock.now)
 
     h.setRunSolverResult(async (mode) => {
       if (mode === 'fetch') return { ok: false, reason: 'challenge' }
@@ -191,7 +198,10 @@ describe('createHumanSolver — abort races the queued wait, not just the runnin
       if (req.host === 'first.example') await firstGate.promise
       return { ok: true }
     })
-    h.setRunSolverResult(async () => ({ ok: true, mode: 'warm' })) // warm always succeeds; solve/fetch below overridden per-call
+    h.setRunSolverResult(async (mode) => {
+      if (mode === 'fetch') return { ok: false, reason: 'challenge' } // force escalation to the dialog for both hosts
+      return { ok: true, mode: 'warm' }
+    })
     const solver = createHumanSolver(h.ports)
 
     // Occupy the global solve lock with a slow first solve (different host — the lock is
@@ -213,7 +223,7 @@ describe('createHumanSolver — abort races the queued wait, not just the runnin
     await firstDone
   })
 
-  it('never leaks a cleared-mode slot when the caller aborts while the slot is still queued', async () => {
+  it('never leaks a browser-only slot when the caller aborts while the slot is still queued', async () => {
     const h = makeHarness()
     const slotGate = deferred<boolean>()
     h.ports.acquireClearedSlot = async () => {
@@ -224,12 +234,11 @@ describe('createHumanSolver — abort races the queued wait, not just the runnin
     h.ports.releaseClearedSlot = () => {
       released++
     }
-    h.ports.state.record('example.com', 'solved', h.clock.now) // -> fetch-cleared path
     const controller = new AbortController()
     const solver = createHumanSolver(h.ports)
     const pending = solver(makeRequest({ signal: controller.signal }))
 
-    // Let the chain (runExclusiveForHost's tail -> attemptSolve -> runCleared ->
+    // Let the chain (runExclusiveForHost's tail -> attemptSolve -> runBrowser ->
     // acquireClearedSlotOrAbort) actually reach its `await` on the still-pending slot BEFORE
     // aborting — otherwise the top-of-function `signal.aborted` guard would short-circuit
     // before the slot was ever requested, which is a different (also correct, but untested-by-
@@ -250,9 +259,8 @@ describe('createHumanSolver — abort races the queued wait, not just the runnin
 })
 
 describe('createHumanSolver — abort-listener hygiene and unexpected errors', () => {
-  it('does not leak an abort listener on the request signal for a cleared-slot fetch that never aborts', async () => {
+  it('does not leak an abort listener on the request signal for a browser-only fetch that never aborts', async () => {
     const h = makeHarness()
-    h.ports.state.record('example.com', 'solved', h.clock.now) // -> fetch-cleared path
     h.setRunSolverResult(async () => ({ ok: true, html: '<html>ok</html>', finalUrl: 'https://example.com/page', mode: 'cleared' }))
     const solver = createHumanSolver(h.ports)
     const req = makeRequest()
@@ -271,7 +279,10 @@ describe('createHumanSolver — abort-listener hygiene and unexpected errors', (
 
   it('logs human_solve.unexpected_error and resolves {ok:false, reason:"error"} for a throw that is NOT caused by an abort', async () => {
     const h = makeHarness()
-    h.setRunSolverResult(async () => ({ ok: true, mode: 'warm' })) // warm succeeds; solve/fetch never reached
+    h.setRunSolverResult(async (mode) => {
+      if (mode === 'fetch') return { ok: false, reason: 'challenge' } // force escalation to the dialog
+      return { ok: true, mode: 'warm' }
+    })
     h.setPromptResult(async () => {
       throw new Error('boom')
     })
@@ -286,26 +297,29 @@ describe('createHumanSolver — abort-listener hygiene and unexpected errors', (
 })
 
 describe('createHumanSolver — single-flight per host', () => {
-  it('a second request for the same host waits for the first, and re-plans after it settles', async () => {
+  it('a second request for the same host waits for the first, and its OWN browser-only attempt resolves it — never a second dialog', async () => {
     const h = makeHarness()
     let solveCount = 0
+    let fetchCount = 0
     h.setRunSolverResult(async (mode) => {
-      if (mode === 'warm') return { ok: true, mode: 'warm' }
-      if (mode === 'solve') {
-        solveCount++
-        return { ok: true, html: '<html>ok</html>', finalUrl: 'https://example.com/page', mode: 'solved' }
+      if (mode === 'fetch') {
+        fetchCount++
+        // First call: not yet cleared, so it escalates. Second call (chained onto the first's
+        // tail): the warm cookie the first solve just left behind clears it outright — plan()
+        // sends BOTH calls to a browser-only attempt first, exactly the same way, so the second
+        // call's own success is what resolves it, never a bypass to a second dialog.
+        if (fetchCount === 1) return { ok: false, reason: 'challenge' }
+        return { ok: true, html: '<html>ok</html>', finalUrl: 'https://example.com/page', mode: 'cleared' }
       }
-      // 'fetch' — the second call's cleared-mode attempt, simulating a warm cookie the first
-      // solve just left behind.
-      return { ok: true, html: '<html>ok</html>', finalUrl: 'https://example.com/page', mode: 'cleared' }
+      solveCount++
+      return { ok: true, html: '<html>ok</html>', finalUrl: 'https://example.com/page', mode: 'solved' }
     })
     const solver = createHumanSolver(h.ports)
 
     const [a, b] = await Promise.all([solver(makeRequest()), solver(makeRequest())])
     expect(a.ok).toBe(true)
-    // The second call chains onto the first's tail — by the time IT runs, the first already
-    // recorded 'solved', so plan() sends it straight to fetch-cleared instead of a second solve.
-    expect(solveCount).toBe(1)
+    expect(solveCount).toBe(1) // the dialog only ever ran once
+    expect(fetchCount).toBe(2) // both calls tried the browser first
     expect(b.ok).toBe(true)
   })
 })

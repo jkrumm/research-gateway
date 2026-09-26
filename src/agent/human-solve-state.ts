@@ -11,16 +11,6 @@
 
 import { z } from 'zod'
 
-// A recently-solved host is refetched locally on the mini ("cleared" mode, no dialog, no
-// MacBook contact at all) rather than solved again — the cf_clearance cookie stays warm in the
-// solver Chrome profile for a while after the challenge clears. 12h is optimistic for
-// cf_clearance specifically (Cloudflare's own default passage is closer to 30 minutes, and
-// site-configurable shorter or longer) — kept anyway because a stale clearance is cheap to
-// find out about now that the whole "try cleared first" path is mini-local: it just costs one
-// quick fetch that comes back `challenge`, and the caller escalates to `solve` from there. A
-// long TTL only ever wastes that one local round trip; a short one would re-prompt the human
-// for hosts that were still genuinely clear.
-export const CLEARED_TTL_MS = 12 * 60 * 60 * 1000
 // A host the human declined, or never answered for, is not re-prompted again immediately —
 // the dialog would just interrupt them a second time for the same site.
 export const SUPPRESS_HOST_MS = 6 * 60 * 60 * 1000
@@ -38,7 +28,12 @@ export const DIALOG_RATE_LIMIT_WINDOW_MS = 60 * 60 * 1000
 // the oldest entry (Map preserves insertion order) rather than growing without bound.
 const MAX_HOSTS = 500
 
-export type PlanAction = { action: 'fetch-cleared' } | { action: 'solve' } | { action: 'suppressed'; reason: string }
+// Shared by two decision points, each of which only ever returns a subset of this union:
+// `plan()` (the top-level "what should this call do at all" gate) returns 'browser' or
+// 'suppressed' — never 'solve', since a dialog is never the FIRST thing tried anymore. `planDialog()`
+// (the escalation gate, consulted only once a browser-only attempt has already come back
+// 'challenge') returns 'solve' or 'suppressed'.
+export type PlanAction = { action: 'browser' } | { action: 'solve' } | { action: 'suppressed'; reason: string }
 
 export type SolveOutcome =
   | 'solved'
@@ -78,13 +73,20 @@ export const HUMAN_SOLVE_REASONS = [
 export type HumanSolveReason = (typeof HUMAN_SOLVE_REASONS)[number]
 
 interface HostState {
-  clearedAt?: number | undefined
   suppressedUntil?: number | undefined
   suppressReason?: string | undefined
 }
 
 export interface HumanSolveState {
+  /** The top-level gate: browser-first for anything not suppressed. Never returns 'solve' —
+   * the dialog is only ever reached via `planDialog` below, after a browser-only attempt has
+   * already come back 'challenge'. */
   plan(host: string, now: number): PlanAction
+  /** The escalation gate, consulted only once a browser-only attempt for this host has come
+   * back 'challenge' — decides whether the consent dialog may run at all (macbook-unreachable,
+   * the dialog rate limit, or a host already suppressed) or whether it stays 'solve'. Never
+   * returns 'browser'. */
+  planDialog(host: string, now: number): PlanAction
   record(host: string, outcome: SolveOutcome, now: number): void
 }
 
@@ -124,9 +126,9 @@ export function createHumanSolveState(): HumanSolveState {
 
   return {
     plan(host, now) {
-      // The local-unavailable (Chrome/proxy down) guard stays ahead of EVERYTHING else,
-      // including a warm cleared host below: fetch-cleared still runs bin/solver.ts locally on
-      // the mini, so it needs the same Chrome/proxy a solve does, unlike the MacBook dialog.
+      // The local-unavailable (Chrome/proxy down) guard stays ahead of EVERYTHING else — a
+      // browser-only attempt runs bin/solver.ts locally on the mini exactly like a solve does,
+      // so it needs the same Chrome/proxy.
       if (now < localUnavailableUntil) {
         return { action: 'suppressed', reason: 'solver unavailable' }
       }
@@ -134,13 +136,21 @@ export function createHumanSolveState(): HumanSolveState {
       if (state?.suppressedUntil !== undefined && now < state.suppressedUntil) {
         return { action: 'suppressed', reason: state.suppressReason ?? 'suppressed' }
       }
-      // Checked BEFORE the macbookUnreachable guard below: a warm-cleared host is fetched
-      // entirely locally on the mini (bin/solver.ts's 'fetch' mode, no dialog, no MacBook
-      // contact at all), so an unreachable MacBook is not evidence against it — the old
-      // ordering wrongly suppressed a still-fresh cleared cookie just because the LAST attempt
-      // to solve some OTHER host's dialog happened to fail to reach the MacBook.
-      if (state?.clearedAt !== undefined && now - state.clearedAt < CLEARED_TTL_MS) {
-        return { action: 'fetch-cleared' }
+      // No MacBook/dialog-rate-limit check here on purpose — a browser-only ('fetch' mode)
+      // attempt never touches the MacBook or the dialog, for an unknown host exactly as much as
+      // a previously-cleared one (measured 2026-09-26: MPB's Cloudflare managed challenge was
+      // passed by the solver Chrome alone, no dialog, no prior clearance at all). Those checks
+      // move to `planDialog` below, consulted only once a browser attempt has actually come
+      // back 'challenge'.
+      return { action: 'browser' }
+    },
+    planDialog(host, now) {
+      if (now < localUnavailableUntil) {
+        return { action: 'suppressed', reason: 'solver unavailable' }
+      }
+      const state = hosts.get(host)
+      if (state?.suppressedUntil !== undefined && now < state.suppressedUntil) {
+        return { action: 'suppressed', reason: state.suppressReason ?? 'suppressed' }
       }
       if (now < macbookUnreachableUntil) {
         return { action: 'suppressed', reason: 'macbook unreachable' }
@@ -155,16 +165,17 @@ export function createHumanSolveState(): HumanSolveState {
         case 'solved':
         case 'cleared-ok': {
           const state = touch(host)
-          state.clearedAt = now
           state.suppressedUntil = undefined
           state.suppressReason = undefined
           break
         }
-        case 'cleared-challenge': {
-          const state = touch(host)
-          state.clearedAt = undefined
+        case 'cleared-challenge':
+          // No per-host state to update — a browser-only ('fetch' mode) attempt hitting
+          // 'challenge' carries no cleared-cookie bookkeeping to drop anymore (the browser-first
+          // path tries every host the same way regardless of prior clearance); kept as its own
+          // outcome purely so `human_solve.done`'s log line still names it distinctly from an
+          // ordinary error.
           break
-        }
         case 'declined': {
           const state = touch(host)
           state.suppressedUntil = now + SUPPRESS_HOST_MS
@@ -202,6 +213,10 @@ const SolverOkPage = z.object({
   html: z.string().max(MAX_HTML_LEN),
   finalUrl: z.string(),
   mode: z.enum(['solved', 'cleared']),
+  // The settled page's HTTP status, read via `performance.getEntriesByType('navigation')`
+  // (Chrome >=109) in the same Runtime.evaluate that reads the html — absent, 0, or any other
+  // non-positive value means "unknown", never a claim the origin answered at all.
+  status: z.number().optional(),
 })
 // The 'warm' result of a launch/verify-only run (mode 'warm' — no tab, no html) — run before
 // the MacBook dialog so Chrome/proxy failures short-circuit to a suppression instead of

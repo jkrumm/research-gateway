@@ -435,6 +435,133 @@ describe('human-solve SSRF guard', () => {
   })
 })
 
+describe('human-solve HTTP status', () => {
+  it('a settled 404 is recorded missing exactly like the origin step, and the chain stops there (no Wayback)', async () => {
+    const HUMAN_404_PAGE = 'https://203.0.113.40/page'
+    stubFetch(() => new Response('<title>Just a moment...</title>', { status: 403, headers: { 'cf-mitigated': 'challenge', 'content-type': 'text/html' } }))
+    let waybackCalls = 0
+    const humanSolve = async (req: HumanSolveRequest) => ({
+      ok: true as const,
+      html: '<html><body>ERROR 404 Seite nicht gefunden</body></html>',
+      finalUrl: HUMAN_404_PAGE,
+      mode: 'solved' as const,
+      status: 404,
+    })
+    const ledger = createLedger()
+
+    const result = await runFetchChain(HUMAN_404_PAGE, {
+      ledger,
+      hostGate: createHostGate(),
+      tavilyExtract: stubTavilyFail(),
+      impersonatedFetch: stubImpersonateUnavailable(),
+      humanSolve,
+      onArchive: () => {
+        waybackCalls++
+      },
+    })
+
+    expect(result.via).toBeNull()
+    expect(result.error).toContain('HTTP 404')
+    expect(ledger.tierOf(HUMAN_404_PAGE)).toBe('missing')
+    expect(waybackCalls).toBe(0) // a definitively-missing result never falls through to Wayback
+  })
+
+  it('a settled 410 is recorded missing the same way as a 404', async () => {
+    const HUMAN_410_PAGE = 'https://203.0.113.41/page'
+    stubFetch(() => new Response('<title>Just a moment...</title>', { status: 403, headers: { 'cf-mitigated': 'challenge', 'content-type': 'text/html' } }))
+    const humanSolve = async (req: HumanSolveRequest) => ({
+      ok: true as const,
+      html: '<html><body>Gone</body></html>',
+      finalUrl: HUMAN_410_PAGE,
+      mode: 'solved' as const,
+      status: 410,
+    })
+    const ledger = createLedger()
+
+    const result = await runFetchChain(HUMAN_410_PAGE, {
+      ledger,
+      hostGate: createHostGate(),
+      tavilyExtract: stubTavilyFail(),
+      impersonatedFetch: stubImpersonateUnavailable(),
+      humanSolve,
+    })
+
+    expect(result.via).toBeNull()
+    expect(ledger.tierOf(HUMAN_410_PAGE)).toBe('missing')
+  })
+
+  it('a settled 500 is an ordinary failed human attempt, not missing — and still falls through to Wayback', async () => {
+    const HUMAN_500_PAGE = 'https://203.0.113.42/page'
+    stubFetch(() => new Response('<title>Just a moment...</title>', { status: 403, headers: { 'cf-mitigated': 'challenge', 'content-type': 'text/html' } }))
+    const humanSolve = async (req: HumanSolveRequest) => ({
+      ok: true as const,
+      html: htmlPage(),
+      finalUrl: HUMAN_500_PAGE,
+      mode: 'solved' as const,
+      status: 500,
+    })
+    const ledger = createLedger()
+
+    const result = await runFetchChain(HUMAN_500_PAGE, {
+      ledger,
+      hostGate: createHostGate(),
+      tavilyExtract: stubTavilyFail(),
+      impersonatedFetch: stubImpersonateUnavailable(),
+      humanSolve,
+    })
+
+    const humanAttempt = result.attempts.find((a) => a.step === 'human')
+    expect(humanAttempt?.ok).toBe(false)
+    expect(humanAttempt?.error).toBe('HTTP 500')
+    expect(result.via).not.toBe('human')
+    expect(ledger.tierOf(HUMAN_500_PAGE)).not.toBe('missing')
+  })
+
+  it('an unknown status (absent) is treated exactly like today — a good page still succeeds via human', async () => {
+    const HUMAN_UNKNOWN_STATUS_PAGE = 'https://203.0.113.43/page'
+    stubFetch(() => new Response('<title>Just a moment...</title>', { status: 403, headers: { 'cf-mitigated': 'challenge', 'content-type': 'text/html' } }))
+    const humanSolve = async (req: HumanSolveRequest) => ({
+      ok: true as const,
+      html: htmlPage(),
+      finalUrl: HUMAN_UNKNOWN_STATUS_PAGE,
+      mode: 'solved' as const,
+      // no `status` field at all — Chrome <109 or the navigation entry was never recorded
+    })
+
+    const result = await runFetchChain(HUMAN_UNKNOWN_STATUS_PAGE, {
+      ledger: createLedger(),
+      hostGate: createHostGate(),
+      tavilyExtract: stubTavilyFail(),
+      impersonatedFetch: stubImpersonateUnavailable(),
+      humanSolve,
+    })
+
+    expect(result.via).toBe('human')
+  })
+
+  it('a 200 status still succeeds via human exactly like an absent status', async () => {
+    const HUMAN_200_STATUS_PAGE = 'https://203.0.113.44/page'
+    stubFetch(() => new Response('<title>Just a moment...</title>', { status: 403, headers: { 'cf-mitigated': 'challenge', 'content-type': 'text/html' } }))
+    const humanSolve = async (req: HumanSolveRequest) => ({
+      ok: true as const,
+      html: htmlPage(),
+      finalUrl: HUMAN_200_STATUS_PAGE,
+      mode: 'solved' as const,
+      status: 200,
+    })
+
+    const result = await runFetchChain(HUMAN_200_STATUS_PAGE, {
+      ledger: createLedger(),
+      hostGate: createHostGate(),
+      tavilyExtract: stubTavilyFail(),
+      impersonatedFetch: stubImpersonateUnavailable(),
+      humanSolve,
+    })
+
+    expect(result.via).toBe('human')
+  })
+})
+
 describe('marker-less block eligibility', () => {
   it('sets sawBlock (human-eligible) when both the plain and impersonation rungs return a marker-less 403, without a host-wide cooldown', async () => {
     const MARKERLESS_BOTH_PAGE = 'https://203.0.113.30/page'

@@ -68,20 +68,36 @@ drives the same watchdog + load shedding off process RSS (`memory.source: "rss"`
 
 ## Human solve
 
-A challenged page (Cloudflare managed challenge, DataDome, …) can be solved by the owner: the
-gateway ssh's to `HUMAN_SOLVE_SSH_HOST` (`iumac`) **only** to show a JXA dialog; **Open** runs
+**Browser-first.** A challenged page (Cloudflare managed challenge, DataDome, …) is first tried
+with the solver Chrome ALONE (mode 'fetch', no dialog, no MacBook contact) — whether the host is
+completely unknown or was previously cleared, both now run the identical code path. Measured live
+2026-09-26 on the mini: MPB served a Cloudflare managed challenge (403, `cf-mitigated:
+challenge`) to both a plain and an impit fetch, but the dedicated solver Chrome passed it with
+**no human interaction at all** (Screen Sharing was open the whole time; Turnstile auto-passed on
+the residential IP), and a follow-up 'fetch' request then read the MPB homepage in 12s with no
+dialog. Only once this browser-only attempt itself comes back 'challenge' does the gateway
+escalate to the dialog below. A settled page's HTTP status is now read alongside its HTML
+(`performance.getEntriesByType('navigation')[0]?.responseStatus`, Chrome >=109), so a
+definitively-missing page — MPB's German 404, "ERROR 404 Seite nicht gefunden" at 211 chars, thin
+enough to have looked like an ordinary miss — is recorded `missing` instead of a false
+`retrieved`.
+
+The gateway ssh's to `HUMAN_SOLVE_SSH_HOST` (`iumac`) **only** to show a JXA dialog; **Open** runs
 `open vnc://mini` there, and the owner clicks through the challenge in the mini's dedicated
 solver Chrome (`~/.research-gateway/solver-chrome`, CDP on `127.0.0.1:9422`, separate from
-any everyday Chrome). The browser — and so the `cf_clearance` cookie — lives on the mini, so
+any everyday Chrome, now launched with `--start-maximized` so Screen Sharing shows essentially
+one browser window). The browser — and so the `cf_clearance` cookie — lives on the mini, so
 later reads of that host go through the same browser with no dialog and no MacBook, from the
 mini's own IP. The MacBook never fetches anything (it is an IU-managed device on a corporate
 network). Requirements: the console GUI session stays logged in, Screen Sharing stays enabled.
 The solver polls `/json/list` titles and attaches a CDP client only once the challenge title is
 gone — an attached debugger is the main thing anti-bot scripts detect. Suppression: a skipped or
-unanswered host is not re-asked for 6h; an unreachable MacBook pauses prompts for 5 min; the
-solver Chrome or the SSRF proxy below failing to come up pauses prompts globally for the same 5
-min, under its own 'solver unavailable' reason (never conflated with an unreachable MacBook,
-even though the effect — a short blanket pause — is the same shape).
+unanswered host is not re-asked for 6h (blocking both the browser-only attempt and the dialog);
+an unreachable MacBook pauses only the DIALOG for 5 min, never the browser-only attempt (which
+never touches the MacBook); the solver Chrome or the SSRF proxy below failing to come up pauses
+everything globally for the same 5 min, under its own 'solver unavailable' reason. The dialog
+rate limit (6 prompts/hour, global) is charged only on an actual escalation to the dialog — a
+browser-only attempt never consumes it.
 
 **HTTP(S)/WebSocket SSRF filter, plus a separate WebRTC restriction — not one blanket
 "network-level" boundary.** The solver Chrome is LLM-chosen-URL-driven (attacker-influenced by
@@ -120,11 +136,13 @@ the proxy port it last launched Chrome with in a sidecar file next to the profil
 current run needs — Chrome is never left browsing unfiltered. If the proxy itself isn't
 listening, the solver refuses to run at all (`reason: 'proxy_unavailable'`) rather than fail
 open. A `mode: 'warm'` solver run (launch/verify only, no tab, no human) checks both — proxy
-listening, then Chrome up with matching launch args — BEFORE the MacBook dialog, so a broken
-solver never prompts the owner for a browser session that was never coming up.
+listening, then Chrome up with matching launch args — with no tab and no human; the gateway no
+longer calls it directly (the browser-first 'fetch' attempt above establishes the same thing as
+a side effect, since it launches/verifies Chrome and the proxy before opening its tab), but the
+protocol mode stays for anything else that wants a launch/verify-only check.
 
-State is in-memory by design: a deploy or restart forgets cleared and declined hosts, so a
-declined host can be asked about again after the next deploy. Prompts are capped at 6 per
-rolling hour. Trust boundary: the solver Chrome renders LLM-chosen URLs on the dev host with a
+State is in-memory by design: a deploy or restart forgets declined hosts and any suppression, so
+a declined host can be asked about again after the next deploy. Dialog prompts are capped at 6
+per rolling hour. Trust boundary: the solver Chrome renders LLM-chosen URLs on the dev host with a
 warm cookie profile. The settled URL is re-checked against the SSRF guard before anything is
 returned, and the profile is used for nothing else. Never sign in to anything in it.
