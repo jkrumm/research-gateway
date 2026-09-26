@@ -1,5 +1,5 @@
-# Mini overlay — the native LaunchAgent instance on :7780, alongside the VPS
-# Docker container (also :7780, different host). Layered on top of
+# Mini overlay — the native LaunchAgent instance on :7780, the only instance since the VPS
+# container was retired 2026-09-26 (docs/decisions.md). Layered on top of
 # .env.local.tpl:
 #   secrets-run run --env-file=.env.local.tpl --env-file=.env.mini.tpl -- bun run src/index.ts
 # Last file wins per key, so anything here overrides .env.local.tpl's dev
@@ -22,8 +22,8 @@ LIGHTPANDA_URL=http://127.0.0.1:7781
 # the gateway process plus up to RESEARCH_MAX_CONCURRENCY concurrent jobs.
 MEMORY_LIMIT_MB=4096
 
-# Same service name as the VPS instance, so both land under one HyperDX
-# service and are told apart by host.name via OTEL_RESOURCE_ATTRIBUTES.
+# Same service name the retired VPS instance used, kept so history stays under one HyperDX
+# service; host.name via OTEL_RESOURCE_ATTRIBUTES now only ever says "mini".
 # Export itself stays optional (.env.mini.otel.tpl / scripts/launch.sh) — the
 # HyperDX ingestion key is seeded separately from everything else here.
 OTEL_SERVICE_NAME=research-gateway
@@ -47,8 +47,7 @@ BRAIN_BASE_URL=https://brain.mini.jkrumm.com
 # Human-solve escalation (agent/human-solve.ts): the ssh alias to the owner's MacBook, which
 # reaches it non-interactively (dedicated key, IdentityAgent none, BatchMode) ONLY to prompt —
 # a dialog asking whether to open Screen Sharing into the mini's own console session, where the
-# actual solver Chrome runs (bin/solver.ts, spawned locally). Unset on the VPS, which has no
-# MacBook to prompt.
+# actual solver Chrome runs (bin/solver.ts, spawned locally).
 HUMAN_SOLVE_SSH_HOST=iumac
 # The mini's tailnet MagicDNS name over the macOS Screen Sharing URL scheme — what the
 # MacBook's dialog opens on "Open". :5900 is Screen Sharing's default port, so no port needed.

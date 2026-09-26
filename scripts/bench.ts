@@ -57,7 +57,7 @@ function parseArgs(argv: string[]): Args {
     return i >= 0 ? argv[i + 1] : undefined
   }
   return {
-    base: get('--base') ?? 'https://research.jkrumm.com',
+    base: get('--base') ?? 'http://127.0.0.1:7780',
     depth: (get('--depth') as Depth | undefined) ?? 'standard',
     reps: Number(get('--reps') ?? 3),
     queries: Number(get('--queries') ?? QUERIES.length),

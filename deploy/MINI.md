@@ -1,9 +1,9 @@
 # The mini instance
 
-Native (no Docker) second instance on the Mac mini, where every consumer already runs. Same
-code, same sqlite job store shape, same OTel service name — told apart by `host.name=mini` on
-spans and `machine: 'mini'` on argo usage rows. The VPS container stays up as the fallback until
-it is retired in the `vps` repo.
+Native (no Docker), the only instance since the VPS container was retired 2026-09-26 — every
+consumer already ran against the mini. Same code, same sqlite job store shape, same OTel service
+name — `host.name=mini` on spans and `machine: 'mini'` on argo usage rows are now the only values
+either ever takes. See `docs/decisions.md` § VPS instance retired for the history.
 
 ## Layout
 
@@ -19,8 +19,8 @@ it is retired in the `vps` repo.
 | logs | `~/Library/Logs/research-gateway{,-lightpanda,-deploy}.{log,err}` |
 | door | Caddy `research.test` → `research.mini.<domain>` (dotfiles `config/Caddyfile`, `make caddy-tailnet`) |
 
-Both ports bind loopback only: 7780/7781 sit inside the tailnet ACL's `tcp:7700-7799` grant, and
-the renderer is unauthenticated.
+Both ports bind loopback only — no tailnet ACL grant covers them directly; the tailnet reaches
+the gateway only through the Caddy door above. The renderer is unauthenticated.
 
 ## Secrets
 
@@ -39,14 +39,23 @@ instance `degraded: ["karakeep"]` with vault-only `brainNotes`, never not at all
 ## Deploys
 
 Push to `master` → within 2 minutes the poller fetches, and if `origin/master` differs from
-`~/.research-gateway/data/deployed-sha` **and** `/health` reports zero running + queued jobs, it
-resets the clone, runs `bun install` only when `package.json`/`bun.lock` changed, restarts only
-what the diff touched (markdown/docs: nothing; `lightpanda/`: the sidecar too), and writes the
-marker only after a healthy restart — a failed deploy is retried on the next tick. A busy gateway
-defers the deploy instead of draining it. `launchd/` template changes are **not** applied
-automatically: `make launchd-install` by hand. A `scripts/install-bins.sh` change re-runs it
-against the clone before the restart; a non-zero exit fails the deploy (no marker written, retried
-next tick) rather than restart onto mismatched pinned binaries.
+`~/.research-gateway/data/deployed-sha`, it first checks CI before touching anything: **gated on
+`.github/workflows/ci.yml`'s `check` job for that exact SHA**, queried via
+`GET /repos/jkrumm/research-gateway/commits/{sha}/check-runs` (GitHub REST, `ci_gate_status` in
+`scripts/mini-deploy.sh`) using the same push credential git already uses
+(`secrets-run read op://mini/github/token` — dotfiles' `git-credential-secrets-cache`, never
+`op read`/`op run`, which hang on a biometric prompt no one on this box can answer). A completed,
+green check run lets the tick proceed; a still-running one logs "waiting for CI" and skips; a
+failed one logs an error naming the SHA and skips; the API being unreachable also skips — a
+deploy never goes out unchecked. Only once CI is green does the poller check that `/health`
+reports zero running + queued jobs, reset the clone, run `bun install` only when
+`package.json`/`bun.lock` changed, restart only what the diff touched (markdown/docs: nothing;
+`lightpanda/`: the sidecar too), and write the marker only after a healthy restart — a failed
+deploy is retried on the next tick. A busy gateway defers the deploy instead of draining it.
+`launchd/` template changes are **not** applied automatically: `make launchd-install` by hand. A
+`scripts/install-bins.sh` change re-runs it against the clone before the restart; a non-zero exit
+fails the deploy (no marker written, retried next tick) rather than restart onto mismatched
+pinned binaries.
 
 `ExitTimeOut` 1860s on the gateway plist is load-bearing: launchd's default is 20s, which would
 SIGKILL through the 1800s `SHUTDOWN_DRAIN_MS` drain on a reboot or manual restart.

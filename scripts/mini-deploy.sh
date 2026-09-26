@@ -24,6 +24,12 @@ HEALTH_URL="http://127.0.0.1:7780/health"
 LABEL_GATEWAY="com.jkrumm.research-gateway"
 LABEL_LIGHTPANDA="com.jkrumm.research-gateway-lightpanda"
 
+# The name of ci.yml's job — GitHub creates a check run under this exact name (no explicit
+# `name:` override in the workflow, so it defaults to the job id). ci_gate_status matches
+# against it, never a hand-rolled webhook.
+CI_CHECK_NAME="check"
+CI_REPO="jkrumm/research-gateway"
+
 # git's well-known hash of the empty tree — diffing against it lists every path in the target
 # commit, which is the fallback used when there is no trustworthy deployed-sha to diff from.
 EMPTY_TREE_SHA="4b825dc642cb6eb9a060e54bf8d69288fbee4904"
@@ -53,6 +59,40 @@ write_deployed_sha() {
   local sha="$1" tmp
   tmp="$DEPLOYED_SHA_FILE.tmp.$$"
   print -r -- "$sha" > "$tmp" && mv -f "$tmp" "$DEPLOYED_SHA_FILE"
+}
+
+# Prints one of success|pending|failure|unreachable for $1 (a full SHA) to stdout — never
+# blocks the tick indefinitely (bounded by curl's --max-time) and never throws, since main()
+# must keep polling on every outcome but success. The token is the same push credential
+# git already uses (op://mini/github/token, dotfiles' git-credential-secrets-cache) — read via
+# secrets-run, never `op read`/`op run` (those hang on a biometric prompt no one on this box can
+# answer). A GitHub PAT authenticates the REST API the same way it authenticates git over
+# HTTPS, so no separate token is provisioned for this.
+ci_gate_status() {
+  local sha="$1" token resp
+  token=$(secrets-run read op://mini/github/token 2>/dev/null)
+  if [[ -z "$token" ]]; then
+    print "unreachable"
+    return 0
+  fi
+
+  resp=$(curl -fsS --max-time 10 \
+    -H "Authorization: Bearer $token" \
+    -H "Accept: application/vnd.github+json" \
+    "https://api.github.com/repos/$CI_REPO/commits/$sha/check-runs" 2>/dev/null)
+  if [[ -z "$resp" ]]; then
+    print "unreachable"
+    return 0
+  fi
+
+  print -r -- "$resp" | jq -r --arg name "$CI_CHECK_NAME" '
+    [.check_runs[]? | select(.name == $name)] as $runs
+    | if ($runs | length) == 0 then "unreachable"
+      elif ($runs | map(.status) | any(. != "completed")) then "pending"
+      elif ($runs | map(.conclusion) | all(. == "success")) then "success"
+      else "failure"
+      end
+  ' 2>/dev/null || print "unreachable"
 }
 
 # mkdir is atomic — the lock a concurrent tick (a slow deploy overrunning the next 2-minute
@@ -125,6 +165,26 @@ main() {
   if [[ -n "$deployed_sha" && "$deployed_sha" == "$origin_head" ]]; then
     return 0  # up to date — the common case, no log line for it
   fi
+
+  # CI gate: never deploy a SHA GitHub Actions hasn't (yet, or ever) called green. A red or
+  # still-running check must not go live just because the poller happened to fire in the gap.
+  local ci_status
+  ci_status=$(ci_gate_status "$origin_head")
+  case "$ci_status" in
+    success) ;;
+    pending)
+      log "waiting for CI on ${origin_head[1,12]} — skipping this tick"
+      return 0
+      ;;
+    failure)
+      log "ERROR: CI failed on ${origin_head[1,12]} — refusing to deploy, will retry next tick"
+      return 0
+      ;;
+    *)
+      log "ERROR: GitHub check-runs API unreachable for ${origin_head[1,12]} — refusing to deploy unchecked, will retry next tick"
+      return 0
+      ;;
+  esac
 
   # Idle gate: a down service can't lose jobs, so an unreachable /health
   # deploys anyway rather than wedging every future tick behind a dead

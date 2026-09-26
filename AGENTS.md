@@ -1,6 +1,6 @@
 # research-gateway — Agent Instructions
 
-Elysia/Bun service on the VPS: one research brain behind bearer HTTP + an MCP facade at
+Elysia/Bun service, native on the Mac mini: one research brain behind bearer HTTP + an MCP facade at
 `/mcp`. A lead model plans, a fan-out of workers researches in parallel (web search + page
 fetch + source-of-truth lookups), the lead synthesizes one cited report. **README.md is the
 contract** (endpoints, env vars, grounding model, stack) — this file is what a dispatched
@@ -14,7 +14,6 @@ agent needs before touching code; don't restate what README already owns.
 | `docs/field-notes.md` | Consumer-side observations, open backlog (now GitHub issues) |
 | `docs/architecture-review-2026-09.md` | End-to-end architecture challenge: the nine-point verdict and the phased plan in flight |
 | `docs/hyperdx-dashboard.md` | Span model + dashboard SQL |
-| `deploy/DEPLOY.md` | VPS deploy steps; **the vps repo owns compose + `.env.tpl`, this repo has no copy** |
 | `deploy/MINI.md` | The mini's native instance: layout, secrets overlays, the deploy poller, operating targets |
 
 ## Async job contract
@@ -80,50 +79,45 @@ regression against issue #1's case. A quoted number that is not in the page text
 delivered for the cited URL caps that citation at `low` (`numbers.ts`) — also in code, for the
 same reason. Full model: README § Grounding.
 
-## Two instances
+## One instance — the mini
 
-The mini runs this natively (LaunchAgents from a deploy clone at `~/.research-gateway/app`,
-`deploy/MINI.md`); the VPS container is the fallback. Every new env var needs a default that
-keeps the VPS unchanged — the mini opts in via `.env.mini.tpl` (`HOST`, `MACHINE`,
+Native LaunchAgents from a deploy clone at `~/.research-gateway/app` (`deploy/MINI.md`). The VPS
+container was retired 2026-09-26 — every consumer already ran against the mini, which carries a
+strict superset (human solve, brain search, higher concurrency); no fallback instance remains.
+See `docs/decisions.md` for the retirement rationale and history/pre-2026-09-26 commits for the
+two-instance era (rollhook, compose, cgroup memory limits). Defaults now only need to be safe
+for local dev/tests — the mini opts in via `.env.mini.tpl` (`HOST`, `MACHINE`,
 `MEMORY_LIMIT_MB`, OTLP auth, `BRAIN_BASE_URL`) and `scripts/launch.sh` (`BRAIN_DIR`, which a
 template can't express since it needs `$HOME` expansion — same reasoning as `JOB_DB_PATH`/
-`YTDLP_PATH`). A push reaches both: rollhook on the VPS, the idle-gated poller on the mini.
-`launchd/` template changes need `make launchd-install` by hand. On the mini usage goes to the
-local usage-tracker via JSONL (`USAGE_SINK=jsonl` + `USAGE_JSONL_PATH` in `scripts/launch.sh`);
-the VPS still posts straight to argo.
+`YTDLP_PATH`). `launchd/` template changes need `make launchd-install` by hand. Usage goes to
+the local usage-tracker via JSONL (`USAGE_SINK=jsonl` + `USAGE_JSONL_PATH` in `scripts/launch.sh`).
 
 ## Deploy-on-push, and what it costs
 
-Push to `master` deploys via rollhook (label-driven, OIDC) unless the diff is
-markdown-only (`paths-ignore`). A deploy no longer kills running jobs outright: SIGTERM
-**drains** —
+Push to `master` reaches the mini within 2 minutes via `scripts/mini-deploy.sh`'s git poller
+(`deploy/MINI.md`), which gates on `.github/workflows/ci.yml`'s `check` job for that SHA before
+touching anything: pending/failing/unreachable all skip the tick and retry on the next one, only
+a green check-run deploys. A deploy no longer kills running jobs outright: SIGTERM **drains** —
 stops admitting, fails the still-queued ones with "never started, resubmit", and waits up to
-`SHUTDOWN_DRAIN_MS` (1800s) for the running ones. That works only because rollhook starts the
-new container and waits for it to be healthy before stopping the old one, and both replicas
-share the same sqlite job store — a client polling the new container sees the old replica's
-job finish. It is real only while the compose `stop_grace_period` (1860s, vps repo) stays
-above `SHUTDOWN_DRAIN_MS`; Docker's default 10s would SIGKILL through the whole drain.
-The cost is a longer deploy tail, so `GET /health`'s `jobs` counts are still worth a look. A
-job that outlives the window is still cut — `process.drained` with `remaining > 0` is the
-error-level line that says so. **Size this off `docs/measurements.md` § Job duration, never off
-one run** — the first value was 600s, taken from a single fast deep run, and the span record
+`SHUTDOWN_DRAIN_MS` (1800s) for the running ones. There is no second replica to overlap onto (the
+rollhook/compose rollout this relied on was VPS-only, since retired) — the poller's own idle gate
+does the equivalent job instead: it defers the whole tick while `GET /health` reports any running
+or queued job. The cost is a longer deploy tail, so `GET /health`'s `jobs` counts are still worth
+a look. A job that outlives the window is still cut — `process.drained` with `remaining > 0` is
+the error-level line that says so. **Size this off `docs/measurements.md` § Job duration, never
+off one run** — the first value was 600s, taken from a single fast deep run, and the span record
 says it missed 39% of deep jobs.
-`deploy/DEPLOY.md` § Traps has the rest (`make research-gateway-redeploy`, never
-`down && up` — that rolls back to `:latest`).
 
 ## Memory watchdog, and load shedding
 
-The VPS container runs at `mem_limit: 2g` (vps repo's compose, raised from 1g on 2026-09-08).
-`src/lib/memory-watch.ts` samples the cgroup every 5s; at 85% of the limit it logs
-`process.memory_pressure` at **error** severity *and* calls `setMemoryPressure(true)`, which
-makes `admission()` refuse new jobs with a 503 until it re-arms below 75%
-(`process.memory_recovered`). The log line is the only in-process warning a SIGKILL allows —
-an OOM kill leaves no application log (`docker inspect` reports the *restarted* container's
-`ExitCode: 0`) — but logging alone is what let the 2026-09-04 kill take all three concurrent
-jobs. Two confirmed OOM kills (2026-07-31, 2026-09-04) both first looked like a mystery clean
-exit; `ssh vps sudo journalctl -k | grep oom` is the actual record. `GET /health` carries
-`lastRestartAt` / `reaped` / `interrupted` / `draining` / `jobs` / `memory` for a keyword
-monitor with no log access.
+`src/lib/memory-watch.ts` samples every 5s — process RSS against `MEMORY_LIMIT_MB` on the mini
+(no cgroup on macOS; the VPS container's `mem_limit: 2g` cgroup sampling is history, see git log
+pre-2026-09-26). At 85% of the limit it logs `process.memory_pressure` at **error** severity
+*and* calls `setMemoryPressure(true)`, which makes `admission()` refuse new jobs with a 503
+until it re-arms below 75% (`process.memory_recovered`). The log line is the only in-process
+warning a SIGKILL allows. `GET /health` carries `lastRestartAt` / `reaped` / `interrupted` /
+`draining` / `jobs` / `memory` (`memory.source: "rss"` on the mini) for a keyword monitor with no
+log access.
 
 ## Local dev
 
@@ -184,7 +178,9 @@ Anything importing `env.ts` is untested by design — factor pure logic out inst
 - `evals/` + `scripts/eval.ts` — golden-set answer-quality eval (`evals/golden.jsonl`,
   regex + live-registry resolvers, results in `evals/results/`); `bun scripts/eval.ts`,
   see `docs/measurements.md` § Answer-quality eval
-- `lightpanda/` — the rendering sidecar, its own Dockerfile and deploy workflow
+- `lightpanda/` — the rendering sidecar, run on the mini as its own LaunchAgent
+  (`scripts/launch-lightpanda.sh`); `Dockerfile` stays only because `boundary.test.ts` reads it
+  as a self-containment guard, no image is built or deployed from it any more
 
 ## Gotchas that change a decision
 

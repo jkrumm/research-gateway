@@ -18,8 +18,8 @@
 //   bun run scripts/fetch-bench.ts --out /tmp/fetch-bench.jsonl --concurrency 1
 //
 // It drives the gateway's `POST /probe/fetch` rather than importing the chain, for the same
-// reason bench.ts drives the HTTP API: the sidecar lives on a private compose network and the
-// egress IP is the VPS's. A local run would measure a different machine's access to the
+// reason bench.ts drives the HTTP API: the sidecar runs on its own loopback port and the
+// egress IP is the mini's. A local run would measure a different machine's access to the
 // internet, which is not the thing in question.
 
 interface Case {
@@ -130,7 +130,7 @@ interface Args {
 }
 
 function parseArgs(argv: string[]): Args {
-  const args: Args = { base: 'https://research.jkrumm.com', only: null, out: null, concurrency: 2 }
+  const args: Args = { base: 'http://127.0.0.1:7780', only: null, out: null, concurrency: 2 }
   for (let i = 0; i < argv.length; i += 2) {
     const flag = argv[i]
     const value = argv[i + 1]

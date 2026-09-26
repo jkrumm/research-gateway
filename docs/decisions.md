@@ -134,6 +134,19 @@ per-host reputation logic rather than layered on top of it.
   whether the mini's own IP is un-blocked, so a successful human solve does NOT clear the
   host's cooldown the way a successful impersonation does.
 
+## VPS instance retired (2026-09-26)
+
+The VPS Docker instance is gone — no fallback remains, the mini is the only instance. Every live
+consumer (Claude Code's `/research` skill, sideclaw, Hermes, the CLI) already talked to the mini,
+and the mini carries a strict superset of what the VPS ever ran: human solve (needs a MacBook to
+prompt, which the VPS never had), `brainNotes`/Karakeep, and higher measured concurrency (5 vs
+the VPS's 3, `.env.mini.tpl`). The accepted cost is exactly that superset in reverse — no second
+instance to overlap a deploy onto (the VPS/mini pair's rollhook-drain trick), no separate
+box if the mini itself goes down. CI (`.github/workflows/ci.yml`) now only checks; the mini's
+own poller (`scripts/mini-deploy.sh`) deploys, gated on that check via the GitHub API. The
+rollhook/compose/cgroup-era facts (Dockerfile, `.dockerignore`, `deploy/DEPLOY.md`,
+`deploy-lightpanda.yml`) are history from here — `git log` before this commit, not this file.
+
 ## Non-goals, still
 
 No deterministic pipeline, no per-client tokens, no query caching, no streaming, no

@@ -1,0 +1,27 @@
+name: CI
+
+# Check-only. The gateway no longer deploys from GitHub Actions — the mini's own poller
+# (scripts/mini-deploy.sh) pulls origin/master and deploys natively, gated on THIS workflow's
+# `check` job via the GitHub check-runs API (see mini-deploy.sh's ci_gate_status). That gate is
+# why every push must produce a check run here, including markdown-only ones — no
+# `paths-ignore`, unlike the old deploy workflow this replaces.
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - run: bun install --frozen-lockfile --ignore-scripts
+      - run: bun run typecheck
+      - run: bun test

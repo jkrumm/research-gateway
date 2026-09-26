@@ -273,16 +273,17 @@ const Env = z.object({
   // otelAuthScheme name and semantics.
   OTEL_EXPORTER_OTLP_AUTH_SCHEME: z.string().default(''),
   // Host label stamped on every argo usage row (part of argo's idempotency triple, and a
-  // dashboard breakdown dimension) — this service now runs on both the VPS (prod container)
-  // and the mini (native LaunchAgent), so it must not be hardcoded. Default reproduces
-  // today's VPS behaviour unchanged; the mini's .env.mini.tpl sets MACHINE=mini. Matches
-  // audio-gateway's `config.machine` convention.
-  MACHINE: z.string().default('vps'),
+  // dashboard breakdown dimension) — kept a free-text env var rather than hardcoded since the
+  // service ran on both the VPS (prod container, retired 2026-09-26) and the mini before that.
+  // Default is now the mini, the only instance; `.env.mini.tpl` still sets MACHINE=mini
+  // explicitly. Matches audio-gateway's `config.machine` convention.
+  MACHINE: z.string().default('mini'),
   // Fallback memory ceiling (MiB) for `lib/memory-watch.ts`'s watchdog + load-shedding on a
   // host with no cgroup — macOS (the mini's native LaunchAgent) has none, so
   // `memory.max`/`memory.current` are unreadable there and the watchdog is otherwise
-  // permanently inert. Unset (the VPS container's default, cgroup available) keeps the cgroup
-  // path exclusive — this var is read ONLY as a fallback when the cgroup read fails.
+  // permanently inert. Unset (true on the mini's dev checkout, and on the retired VPS
+  // container where a cgroup was available) keeps the cgroup path exclusive — this var is
+  // read ONLY as a fallback when the cgroup read fails.
   MEMORY_LIMIT_MB: z.coerce.number().optional(),
   // Optional overlays the mini's launcher (scripts/launch.sh) could NOT resolve and started
   // without — e.g. `otel`, `github` — as a comma list. Surfaced on `GET /health` as

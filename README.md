@@ -1,6 +1,6 @@
 # research-gateway
 
-One research brain, hosted on the VPS, callable by every client on the tailnet (Claude Code,
+One research brain, hosted natively on the Mac mini, callable by every client on the tailnet (Claude Code,
 Hermes, any tailnet machine) — **Tailscale-only**, not exposed to the public internet. A lead
 model decomposes the query into independent sub-questions, a fan-out of **parallel workers**
 researches them (web search + page fetch + source-of-truth lookups) and returns a compact
@@ -16,7 +16,7 @@ talk to — and plain bearer HTTP for everything else (Hermes, scripts, curl).
 | [`docs/measurements.md`](./docs/measurements.md) | every number the design rests on, with the run it came from |
 | [`docs/field-notes.md`](./docs/field-notes.md) | dated observations from the calling side, the open backlog, and the traps |
 | [`docs/hyperdx-dashboard.md`](./docs/hyperdx-dashboard.md) | the span model and the dashboard tiles built on it, with SQL |
-| [`deploy/DEPLOY.md`](./deploy/DEPLOY.md) | VPS deploy — the compose file and prod `.env.tpl` live in the **vps** repo |
+| [`deploy/MINI.md`](./deploy/MINI.md) | The mini's native instance — layout, secrets, deploy poller, operating targets |
 
 ## Stack
 
@@ -54,7 +54,7 @@ talk to — and plain bearer HTTP for everything else (Hermes, scripts, curl).
 | Endpoint | Auth | Body / Params | Returns |
 |-|-|-|-|
 | `GET /` | public | — | discovery: the public route list, `/openapi`, the MCP tools |
-| `GET /health` | public | — | `{ status: "ok", lastRestartAt, reaped, interrupted }` — only `status` gates anything (Docker healthcheck, rollhook); the counts show an unclean restart to a keyword monitor. See [Restarts](#restarts-and-what-they-cost) |
+| `GET /health` | public | — | `{ status: "ok", lastRestartAt, reaped, interrupted }` — only `status` gates anything (the mini's deploy poller, a keyword monitor); the counts show an unclean restart. See [Restarts](#restarts-and-what-they-cost) |
 | `GET /health/render` | public | — | `{ renderer, active, queued, error }` — the sidecar. **Deliberately not part of `/health`**: the renderer is optional, and a broken one must not block deploys of a gateway that is otherwise fine |
 | `GET /health/tavily` | public | — | live account state from `api.tavily.com/usage` incl. `overPlan` — crossing into pay-as-you-go was otherwise silent |
 | `GET /health/ytdlp` | public | — | `{ ytdlp, version, error }` — `yt-dlp --version` inside the container |
@@ -197,12 +197,12 @@ do not mock env. `scripts/smoke.ts` runs one `runResearch()` end to end without 
 | `JOB_DB_PATH` | no (`./data/jobs.sqlite`) | `/app/data` in the container, a named volume |
 | `SHUTDOWN_DRAIN_MS` | no (1 800 000) | how long SIGTERM waits for RUNNING jobs before force-exiting. **Must stay below the compose `stop_grace_period` (1860s)** or SIGKILL wins and the drain buys nothing. Sized off the 30-day span record, not a guess — see Restarts |
 | `YTDLP_PATH` / `YTDLP_MAX_CONCURRENCY` / `YTDLP_TIMEOUT_MS` | no | bundled binary; concurrency 2 because YouTube rate-limits the datacenter IP under burst |
-| `HUMAN_SOLVE_SSH_HOST` | no (off) | mini only: ssh alias of the owner's MacBook, used **only** to show the "solve this challenge?" dialog. Unset takes the human stage out of the chain (VPS) |
+| `HUMAN_SOLVE_SSH_HOST` | no (off) | mini only: ssh alias of the owner's MacBook, used **only** to show the "solve this challenge?" dialog. Unset takes the human stage out of the chain |
 | `HUMAN_SOLVE_VIEW_URL` | no | what the dialog's **Open** runs on the MacBook — `vnc://mini` (Screen Sharing into the mini, where the solver Chrome is) |
 | `HUMAN_SOLVE_WAIT_MS` | no (300 000) | hang guard for one human solve — a wait for a person, not an agent budget |
 
-Production values come from `vps/apps/research-gateway/.env.tpl` via `op inject`, which
-**resolves `op://` refs inside comments too** — never park an unused ref behind a `#`.
+Production values come from `.env.local.tpl` + `.env.mini.tpl` via `secrets-run` (`scripts/launch.sh`),
+which **resolves `op://` refs inside comments too** — never park an unused ref behind a `#`.
 
 ## Web search backend
 
@@ -304,11 +304,12 @@ process is lost. Two mechanisms keep that from being the normal case.
 
 **A deploy drains rather than kills.** SIGTERM stops admitting new jobs, rejects the ones still
 queued behind the concurrency semaphore with "never started — resubmit", and then waits up to
-`SHUTDOWN_DRAIN_MS` for the running ones to finish before flushing OTel and exiting. This is
-free because of the rollout order: rollhook starts the new container and waits for it to be
-healthy *before* stopping the old one, and both replicas write through to the same sqlite job
-store — so a client polling through the new container still sees the old replica's job reach
-`done`. The cost is a longer deploy tail when a job is in flight.
+`SHUTDOWN_DRAIN_MS` for the running ones to finish before flushing OTel and exiting. On the mini
+(the only instance since the VPS was retired 2026-09-26) there is no second replica to overlap
+onto, so `scripts/mini-deploy.sh`'s idle gate does the equivalent job from the other side: it
+defers the whole tick — no reset, no restart — while `GET /health` reports any running or queued
+job, and only restarts once the gateway is genuinely idle. The drain itself still matters for a
+job that starts between that check and the restart, or for `make launchd-restart`/a reboot.
 
 The window is sized off the measured distribution, not a guess:
 [docs/measurements.md § Job duration](./docs/measurements.md#job-duration-by-depth--the-30-day-span-record)
@@ -320,8 +321,10 @@ anyway. A job that still outruns the window gets cut — `process.drained` logs 
 **error** level when that happens, which is the number to re-read before anyone argues for
 agent-loop checkpointing.
 
-**Memory pressure sheds instead of dying.** `lib/memory-watch.ts` samples the cgroup every 5 s;
-at 85% of the limit it logs `process.memory_pressure` *and* flips admission to refuse new jobs,
+**Memory pressure sheds instead of dying.** `lib/memory-watch.ts` samples every 5 s — the cgroup
+on the retired VPS container, process RSS against `MEMORY_LIMIT_MB` on the mini (no cgroup on
+macOS; see [`deploy/MINI.md`](./deploy/MINI.md)); at 85% of the limit it logs
+`process.memory_pressure` *and* flips admission to refuse new jobs,
 re-arming (`process.memory_recovered`) below 75%. A watchdog that only logged is what the
 2026-09-04 OOM kill exposed — all three concurrent jobs died with the process because nothing
 upstream ever stopped admitting more.
@@ -334,28 +337,31 @@ a terminal `error` ("lost, resubmit"), and that reap is the thing to watch:
   kill: `job.error`, an `worker.failed`/`plan.fallback` burst, memory pressure, and a drain
   that cut live jobs. Thresholds and the reasoning: `docs/hyperdx-dashboard.md` § Alerts.
 - `GET /health` carries `lastRestartAt`, `reaped` (this boot), `interrupted` (this process
-  lifetime), `draining`, `jobs.running` / `jobs.queued` and the cgroup `memory` ratio — enough
-  for a keyword monitor with no log access to see load, shedding and shutdown state. Only
-  `status` gates anything; a draining container still serves polls correctly, so it stays `ok`.
-- **A kernel OOM kill leaves no container log line, and `docker inspect` on the restarted
-  container reports `ExitCode: 0` / `OOMKilled: false`** — both describe the *current* run.
-  That is how 2026-07-31 and 2026-09-04 both read as "mystery exit 0"; the VPS kernel journal
-  (`journalctl -k | grep oom`) held the 2026-09-04 answer: SIGKILL at exactly the 1 GiB
-  `mem_limit`, 15 jobs reaped. `lib/memory-watch.ts` now logs `process.memory_pressure` at
-  error level when the cgroup's `memory.current` crosses 85% of its limit (sampled every
-  5 s, with the `memory.events` counters) — the only in-process warning a SIGKILL allows. `process.exit` / `beforeExit` / `uncaughtException` / `unhandledRejection`
-  are logged too, for every exit that *is* in-process.
-- Markdown-only pushes do not deploy (`paths-ignore`); everything else does. With the drain in
-  place a deploy mid-job is survivable rather than destructive, but `GET /health`'s `jobs`
-  counts still tell you whether you are about to add ten minutes to the deploy tail.
+  lifetime), `draining`, `jobs.running` / `jobs.queued` and the `memory` ratio (`memory.source`
+  says whether it's cgroup- or RSS-based) — enough for a keyword monitor with no log access to
+  see load, shedding and shutdown state. Only `status` gates anything; a draining process still
+  serves polls correctly, so it stays `ok`.
+- **On the retired VPS container, a kernel OOM kill left no container log line, and
+  `docker inspect` on the restarted container reported `ExitCode: 0` / `OOMKilled: false`** —
+  both described the *current* run. That is how 2026-07-31 and 2026-09-04 both read as "mystery
+  exit 0"; the VPS kernel journal (`journalctl -k | grep oom`) held the 2026-09-04 answer:
+  SIGKILL at exactly the 1 GiB `mem_limit`, 15 jobs reaped. `lib/memory-watch.ts`'s
+  `process.memory_pressure` at 85% (see above) is the same in-process warning on the mini,
+  where a SIGKILL (OOM or otherwise) is a launchd crash-loop row instead of a silent restart.
+- Markdown-only changes never restart the gateway — `scripts/mini-deploy.sh` classifies the
+  diff per path and skips the restart entirely for `*.md`/`docs/*`; everything else does. With
+  the drain in place a deploy mid-job is survivable rather than destructive, but `GET /health`'s
+  `jobs` counts still tell you whether you are about to add ten minutes to the deploy tail.
 
 ## Deploy
 
-Two instances of the same code. **Mini** (native LaunchAgents, where every consumer runs —
-[`deploy/MINI.md`](./deploy/MINI.md)): idle-gated deploy-on-push via a 2-minute git poller.
-**VPS** (the fallback until retired): Tailscale-only (grey-cloud A record → VPS Tailscale IP, not the Cloudflare Tunnel) →
-Traefik → rollhook on push to `master`. **The compose file and prod `.env.tpl` are owned by
-the `vps` repo** (`apps/research-gateway/`); this repo has no copy. [`deploy/DEPLOY.md`](./deploy/DEPLOY.md).
+Native on the **mini** — no Docker, no container registry. [`deploy/MINI.md`](./deploy/MINI.md):
+LaunchAgents (`:7780` gateway, `:7781` lightpanda sidecar) plus an idle-gated deploy poller that
+fetches `origin/master` every 2 minutes, checks GitHub Actions' `check` job for that SHA before
+deploying (`scripts/mini-deploy.sh`), then resets, installs and restarts only what changed. The
+VPS instance was retired 2026-09-26 — every consumer already ran against the mini, which carries
+a strict superset (human solve, brain search, higher concurrency); see
+[`docs/decisions.md`](./docs/decisions.md) for why.
 
 ## Clients
 
@@ -406,7 +412,7 @@ client `timeout` generously against the measured distribution
 queue wait, not a promised maximum.
 
 ```jsonc
-"research-gateway": { "type": "http", "url": "https://research.jkrumm.com/mcp", "timeout": 7200000 }
+"research-gateway": { "type": "http", "url": "https://research.mini.jkrumm.com/mcp", "timeout": 7200000 }
 ```
 
 A call still running after two minutes moves to a Claude Code background task
