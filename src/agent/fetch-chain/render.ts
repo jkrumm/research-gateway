@@ -56,7 +56,7 @@ export async function runRenderStage(ctx: ChainContext): Promise<FetchChainResul
         const ms = attempt(ctx.attempts, 'lightpanda', t2, { ok: false, error: reason, blocked: reason })
         ctx.opts.onRender?.({ ok: false, ms })
         ctx.hostGate.noteBlocked(ctx.host, { reason: verdict.signal, kind: 'challenge' })
-        ctx.sawBlock = true
+        ctx.markBlocked()
         log('tool.fetchPage', { jobId: ctx.jobId, url: ctx.url, via: 'lightpanda', error: reason })
       } else {
         const ms = attempt(ctx.attempts, 'lightpanda', t2, { ok: true, chars: text.length })

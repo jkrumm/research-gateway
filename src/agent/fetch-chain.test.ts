@@ -364,6 +364,30 @@ describe('TLS impersonation rung', () => {
     expect(result.via).toBeNull()
   })
 
+  it('(e) the LAST origin verdict decides render skipping: a decisive plain block then a corroborating-only impersonated one is not "origin challenged"', async () => {
+    stubFetch(
+      () => new Response('<title>Just a moment...</title>', { status: 403, headers: { 'cf-mitigated': 'challenge', 'content-type': 'text/html' } }),
+    )
+    // Corroborating only: a 403 naming the vendor, no decisive header or body marker.
+    const impersonatedFetch: NonNullable<FetchChainOptions['impersonatedFetch']> = async () =>
+      new Response('<p>Sorry, you have been blocked. cloudflare</p>', { status: 403, headers: { 'content-type': 'text/html' } })
+
+    const result = await runFetchChain('https://203.0.113.24/page', {
+      ledger: createLedger(),
+      renderBaseUrl: 'https://198.51.100.9',
+      hostGate: createHostGate(),
+      tavilyExtract: stubTavilyFail(),
+      impersonatedFetch,
+    })
+
+    const impersonateAttempt = result.attempts.find((a) => a.step === 'impersonate')
+    expect(impersonateAttempt?.blocked).toBeDefined()
+    const renderAttempt = result.attempts.find((a) => a.step === 'lightpanda')
+    // Still skipped — the plain block put the host in cooldown — but for THAT reason, not a
+    // stale decisive flag from the first attempt.
+    expect(renderAttempt?.error).toMatch(/^skipped: cooldown/)
+  })
+
   it('(d) skips the plain fetch entirely on a host already learned in (a), going straight to impersonation', async () => {
     let plainCalls = 0
     stubFetch(() => {

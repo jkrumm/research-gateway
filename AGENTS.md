@@ -169,8 +169,10 @@ Anything importing `env.ts` is untested by design — factor pure logic out inst
   the `fetchPage` chain (Readability, or `pdftotext` for a PDF (`pdf.ts`) → site adapter →
   `impit` impersonation on a 401/403/503 → lightpanda sidecar → Tavily Extract → solver
   browser, then human solve (mini) → Wayback), every origin hit behind the per-host gate.
-  Stage flags (`sawBlock`, `originDecisiveBlock`, …) are written by earlier stages and read by
-  later ones — reordering stages means re-checking that flow. Readability/site-adapter parsing runs off the event loop in a worker
+  Stage flags (`sawBlock`, `originDecisiveBlock`, …) are `readonly` on `ChainContext` and
+  written only through named methods (`markBlocked`, `markDecisiveOriginBlock`, `markPdfBody`,
+  `noteReadabilityMiss`) — read by later stages, but reordering stages still means re-checking
+  that flow. Readability/site-adapter parsing runs off the event loop in a worker
   pool (`html-parse.ts` + `parse-worker.ts`); the whole chain is bounded by a per-fetch
   budget (`FETCH_CHAIN_BUDGET_MS`).
 - `src/lib/job-store.ts` + `job-db.ts` — sqlite job durability + heartbeat reaping; also owns

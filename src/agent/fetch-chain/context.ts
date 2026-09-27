@@ -66,10 +66,14 @@ export function attempt(
 }
 
 // Shared, explicit state a chain run threads through every stage — built once per call by
-// `createContext` below, then read and mutated (the `sawBlock`/`originDecisiveBlock`/
-// `isPdfBody`/`rdReason`/`rdChars` flags) by whichever stage runs next. Deliberately a plain
-// mutable object rather than a class: each stage is a free function `(ctx) => Promise<
-// FetchChainResult | null>`, and this is the one thing they all close over.
+// `createContext` below, then read by whichever stage runs next. Deliberately a plain object
+// rather than a class: each stage is a free function `(ctx) => Promise<FetchChainResult |
+// null>`, and this is the one thing they all close over. The stage flags below
+// (`sawBlock`/`originDecisiveBlock`/`isPdfBody`/`rdReason`/`rdChars`) are `readonly` on this
+// interface — every write goes through one of the named `mark*`/`note*` methods instead of a
+// bare field assignment, so `grep -rn 'ctx\.\(sawBlock\|originDecisiveBlock\|isPdfBody\|rdReason\|
+// rdChars\) =' src/agent/fetch-chain/` finds nothing outside this file: a write site is always a
+// named call, never an assignment a reader could miss.
 export interface ChainContext {
   /** The URL asked for — what the ledger recorded and what a citation will name. */
   readonly url: string
@@ -97,15 +101,38 @@ export interface ChainContext {
   readonly attempts: FetchAttempt[]
   /** Set once this chain has direct or inherited evidence the host is blocking us — the human
    * stage (between Tavily and Wayback) only runs when there is a reason to believe a
-   * human-driven browser can succeed where the automated rungs could not. */
-  sawBlock: boolean
+   * human-driven browser can succeed where the automated rungs could not. Write via
+   * `markBlocked()`. */
+  readonly sawBlock: boolean
   /** Set once step 1 hits a DECISIVE block verdict — a JS renderer cannot pass a challenge a
    * plain fetch already failed, so render is skipped for THIS chain specifically (independent
-   * of the cooldown-based skip, which only kicks in on a LATER chain once noteBlocked has run). */
-  originDecisiveBlock: boolean
-  isPdfBody: boolean
-  rdReason: 'thin' | 'threw'
-  rdChars: number
+   * of the cooldown-based skip, which only kicks in on a LATER chain once noteBlocked has run).
+   * Write via `markDecisiveOriginBlock()`. */
+  readonly originDecisiveBlock: boolean
+  /** Write via `markPdfBody()`. */
+  readonly isPdfBody: boolean
+  /** Why step 1's Readability/site-adapter reading fell through — `'thin'` (the default: it ran
+   * and produced too little text, or was never asked at all — see `rdChars`) or `'threw'` (it
+   * threw before producing any text). Write via `noteReadabilityMiss(reason, chars)`. */
+  readonly rdReason: 'thin' | 'threw'
+  /** Chars step 1's reading produced, meaningless when it never ran (`extract.ts`'s header
+   * comment). Write via `noteReadabilityMiss(reason, chars)`. */
+  readonly rdChars: number
+  /** Sets `sawBlock`. The one flag written from more than one module (origin.ts's block
+   * verdicts, render.ts's 200-challenge check, and origin.ts's `runOriginStage` for a skipped
+   * or two-independent-marker-less-blocks chain) — so it stays a context method rather than
+   * becoming module-local anywhere. */
+  markBlocked: () => void
+  /** Sets `originDecisiveBlock`. Only step 1 (origin.ts) ever calls this — a render-stage block
+   * is discovered too late to skip render FOR THIS CHAIN (that is what `originDecisiveBlock`
+   * exists to do), so render.ts only ever calls `markBlocked()`, never this. */
+  markDecisiveOriginBlock: (decisive: boolean) => void
+  /** Sets `isPdfBody`. Origin-only (a PDF is identified while reading step 1's body). */
+  markPdfBody: () => void
+  /** Sets `rdReason` and `rdChars` together — the pair always describes ONE observation about
+   * step 1's Readability attempt (it ran and was thin, or it threw before finishing), so they
+   * are written together rather than through two separately-timed calls that could disagree. */
+  noteReadabilityMiss: (reason: 'thin' | 'threw', chars?: number) => void
   /** Whether a stage should be skipped BEFORE it is attempted — a static per-host policy entry
    * (site-adapters.ts's evidence bar applies the same way here: a table entry needs a
    * measurement) or a live cooldown this process already recorded for the host. `render` is
@@ -179,6 +206,35 @@ export function createContext(url: string, opts: FetchChainOptions): ChainContex
     }
   }
 
+  // The stage flags — plain local variables, never assigned to directly outside this closure.
+  // Exposed on the returned object as getters (so a reader sees an ordinary `ctx.sawBlock`
+  // property, same as before) plus the named `mark*`/`note*` methods below, which are the ONLY
+  // functions that ever reassign them.
+  let sawBlock = false
+  let originDecisiveBlock = false
+  let isPdfBody = false
+  let rdReason: 'thin' | 'threw' = 'thin'
+  let rdChars = 0
+
+  const markBlocked = (): void => {
+    sawBlock = true
+  }
+  // Last write wins, like the pre-split `ctx.originDecisiveBlock = verdict.decisive`: the origin
+  // pipeline can run twice (plain, then impersonate), and a decisive plain block followed by a
+  // corroborating-only impersonated one must NOT keep render skipped.
+  const markDecisiveOriginBlock = (decisive: boolean): void => {
+    originDecisiveBlock = decisive
+  }
+  const markPdfBody = (): void => {
+    isPdfBody = true
+  }
+  // `chars` omitted keeps the last recorded count — a throw AFTER a successful extraction must
+  // not erase the length render/extract log next to `rdReason`.
+  const noteReadabilityMiss = (reason: 'thin' | 'threw', chars?: number): void => {
+    rdReason = reason
+    if (chars !== undefined) rdChars = chars
+  }
+
   const fail = (error: string): FetchChainResult => {
     emitAttempts()
     return { url, fetchUrl, via: null, text: null, error, attempts }
@@ -219,11 +275,25 @@ export function createContext(url: string, opts: FetchChainOptions): ChainContex
     chainStartedAt,
     budgetReason,
     attempts,
-    sawBlock: false,
-    originDecisiveBlock: false,
-    isPdfBody: false,
-    rdReason: 'thin',
-    rdChars: 0,
+    get sawBlock() {
+      return sawBlock
+    },
+    get originDecisiveBlock() {
+      return originDecisiveBlock
+    },
+    get isPdfBody() {
+      return isPdfBody
+    },
+    get rdReason() {
+      return rdReason
+    },
+    get rdChars() {
+      return rdChars
+    },
+    markBlocked,
+    markDecisiveOriginBlock,
+    markPdfBody,
+    noteReadabilityMiss,
     stageSkipReason,
     fail,
     done,
