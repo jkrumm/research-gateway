@@ -13,6 +13,7 @@
 
 import { parseHTML } from 'linkedom'
 import { Readability } from '@mozilla/readability'
+import { stripConsentOverlays } from './consent.js'
 import { resolveSite } from './site-adapters.js'
 import { normalizeText } from './extract.js'
 
@@ -29,6 +30,7 @@ declare const self: Worker
 // The Wayback step's reader: plain Readability, no site adapter.
 function viaReadability(body: string): string | null {
   const { document } = parseHTML(body)
+  stripConsentOverlays(document)
   const article = new Readability(document as unknown as ConstructorParameters<typeof Readability>[0]).parse()
   const raw = article?.textContent?.trim()
   const text = raw ? normalizeText(raw) : raw
@@ -44,6 +46,7 @@ self.onmessage = (e: MessageEvent<ParseRequest>): void => {
     }
 
     const { document } = parseHTML(req.body)
+    stripConsentOverlays(document)
     // The site adapter (if any) is re-resolved from the ORIGINAL url, exactly as the caller
     // did, so the same reader applies to the same host without shipping a function across the
     // worker boundary. `null` falls through to Readability unchanged.
