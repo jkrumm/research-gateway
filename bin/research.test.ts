@@ -327,7 +327,7 @@ describe('run — cancel', () => {
     const { io, out } = makeIo()
     const code = await run(['cancel', 'job-20'], makeCtx({ fetchFn }), io)
     expect(code).toBe(0)
-    expect(calls).toEqual([{ url: 'http://127.0.0.1:7780/research/job-20', method: 'DELETE' }])
+    expect(calls).toEqual([{ url: 'https://research.mini.jkrumm.com/research/job-20', method: 'DELETE' }])
     expect(out.join('')).toBe('job-20 cancelled\n')
   })
 

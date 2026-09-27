@@ -1,13 +1,11 @@
 #!/bin/zsh
 # research-gateway/scripts/install-bins.sh — pins the two native binaries the
-# mini's LaunchAgents need (lightpanda, yt-dlp) into ~/.research-gateway/bin,
-# matching the SAME version the Dockerfiles pin for the VPS containers
-# (lightpanda/Dockerfile, ../Dockerfile). Idempotent: a binary already at its
-# pinned checksum is left alone — re-run any time, called by `make mini-setup`.
+# mini's LaunchAgents need (lightpanda, yt-dlp) into ~/.research-gateway/bin.
+# Idempotent: a binary already at its pinned checksum is left alone — re-run
+# any time, called by `make mini-setup`.
 #
-# When bumping a pin here, bump the matching Dockerfile pin too (and vice
-# versa) — the mini and the VPS container must never run different versions
-# of the same tool.
+# The mini is the only instance now (the VPS was retired) — these pins are
+# the sole source of truth for both binaries' versions.
 
 set -u
 
@@ -68,11 +66,11 @@ install_bin lightpanda 0.3.6 \
   33568934d374daf9012b9be0847fd82a99dd9f1cb2f2f93bb783cc78a96c99ac \
   "version" || exit_status=1
 
-# Same pin as ../Dockerfile's YTDLP_VERSION, but the ONEDIR macOS build, not the onefile
-# `yt-dlp_macos`: measured 2026-09-23, the onefile build unpacks into a fresh temp dir on every
-# run and Gatekeeper re-scans the unpacked dylibs each time — 8.5s per call, every call, which
-# timed out /health/ytdlp and would eat most of a transcript fetch. The onedir build pays that
-# scan once (first run ~8s) and then starts in ~0.3s.
+# The ONEDIR macOS build, not the onefile `yt-dlp_macos`: measured 2026-09-23, the onefile build
+# unpacks into a fresh temp dir on every run and Gatekeeper re-scans the unpacked dylibs each
+# time — 8.5s per call, every call, which timed out /health/ytdlp and would eat most of a
+# transcript fetch. The onedir build pays that scan once (first run ~8s) and then starts in
+# ~0.3s.
 install_ytdlp() {
   local version=2026.07.04 sha=b0724470a0cf6dae5175a87eee05d6e75c5a0c10d2c3015166bd4d34e92b1b7b
   # Versioned dist dir, not a fixed "yt-dlp-dist" name — a version bump then installs into a

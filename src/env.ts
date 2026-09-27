@@ -221,12 +221,12 @@ const Env = z.object({
   // first and the drain buys nothing. `process.boot` logs this value so the drift is visible.
   SHUTDOWN_DRAIN_MS: z.coerce.number().default(1_800_000),
   // bun:sqlite job store (status-only durability — see lib/job-db.ts). Relative default
-  // resolves against the process CWD: the repo root in local dev, /app (the Dockerfile
-  // WORKDIR) in the container, where the vps repo's apps/research-gateway/compose.yml mounts a
-  // named volume at /app/data.
+  // resolves against the process CWD (the repo root in local dev); scripts/launch.sh overrides
+  // this to an absolute path under the mini's dedicated deploy layout (~/.research-gateway/data).
   JOB_DB_PATH: z.string().default('./data/jobs.sqlite'),
-  // yt-dlp binary path — bundled into the image at build time (Dockerfile), pinned to a
-  // specific release. See agent/ytdlp.ts.
+  // yt-dlp binary path — installed and pinned by scripts/install-bins.sh, an absolute path
+  // under the mini's dedicated deploy layout (scripts/launch.sh overrides this default). See
+  // agent/ytdlp.ts.
   YTDLP_PATH: z.string().default('/usr/local/bin/yt-dlp'),
   // MEASURED 2026-08-06 from the VPS: YouTube rate-limits this datacenter IP under burst
   // (`HTTP Error 429` on a `--sub-langs` glob expansion). Bounded on purpose, not a tuning
@@ -236,8 +236,8 @@ const Env = z.object({
   // (three-video sample). 45s leaves headroom for a slow one without lingering forever on a
   // wedged process.
   YTDLP_TIMEOUT_MS: z.coerce.number().default(45_000),
-  // poppler's pdftotext binary — 'pdftotext' resolves via PATH (the Dockerfile's `apk add
-  // poppler-utils` puts it at /usr/bin/pdftotext on the alpine runner). See agent/pdf.ts.
+  // poppler's pdftotext binary — 'pdftotext' resolves via PATH (Homebrew's `poppler` on the
+  // mini, on the launcher's PATH — see deploy/MINI.md). See agent/pdf.ts.
   PDFTOTEXT_PATH: z.string().default('pdftotext'),
   // 'development' matches argo's NODE_ENV default (Env.ts) — only prod compose sets this to
   // 'production'. Feeds `deployment.environment` on every OTel span and log record (lib/otel.ts).

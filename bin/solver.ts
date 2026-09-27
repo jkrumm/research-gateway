@@ -25,7 +25,7 @@ import { assertPublicHttpUrl } from '../src/lib/ssrf.js'
 
 export interface SolverRequest {
   v: 1
-  mode: 'solve' | 'fetch' | 'warm'
+  mode: 'solve' | 'fetch'
   url: string
   timeoutMs: number
   /** The gateway's src/lib/safe-proxy.ts port (env.HUMAN_SOLVE_PROXY_PORT) — Chrome's own
@@ -41,7 +41,6 @@ export interface SolverRequest {
 
 type SolverOutput =
   | { ok: true; html: string; finalUrl: string; mode: 'solved' | 'cleared'; status?: number }
-  | { ok: true; mode: 'warm' }
   | { ok: false; reason: string }
 
 // ── Config ────────────────────────────────────────────────────────────────────────
@@ -144,7 +143,7 @@ export async function validateRequest(raw: unknown): Promise<ValidatedRequest> {
   const r = raw as Record<string, unknown>
   if (r['v'] !== 1) return { ok: false, reason: 'bad_request: unsupported v' }
   const mode = r['mode']
-  if (mode !== 'solve' && mode !== 'fetch' && mode !== 'warm') return { ok: false, reason: 'bad_request: bad mode' }
+  if (mode !== 'solve' && mode !== 'fetch') return { ok: false, reason: 'bad_request: bad mode' }
   const url = r['url']
   if (typeof url !== 'string' || url.length === 0) return { ok: false, reason: 'bad_request: missing url' }
   const timeoutMs = r['timeoutMs']
@@ -288,7 +287,7 @@ function isLockStale(path: string): boolean {
   return !isPidAlive(pid)
 }
 
-// Serializes Chrome *launches* only — a concurrent 'solve' and up to two 'fetch'/'warm' runs
+// Serializes Chrome *launches* only — a concurrent 'solve' and up to two 'fetch' runs
 // otherwise each race `open -na` against the same profile/port the instant none of them sees
 // `isChromeUp()` yet. A crashed holder can't wedge this forever (see `isLockStale` above); the
 // stale file is RENAMED out of the way, never unlinked — renaming is the atomic step that lets
@@ -773,15 +772,8 @@ async function processRequest(req: SolverRequest): Promise<SolverOutput> {
 
   // Sweep tabs a PRIOR, now-dead run of this script leaked (a hard kill between its own
   // `openTab` and `closeTab`) — only ones old enough that no concurrent run could still
-  // legitimately own them. Safe to run for every mode, including 'warm'.
+  // legitimately own them. Safe to run for every mode.
   await sweepOrphanTabs()
-
-  if (req.mode === 'warm') {
-    // Launch/verify only — no tab, no page fetch, no human involved. Run before the MacBook
-    // dialog so a Chrome/proxy failure short-circuits to a suppression instead of prompting the
-    // human for a browser session that was never coming up.
-    return { ok: true, mode: 'warm' }
-  }
 
   // Concurrent runs share this one Chrome instance — never sweep/close pre-existing tabs at
   // startup beyond the orphan sweep above, that would kill another run's in-flight tab. Just

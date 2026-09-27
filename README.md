@@ -378,7 +378,7 @@ if an MCP-only client needs it" became the main door the moment Claude Code was 
 The CLI is also the fallback when the MCP tools are missing: a session whose MCP connection
 failed at **startup** has no `research`/`job_wait` for its whole lifetime, while
 `research "<query>"` reaches the same REST door with no session state to lose. It reads
-`RESEARCH_GATEWAY_URL` (default `http://127.0.0.1:7780`) and `RESEARCH_GATEWAY_TOKEN` (falling
+`RESEARCH_GATEWAY_URL` (default `https://research.mini.jkrumm.com`) and `RESEARCH_GATEWAY_TOKEN` (falling
 back to the macOS Keychain generic password `research-gateway-token`). `research wait <jobId>`
 resumes a job submitted earlier — the id is a durable handle, not a session token. The report
 markdown goes to stdout, `status`/`warnings`/`unverified` to stderr; `--json` prints the full

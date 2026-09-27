@@ -200,10 +200,10 @@ export const healthRoute = new Elysia()
     },
   )
   // Same posture as `/health/render`/`/health/tavily`: public, and nothing gates on it. This
-  // is how a deploy gets verified — the Dockerfile already fails the BUILD on a broken binary
-  // (`RUN yt-dlp --version`), but a runtime regression (a base image swap, a volume mount
-  // that shadows /usr/local/bin) would otherwise only surface as every video fetch quietly
-  // falling back to Tavily Extract.
+  // is how a deploy gets verified — scripts/install-bins.sh already pins and verifies the
+  // binary at install time on the mini, but a runtime regression (a stale pin, a path that
+  // stops resolving) would otherwise only surface as every video fetch quietly falling back
+  // to Tavily Extract.
   .get(
     '/health/ytdlp',
     async () => {

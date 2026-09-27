@@ -153,7 +153,7 @@ function recordTavilyExtract(jobId: string, credits: number): void {
   meterTavily.add(jobId, { credits, searchCalls: 0, extractCalls: 1 })
 }
 
-export interface SonarTotals {
+interface SonarTotals {
   costUsd: number
   inputTokens: number
   outputTokens: number
@@ -203,10 +203,6 @@ const meterYtdlp = createJobMeter<{ calls: number; failures: number; totalMs: nu
   }),
   flush: (jobId, total) => void reportYtdlpUsage({ jobId, ...total }),
 })
-
-export function readYtdlpStats(jobId: string): { calls: number; failures: number; totalMs: number } {
-  return meterYtdlp.read(jobId) ?? { calls: 0, failures: 0, totalMs: 0 }
-}
 
 // Wayback rescues (fetch-chain.ts's `tryWayback`) were previously visible only in container
 // logs. One meter entry per rescue ATTEMPT, whether it succeeded, hit a non-ok status, found

@@ -2,7 +2,7 @@
 // Harness-agnostic command-line front end to the research-gateway REST door
 // (src/routes/research.ts). A plain HTTP client — no dependency on the MCP layer — so
 // Codex, OpenCode, Hermes, cron and scripts can submit and wait on a job without an MCP
-// client. Talks to `RESEARCH_GATEWAY_URL ?? http://127.0.0.1:7780`, bearer
+// client. Talks to `RESEARCH_GATEWAY_URL ?? https://research.mini.jkrumm.com`, bearer
 // `RESEARCH_GATEWAY_TOKEN` (or the macOS Keychain fallback).
 //
 // The argv -> request-body mapping and the exit-code mapping are exported pure functions so
@@ -15,7 +15,7 @@ import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import type { Depth, JobProgress, JobStatus, ResearchReport } from '../src/agent/schema.js'
 
-const DEFAULT_URL = 'http://127.0.0.1:7780'
+const DEFAULT_URL = 'https://research.mini.jkrumm.com'
 const POLL_MS = 2_000
 // A transient poll failure (a restart window, a dropped connection) is retried with backoff
 // rather than aborting the wait — the job itself is durable server-side for the whole
@@ -873,7 +873,7 @@ the full job per line); fetch a report with 'research status <jobId>'. Fan-out:
   research batch q.jsonl --context @facts.md --json | jq -r .jobId | xargs research wait-all
 
 Environment:
-  RESEARCH_GATEWAY_URL    base URL (default http://127.0.0.1:7780)
+  RESEARCH_GATEWAY_URL    base URL (default https://research.mini.jkrumm.com)
   RESEARCH_GATEWAY_TOKEN  bearer token; falls back to the macOS Keychain generic password
                           service "research-gateway-token".
 

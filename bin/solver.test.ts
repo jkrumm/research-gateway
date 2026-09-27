@@ -68,10 +68,6 @@ describe('validateRequest', () => {
     expect(result.ok).toBe(true)
   })
 
-  it('accepts warm mode', async () => {
-    expect((await validateRequest({ ...base, mode: 'warm' })).ok).toBe(true)
-  })
-
   it('rejects a bad mode', async () => {
     expect((await validateRequest({ ...base, mode: 'bogus' })).ok).toBe(false)
   })

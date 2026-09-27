@@ -1,6 +1,6 @@
 // yt-dlp client — the two YouTube code paths (transcript fetch, video search) that used to be
 // Tavily Extract and an HTML-scrape of the search page. Both now spawn the pinned binary
-// bundled into the image (see the Dockerfile) instead.
+// scripts/install-bins.sh installs on the mini instead.
 //
 // MEASURED 2026-08-06 from the VPS, `yt-dlp_musllinux` v2026.07.04 inside `oven/bun:1.3-alpine`
 // (the exact runtime image): one `-J` extraction + one direct GET of the caption URL —

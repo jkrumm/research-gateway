@@ -483,9 +483,9 @@ export function buildRenderRecord(args: {
 // Sixth per-job record, alongside `lead`/`worker`/`tavily`/`sonar`/`render` — yt-dlp calls
 // (both the transcript step and findVideos search) were previously visible only in container
 // logs. `cost_usd: null` / `cost_source: 'none'` for the same reason as the render record:
-// yt-dlp is a binary bundled into this image (see the Dockerfile), not a vendor call — it is
-// free, that is the entire point of replacing Tavily Extract with it, and there is no
-// marginal per-call cost to report.
+// yt-dlp is a binary pinned and installed by scripts/install-bins.sh (the mini's own bins,
+// not a vendor call) — it is free, that is the entire point of replacing Tavily Extract with
+// it, and there is no marginal per-call cost to report.
 export function buildYtdlpRecord(args: {
   jobId: string
   calls: number

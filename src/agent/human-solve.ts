@@ -39,7 +39,7 @@ const SOLVER_SCRIPT_PATH = join(import.meta.dir, '../../bin/solver.ts')
 
 // The dialog's own `givingUpAfter` (seconds, baked into the JXA program below) plus generous
 // ssh/osascript round-trip overhead — independent of HUMAN_SOLVE_WAIT_MS, which budgets the
-// solve flow as a whole (the warm step + the dialog + the local solve), not just the prompt.
+// solve flow as a whole (the dialog + the local solve), not just the prompt.
 const DIALOG_GIVE_UP_S = 90
 const DIALOG_SSH_TIMEOUT_MS = 110_000
 
@@ -243,7 +243,7 @@ function toSolverOutput(spawned: SpawnedResult): SolverOutput {
   return parseSolverOutput(spawned.stdout)
 }
 
-// Runs bin/solver.ts LOCALLY on the mini, in one of the three protocol modes (see its own
+// Runs bin/solver.ts LOCALLY on the mini, in one of its protocol modes (see its own
 // header). Purely an I/O boundary, same as promptUser above — no logging, no state writes.
 const runSolver: HumanSolverPorts['runSolver'] = async (mode, req, timeoutMs) => {
   if (req.signal.aborted) return { ok: false, reason: 'aborted' }

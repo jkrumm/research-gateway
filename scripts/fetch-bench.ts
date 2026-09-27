@@ -130,7 +130,7 @@ interface Args {
 }
 
 function parseArgs(argv: string[]): Args {
-  const args: Args = { base: 'http://127.0.0.1:7780', only: null, out: null, concurrency: 2 }
+  const args: Args = { base: 'https://research.mini.jkrumm.com', only: null, out: null, concurrency: 2 }
   for (let i = 0; i < argv.length; i += 2) {
     const flag = argv[i]
     const value = argv[i + 1]
