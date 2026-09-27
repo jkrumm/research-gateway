@@ -25,15 +25,13 @@ export interface HumanSolverPorts {
   /** Asks the human (ssh + JXA dialog on the MacBook in production) whether to open Screen
    * Sharing and solve a challenge. Never touches the target page itself. */
   promptUser: (req: HumanSolveRequest) => Promise<{ ok: true } | { ok: false; reason: HumanSolveReason }>
-  /** Runs bin/solver.ts (spawned locally on the mini in production) in one of three modes:
-   * 'warm' launches/verifies Chrome and the SSRF proxy with no tab and no page fetch (kept as a
-   * protocol mode bin/solver.ts still answers, but no longer called from this file — see the
-   * browser-first attempt below, which establishes the same thing as a side effect); 'fetch' is
-   * the browser-first attempt itself — the real solver Chrome alone, no dialog, whether or not
-   * the host was ever cleared before (measured 2026-09-26: MPB's Cloudflare managed challenge
-   * was passed this way with no human involved at all); 'solve' opens the tab the human is asked
-   * to click through, tried only once a 'fetch' attempt has come back 'challenge'. */
-  runSolver: (mode: 'solve' | 'fetch' | 'warm', req: HumanSolveRequest, timeoutMs: number) => Promise<SolverOutput>
+  /** Runs bin/solver.ts (spawned locally on the mini in production) in one of two modes:
+   * 'fetch' is the browser-first attempt — the real solver Chrome alone, no dialog, whether or
+   * not the host was ever cleared before (measured 2026-09-26: MPB's Cloudflare managed
+   * challenge was passed this way with no human involved at all); 'solve' opens the tab the
+   * human is asked to click through, tried only once a 'fetch' attempt has come back
+   * 'challenge'. */
+  runSolver: (mode: 'solve' | 'fetch', req: HumanSolveRequest, timeoutMs: number) => Promise<SolverOutput>
   /** A bounded concurrency slot for the browser-first ('fetch' mode) attempts (a real semaphore
    * in production, up to `MAX_CONCURRENT_CLEARED` at once) — `false` means the wait elapsed with
    * no slot granted. */
@@ -189,13 +187,7 @@ export function createHumanSolver(ports: HumanSolverPorts): HumanSolve {
   }
 
   async function runLocalSolver(mode: 'solve' | 'fetch', req: HumanSolveRequest, timeoutMs: number): Promise<HumanSolveResult> {
-    const result = await ports.runSolver(mode, req, timeoutMs)
-    if (result.ok && result.mode === 'warm') {
-      // Unreachable in practice — this function never requests 'warm' — kept only so the
-      // return type narrows cleanly to the page-fetching shape callers expect.
-      return { ok: false, reason: 'error' }
-    }
-    return result
+    return await ports.runSolver(mode, req, timeoutMs)
   }
 
   // The browser-first attempt: the real solver Chrome alone, mode 'fetch', no dialog — tried for

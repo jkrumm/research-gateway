@@ -35,7 +35,7 @@ function makeHarness(): Harness {
   let slotActive = 0
 
   let promptImpl: HumanSolverPorts['promptUser'] = async () => ({ ok: true })
-  let runSolverImpl: HumanSolverPorts['runSolver'] = async () => ({ ok: true, mode: 'warm' })
+  let runSolverImpl: HumanSolverPorts['runSolver'] = async () => ({ ok: true, html: '<html></html>', finalUrl: 'https://example.com/page', mode: 'solved' })
 
   const ports: HumanSolverPorts = {
     waitMs: 60_000,
@@ -180,7 +180,7 @@ describe('createHumanSolver — browser-then-solve escalation', () => {
 
     h.setRunSolverResult(async (mode) => {
       if (mode === 'fetch') return { ok: false, reason: 'challenge' }
-      return { ok: true, mode: 'warm' }
+      return { ok: true, html: '<html></html>', finalUrl: 'https://example.com/page', mode: 'solved' }
     })
     const solver = createHumanSolver(h.ports)
     const result = await solver(makeRequest())
@@ -200,7 +200,7 @@ describe('createHumanSolver — abort races the queued wait, not just the runnin
     })
     h.setRunSolverResult(async (mode) => {
       if (mode === 'fetch') return { ok: false, reason: 'challenge' } // force escalation to the dialog for both hosts
-      return { ok: true, mode: 'warm' }
+      return { ok: true, html: '<html></html>', finalUrl: 'https://example.com/page', mode: 'solved' }
     })
     const solver = createHumanSolver(h.ports)
 
@@ -281,7 +281,7 @@ describe('createHumanSolver — abort-listener hygiene and unexpected errors', (
     const h = makeHarness()
     h.setRunSolverResult(async (mode) => {
       if (mode === 'fetch') return { ok: false, reason: 'challenge' } // force escalation to the dialog
-      return { ok: true, mode: 'warm' }
+      return { ok: true, html: '<html></html>', finalUrl: 'https://example.com/page', mode: 'solved' }
     })
     h.setPromptResult(async () => {
       throw new Error('boom')

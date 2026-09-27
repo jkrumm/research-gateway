@@ -184,6 +184,31 @@ describe('challenge detection + host gate', () => {
     expect(hostGate.cooldown(hostOf(PAGE))).not.toBeNull()
   })
 
+  it('records via "browser" rather than "human" when the solver cleared the page with no human ever prompted', async () => {
+    stubFetch(() => new Response('Access denied', { status: 403, headers: { 'cf-mitigated': 'challenge', 'content-type': 'text/html' } }))
+
+    let humanCalls = 0
+    const humanSolve = async (req: HumanSolveRequest) => {
+      humanCalls++
+      return { ok: true as const, html: htmlPage(), finalUrl: PAGE, mode: 'browser' as const }
+    }
+
+    const result = await runFetchChain(PAGE, {
+      ledger: createLedger(),
+      hostGate: createHostGate(),
+      tavilyExtract: stubTavilyFail(),
+      impersonatedFetch: stubImpersonateUnavailable(),
+      humanSolve,
+    })
+
+    expect(humanCalls).toBe(1)
+    expect(result.via).toBe('browser')
+    expect(result.text).toContain('real words to read as article content')
+    const browserAttempt = result.attempts.find((a) => a.step === 'browser')
+    expect(browserAttempt?.ok).toBe(true)
+    expect(result.attempts.some((a) => a.step === 'human')).toBe(false)
+  })
+
   it('recovers a human solve that resolves after the chain budget has already expired', async () => {
     // The bug this guards: `tryHumanSolve` used to parse the solved HTML against the CHAIN's
     // own budget signal, which a multi-minute human solve always outlives — so a successful

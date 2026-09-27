@@ -175,10 +175,6 @@ describe('parseSolverOutput', () => {
     expect(parseSolverOutput(out).ok).toBe(false)
   })
 
-  it('parses a warm-mode ok result (no html/finalUrl)', () => {
-    expect(parseSolverOutput(JSON.stringify({ ok: true, mode: 'warm' }))).toEqual({ ok: true, mode: 'warm' })
-  })
-
   it('parses an ok result carrying the settled page status', () => {
     const out = JSON.stringify({ ok: true, html: '<html></html>', finalUrl: 'https://example.com/', mode: 'cleared', status: 404 })
     expect(parseSolverOutput(out)).toEqual({
@@ -194,7 +190,7 @@ describe('parseSolverOutput', () => {
     const out = JSON.stringify({ ok: true, html: '<html></html>', finalUrl: 'https://example.com/', mode: 'solved' })
     const parsed = parseSolverOutput(out)
     expect(parsed.ok).toBe(true)
-    if (parsed.ok && parsed.mode !== 'warm') expect(parsed.status).toBeUndefined()
+    if (parsed.ok) expect(parsed.status).toBeUndefined()
   })
 
   it('every reason in the closed set round-trips', () => {

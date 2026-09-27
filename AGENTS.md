@@ -163,10 +163,14 @@ Anything importing `env.ts` is untested by design — factor pure logic out inst
   the same `brainNotes` tool (no eleventh tool definition), mini-only and optional
   (`KARAKEEP_URL` + `KARAKEEP_API_KEY`). Pure parsing/ranking/excerpting in karakeep.ts; the
   fetch boundary never throws and degrades to brain-only results.
-- `src/agent/fetch-chain.ts` + `site-adapters.ts` + `lightpanda.ts` + `archive.ts` — the
-  `fetchPage` chain (Readability, or `pdftotext` for a PDF (`pdf.ts`) → site adapter → `impit`
-  impersonation on a 401/403/503 → lightpanda sidecar → Tavily Extract → human solve (mini) →
-  Wayback), every origin hit behind the per-host gate. Readability/site-adapter parsing runs off the event loop in a worker
+- `src/agent/fetch-chain.ts` (thin orchestrator + public API) over `fetch-chain/` (one module
+  per stage sharing a `ChainContext`: `origin` · `render` · `extract` · `human` · `wayback`,
+  plus `types`/`net`/`context`/`rescue`) + `site-adapters.ts` + `lightpanda.ts` + `archive.ts` —
+  the `fetchPage` chain (Readability, or `pdftotext` for a PDF (`pdf.ts`) → site adapter →
+  `impit` impersonation on a 401/403/503 → lightpanda sidecar → Tavily Extract → solver
+  browser, then human solve (mini) → Wayback), every origin hit behind the per-host gate.
+  Stage flags (`sawBlock`, `originDecisiveBlock`, …) are written by earlier stages and read by
+  later ones — reordering stages means re-checking that flow. Readability/site-adapter parsing runs off the event loop in a worker
   pool (`html-parse.ts` + `parse-worker.ts`); the whole chain is bounded by a per-fetch
   budget (`FETCH_CHAIN_BUDGET_MS`).
 - `src/lib/job-store.ts` + `job-db.ts` — sqlite job durability + heartbeat reaping; also owns

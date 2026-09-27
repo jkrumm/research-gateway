@@ -218,18 +218,11 @@ const SolverOkPage = z.object({
   // non-positive value means "unknown", never a claim the origin answered at all.
   status: z.number().optional(),
 })
-// The 'warm' result of a launch/verify-only run (mode 'warm' — no tab, no html) — run before
-// the MacBook dialog so Chrome/proxy failures short-circuit to a suppression instead of
-// prompting the human for a browser that isn't there.
-const SolverOkWarm = z.object({
-  ok: z.literal(true),
-  mode: z.literal('warm'),
-})
 const SolverErr = z.object({
   ok: z.literal(false),
   reason: z.enum(HUMAN_SOLVE_REASONS),
 })
-const SolverOutputSchema = z.union([SolverOkPage, SolverOkWarm, SolverErr])
+const SolverOutputSchema = z.union([SolverOkPage, SolverErr])
 export type SolverOutput = z.infer<typeof SolverOutputSchema>
 
 function parseLastJsonLine<T>(stdout: string, schema: z.ZodType<T>): T | null {
