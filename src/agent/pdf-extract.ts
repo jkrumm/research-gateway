@@ -49,6 +49,14 @@ export function mapPdftotextResult(args: {
 }): PdfExtractResult {
   const { signalCode, code, stdout, stderr, idleMs, stdoutTruncated = false } = args
 
+  // Truncation wins over everything below: crossing MAX_PDFTOTEXT_OUTPUT_BYTES cancels the
+  // reader (readIdleCapped) and pdf.ts then kills the (now-useless) child explicitly — which
+  // means `signalCode`/`code` on THIS exit reflect that kill, not a real failure. A byte-capped
+  // extraction is a complete, honest partial result and must report `ok: true, truncated: true`
+  // even though the process died by signal.
+  if (stdoutTruncated) {
+    return { ok: true, text: normalizeText(stdout), truncated: true }
+  }
   if (signalCode) {
     return { ok: false, text: '', error: `pdftotext produced no output for ${idleMs}ms and was killed` }
   }
