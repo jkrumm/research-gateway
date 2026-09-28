@@ -189,6 +189,13 @@ describe('resolveSite', () => {
       expect(site.fallbackUrl).toBeUndefined()
     })
 
+    it('also routes www.arxiv.org through the same adapter, rewriting to the bare host', () => {
+      const site = resolveSite('https://www.arxiv.org/abs/2309.04452')
+      expect(site.fetchUrl).toBe('https://arxiv.org/html/2309.04452')
+      expect(site.fallbackUrl).toBe('https://arxiv.org/pdf/2309.04452')
+      expect(site.extract).not.toBeNull()
+    })
+
     // The LaTeXML extraction itself (math/table handling) is unit-tested directly against
     // `extractArxivHtml` in extract-arxiv.test.ts — same convention as the Reddit/wrchina
     // adapters, whose extractors are tested in their own module rather than through
