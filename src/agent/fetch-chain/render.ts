@@ -2,6 +2,7 @@ import { normalizeText } from '../extract.js'
 import { classifyBlock, describeBlock } from '../challenge.js'
 import { parseRenderResponse, renderUrl } from '../lightpanda.js'
 import { log } from '../../lib/log.js'
+import { readBoundedText, MAX_BODY_BYTES } from '../../lib/bounded-read.js'
 import { attempt } from './context.js'
 import type { ChainContext } from './context.js'
 import type { FetchChainResult } from './types.js'
@@ -44,7 +45,26 @@ export async function runRenderStage(ctx: ChainContext): Promise<FetchChainResul
         }),
       ctx.budget,
     )
-    const parsed = parseRenderResponse(res.status, await res.json().catch(() => null))
+    // The sidecar's response is bounded like every other network body (bounded-read.ts): a
+    // response cut at MAX_BODY_BYTES is not a parseable envelope, so it is a render failure,
+    // never a partial body handed to JSON.parse.
+    const { text: body, truncated } = await readBoundedText(res, MAX_BODY_BYTES, (info) =>
+      log('tool.fetchPage', { jobId: ctx.jobId, url: ctx.url, via: 'oversized', step: 'render', ...info }),
+    )
+    if (truncated) {
+      const error = `render response exceeds ${MAX_BODY_BYTES} byte cap`
+      const ms = attempt(ctx.attempts, 'lightpanda', t2, { ok: false, error })
+      ctx.opts.onRender?.({ ok: false, ms })
+      log('tool.fetchPage', { jobId: ctx.jobId, url: ctx.url, via: 'lightpanda', error })
+      return null
+    }
+    let rendered: unknown = null
+    try {
+      rendered = JSON.parse(body)
+    } catch {
+      rendered = null // a non-JSON body reads as parseRenderResponse's "non-object body" error
+    }
+    const parsed = parseRenderResponse(res.status, rendered)
     if (parsed.ok) {
       const text = normalizeText(parsed.text)
       // The renderer executed the page's JS and still landed on a challenge page — a

@@ -783,3 +783,127 @@ describe('cancellation vs budget exhaustion', () => {
     expect(humanCalls).toBe(0)
   })
 })
+
+describe('bounded body reads', () => {
+  const enc = new TextEncoder()
+
+  // A stream that serves `first` then endless `chunkSize`-byte filler chunks, stopping when the
+  // reader cancels. A cap test must not pre-build the whole over-cap body — that would allocate
+  // the very memory under test — so the stream generates it lazily.
+  function hugeStream(first: Uint8Array, chunkSize: number): ReadableStream<Uint8Array> {
+    const filler = new Uint8Array(chunkSize).fill(0x20)
+    let sent = 0
+    return new ReadableStream({
+      start(controller) {
+        controller.enqueue(first)
+      },
+      pull(controller) {
+        sent += 1
+        if (sent > 200) {
+          controller.close()
+          return
+        }
+        controller.enqueue(filler)
+      },
+    })
+  }
+
+  function ofChunks(chunks: Uint8Array[]): ReadableStream<Uint8Array> {
+    return new ReadableStream({
+      start(controller) {
+        for (const chunk of chunks) controller.enqueue(chunk)
+        controller.close()
+      },
+    })
+  }
+
+  it('misses a non-PDF body larger than 8 MB with an oversized reason', async () => {
+    stubFetch((u) =>
+      u === PAGE ? new Response(hugeStream(enc.encode('<html><body><p>'), 1024 * 1024), { headers: { 'content-type': 'text/html' } }) : new Response('nope', { status: 404 }),
+    )
+
+    const result = await runFetchChain(PAGE, {
+      ledger: createLedger(),
+      hostGate: createHostGate(),
+      tavilyExtract: stubTavilyFail(),
+      impersonatedFetch: stubImpersonateUnavailable(),
+    })
+
+    expect(result.via).toBeNull()
+    const originAttempt = result.attempts.find((a) => a.step === 'readability')
+    expect(originAttempt?.error).toMatch(/body exceeds 8388608 byte cap/)
+  })
+
+  it('reads an 8-40 MB PDF served as application/octet-stream under the 40 MB cap, by its %PDF- magic', async () => {
+    // 9 MB of body — over MAX_BODY_BYTES, under MAX_PDF_BYTES — announced only by the magic.
+    const chunks = [enc.encode('%PDF-1.7\n'), ...Array.from({ length: 9 }, () => new Uint8Array(1024 * 1024).fill(0x20))]
+    stubFetch((u) =>
+      u === PAGE ? new Response(ofChunks(chunks), { headers: { 'content-type': 'application/octet-stream' } }) : new Response('nope', { status: 404 }),
+    )
+
+    const result = await runFetchChain(PAGE, {
+      ledger: createLedger(),
+      hostGate: createHostGate(),
+      tavilyExtract: stubTavilyFail(),
+      impersonatedFetch: stubImpersonateUnavailable(),
+    })
+
+    // Reached the PDF branch (pdftotext was handed the bytes) rather than being cut at 8 MB and
+    // treated as a miss.
+    expect(result.attempts.some((a) => a.error?.includes('byte cap'))).toBe(false)
+    expect(result.attempts.some((a) => a.step === 'pdf')).toBe(true)
+  })
+
+  it('misses a PDF larger than 40 MB', async () => {
+    stubFetch((u) =>
+      u === PAGE ? new Response(hugeStream(enc.encode('%PDF-1.7\n'), 1024 * 1024), { headers: { 'content-type': 'application/pdf' } }) : new Response('nope', { status: 404 }),
+    )
+
+    const result = await runFetchChain(PAGE, {
+      ledger: createLedger(),
+      hostGate: createHostGate(),
+      tavilyExtract: stubTavilyFail(),
+      impersonatedFetch: stubImpersonateUnavailable(),
+    })
+
+    expect(result.via).toBeNull()
+    const originAttempt = result.attempts.find((a) => a.step === 'readability')
+    expect(originAttempt?.error).toMatch(/body exceeds 41943040 byte cap/)
+  })
+
+  it('fails the render step on an oversized lightpanda response instead of parsing it', async () => {
+    const RENDER = 'https://198.51.100.9'
+    stubFetch((u) =>
+      u.startsWith(RENDER) ? new Response(hugeStream(enc.encode('{"ok":true,"text":"'), 1024 * 1024), { status: 200 }) : new Response('server error', { status: 500 }),
+    )
+
+    const result = await runFetchChain(PAGE, {
+      ledger: createLedger(),
+      renderBaseUrl: RENDER,
+      hostGate: createHostGate(),
+      tavilyExtract: stubTavilyFail(),
+      impersonatedFetch: stubImpersonateUnavailable(),
+    })
+
+    const renderAttempt = result.attempts.find((a) => a.step === 'lightpanda')
+    expect(renderAttempt?.error).toMatch(/render response exceeds 8388608 byte cap/)
+    expect(result.via).toBeNull()
+  })
+
+  it('misses an oversized wayback rescue body', async () => {
+    stubFetch((u) =>
+      u === PAGE ? new Response('server error', { status: 500 }) : new Response(hugeStream(enc.encode('<html><body><p>'), 1024 * 1024), { headers: { 'content-type': 'text/html' } }),
+    )
+
+    const result = await runFetchChain(PAGE, {
+      ledger: createLedger(),
+      hostGate: createHostGate(),
+      tavilyExtract: stubTavilyFail(),
+      impersonatedFetch: stubImpersonateUnavailable(),
+    })
+
+    const waybackAttempt = result.attempts.find((a) => a.step === 'wayback')
+    expect(waybackAttempt?.error).toMatch(/body exceeds 8388608 byte cap/)
+    expect(result.via).toBeNull()
+  })
+})

@@ -1,39 +1,5 @@
 import { describe, it, expect } from 'bun:test'
-import { mapPdftotextResult, readBoundedBytes, MIN_PDF_TEXT_CHARS } from './pdf-extract.js'
-
-function streamOf(chunks: number[][]): ReadableStream<Uint8Array> {
-  return new ReadableStream({
-    start(controller) {
-      for (const chunk of chunks) controller.enqueue(new Uint8Array(chunk))
-      controller.close()
-    },
-  })
-}
-
-describe('readBoundedBytes', () => {
-  it('concatenates chunks under the cap', async () => {
-    const { bytes, truncated } = await readBoundedBytes(streamOf([[1, 2], [3, 4, 5]]), 100)
-    expect(truncated).toBe(false)
-    expect(Array.from(bytes)).toEqual([1, 2, 3, 4, 5])
-  })
-
-  it('truncates rather than buffering a body past the cap', async () => {
-    const { bytes, truncated } = await readBoundedBytes(streamOf([[1, 2, 3], [4, 5, 6]]), 4)
-    expect(truncated).toBe(true)
-    expect(bytes.length).toBe(0)
-  })
-
-  it('is exact at the boundary — total === cap is not truncated', async () => {
-    const { truncated } = await readBoundedBytes(streamOf([[1, 2, 3, 4]]), 4)
-    expect(truncated).toBe(false)
-  })
-
-  it('returns empty, untruncated bytes for a null body', async () => {
-    const { bytes, truncated } = await readBoundedBytes(null, 100)
-    expect(truncated).toBe(false)
-    expect(bytes.length).toBe(0)
-  })
-})
+import { mapPdftotextResult, MIN_PDF_TEXT_CHARS } from './pdf-extract.js'
 
 describe('mapPdftotextResult', () => {
   const longText = 'Attention Is All You Need. '.repeat(20) // > MIN_PDF_TEXT_CHARS

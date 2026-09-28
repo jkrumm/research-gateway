@@ -11,7 +11,7 @@ import { readFile, realpath, stat } from 'node:fs/promises'
 import { isAbsolute, join, relative } from 'node:path'
 import { env } from '../env.js'
 import { log } from '../lib/log.js'
-import { readCappedText } from './pdf-extract.js'
+import { readCappedText } from '../lib/bounded-read.js'
 import {
   rankAndBuildNotes,
   parseQueryTerms,
@@ -46,7 +46,7 @@ export type BrainSearchResult =
 
 type RgResult = { ok: true; paths: string[] } | { ok: false; paths: []; error: string }
 
-/** Reads a ripgrep stdout stream the same way pdf-extract.ts's readCappedText does — stop
+/** Reads a ripgrep stdout stream the same way bounded-read.ts's readCappedText does — stop
  * appending to the returned text once `capBytes` is exceeded — but, unlike that helper, keeps
  * draining the rest of the stream afterward counting ONLY newline bytes (not decoding or
  * storing them), so a truncation log can report how many path lines were actually dropped

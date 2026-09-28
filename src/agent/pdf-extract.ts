@@ -19,61 +19,9 @@ export const MAX_PDFTOTEXT_OUTPUT_BYTES = 80 * 1024 * 1024
 // layer at all", which must FAIL this step rather than succeed with a handful of stray glyphs.
 export const MIN_PDF_TEXT_CHARS = 200
 
-// Discriminated on `ok` so a caller narrowing on it (fetch-chain.ts, pdf.ts) gets `error` as a
+// Discriminated on `ok` so a caller narrowing on it (fetch-chain/, pdf.ts) gets `error` as a
 // guaranteed string on the failure branch — matches html-parse.ts's ParseResponse shape.
 export type PdfExtractResult = { ok: true; text: string } | { ok: false; text: string; error: string }
-
-/**
- * Reads a stream up to `capBytes`, cancelling it (never buffering past the cap) rather than
- * reading fully and discarding — the point is to avoid downloading a pathological body end to
- * end before rejecting it. `truncated: true` means the caller should treat this as a miss, not
- * as `capBytes` worth of usable data.
- */
-export async function readBoundedBytes(
-  body: ReadableStream<Uint8Array> | null,
-  capBytes: number,
-): Promise<{ bytes: Uint8Array; truncated: boolean }> {
-  if (!body) return { bytes: new Uint8Array(0), truncated: false }
-  const reader = body.getReader()
-  const chunks: Uint8Array[] = []
-  let total = 0
-  try {
-    for (;;) {
-      const { done, value } = await reader.read()
-      if (done) break
-      total += value.length
-      if (total > capBytes) {
-        await reader.cancel().catch(() => {})
-        return { bytes: new Uint8Array(0), truncated: true }
-      }
-      chunks.push(value)
-    }
-  } finally {
-    reader.releaseLock()
-  }
-  const bytes = new Uint8Array(total)
-  let offset = 0
-  for (const chunk of chunks) {
-    bytes.set(chunk, offset)
-    offset += chunk.length
-  }
-  return { bytes, truncated: false }
-}
-
-/** Same cap-and-decode shape as ytdlp.ts's readCapped, duplicated rather than imported so this
- * module stays env-free (ytdlp.ts imports env.js at its top). */
-export async function readCappedText(stream: ReadableStream<Uint8Array> | null, capBytes: number): Promise<string> {
-  if (!stream) return ''
-  const decoder = new TextDecoder()
-  let text = ''
-  let bytes = 0
-  for await (const chunk of stream) {
-    bytes += chunk.length
-    if (bytes > capBytes) break
-    text += decoder.decode(chunk, { stream: true })
-  }
-  return text + decoder.decode()
-}
 
 /**
  * Maps a finished `pdftotext` spawn (exit code, kill signal, both streams) to a step result.
