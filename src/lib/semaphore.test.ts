@@ -123,6 +123,20 @@ describe('createSemaphore', () => {
       expect(sem.queued).toBe(0)
     })
 
+    it('resolves false for an already-aborted signal even with a free slot — never takes and holds it', async () => {
+      const sem = createSemaphore(1)
+
+      const controller = new AbortController()
+      controller.abort()
+      expect(await sem.acquire(controller.signal)).toBe(false)
+      expect(sem.active).toBe(0)
+      expect(sem.queued).toBe(0)
+
+      // The free slot must still be free for a normal caller.
+      expect(await sem.acquire()).toBe(true)
+      expect(sem.active).toBe(1)
+    })
+
     it('wakes a queued waiter the moment its signal aborts, even with no queueTimeoutMs', async () => {
       const sem = createSemaphore(1) // unbounded queue wait — pdf-semaphore.ts's own shape
       expect(await sem.acquire()).toBe(true)
