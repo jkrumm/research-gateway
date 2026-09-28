@@ -89,6 +89,14 @@ function checkRegistryResult<T, C>(params: {
   return { core }
 }
 
+// Registry JSON gets its own, higher cap than the shared MAX_BODY_BYTES (8 MB): PyPI's full
+// document lists every release a package ever published, and a heavily-released package —
+// torch, boto3 — blows past 8 MB in current measurement, well above the ~3.7 MB `numpy` used
+// to size the shared cap. Named separately so a registry lookup doesn't share fate with the
+// far smaller bodies (GitHub API responses, OpenAlex/PubMed records) that also go through
+// `getJson`.
+const REGISTRY_JSON_CAP_BYTES = 32 * 1024 * 1024
+
 async function getJson<T>(url: string, headers: Record<string, string>): Promise<JsonResult<T>> {
   try {
     const res = await fetch(url, { headers, signal: AbortSignal.timeout(TIMEOUT_MS) })
@@ -101,13 +109,12 @@ async function getJson<T>(url: string, headers: Record<string, string>): Promise
       }
       return { ok: false, error: `HTTP ${res.status} ${res.statusText}` }
     }
-    // Bounded like every other network body — a registry answer is a small JSON document (the
-    // largest measured is a full PyPI JSON at ~3.7 MB), so a cut body is a failed lookup, not
-    // a partial answer to parse.
-    const { text, truncated } = await readBoundedText(res, MAX_BODY_BYTES, (info) =>
+    // Bounded like every other network body, at the registry-sized cap above — a cut body is
+    // a failed lookup, not a partial answer to parse.
+    const { text, truncated } = await readBoundedText(res, REGISTRY_JSON_CAP_BYTES, (info) =>
       log('tool.fetchJson', { url, via: 'oversized', ...info }),
     )
-    if (truncated) return { ok: false, error: `response exceeds ${MAX_BODY_BYTES} byte cap` }
+    if (truncated) return { ok: false, error: `response exceeds ${REGISTRY_JSON_CAP_BYTES} byte cap` }
     return { ok: true, data: JSON.parse(text) as T }
   } catch (err) {
     return { ok: false, error: String(err) }
@@ -438,17 +445,16 @@ interface GhRelease {
   prerelease?: boolean
 }
 
-// Reads a fetched repo file bounded (bounded-read.ts). A body cut at the cap is not verbatim,
-// so it is a failed read, never a partial answer to quote — thrown so the tool's own catch
-// reports it on exactly the same path as a dropped connection.
+// Reads a fetched repo file bounded (bounded-read.ts). The download itself stays bounded at
+// MAX_BODY_BYTES, but a body cut at the cap is not treated as a failed read — the caller's own
+// `capText(text, TEXT_CAP)` already caps what a worker receives at a much smaller size, so a
+// file between TEXT_CAP and MAX_BODY_BYTES gets a real head of the file rather than nothing.
+// Only the oversized event still logs, so an operator can see the download itself was cut.
 async function readGithubFileBody(
   res: Response,
   fields: { jobId: string; owner: string; repo: string; path: string; ref: string },
 ): Promise<string> {
-  const { text, truncated } = await readBoundedText(res, MAX_BODY_BYTES, (info) =>
-    log('tool.githubFile', { ...fields, via: 'oversized', ...info }),
-  )
-  if (truncated) throw new Error(`file exceeds ${MAX_BODY_BYTES} byte cap`)
+  const { text } = await readBoundedText(res, MAX_BODY_BYTES, (info) => log('tool.githubFile', { ...fields, via: 'oversized', ...info }))
   return text
 }
 
@@ -499,9 +505,9 @@ function buildGithubFileTool(ledger: RetrievalLedger, jobId: string): AnyTool {
           return { error: `githubFile failed: ${reason}`, url: blobUrl }
         }
 
-        // Bounded like every other network body — a cut file is not verbatim, so it is a
-        // failed read, not a partial answer to quote. (capText already caps what a worker
-        // receives at TEXT_CAP; this bounds the download itself.)
+        // Bounded like every other network body — a file over MAX_BODY_BYTES still hands back
+        // the head that was read rather than failing outright (readGithubFileBody), and
+        // capText below caps what the worker actually receives at the much smaller TEXT_CAP.
         const text = await readGithubFileBody(res, { jobId, owner, repo, path, ref: effectiveRef })
         ledger.recordRetrieved(blobUrl)
         ledger.recordRetrieved(rawUrl)

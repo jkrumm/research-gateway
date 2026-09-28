@@ -175,6 +175,9 @@ Anything importing `env.ts` is untested by design — factor pure logic out inst
   that flow. Readability/site-adapter parsing runs off the event loop in a worker
   pool (`html-parse.ts` + `parse-worker.ts`); the whole chain is bounded by a per-fetch
   budget (`FETCH_CHAIN_BUDGET_MS`).
+- `src/lib/bounded-read.ts` — the one place every network response body is read, so nothing
+  unbounded is ever downloaded, decoded or allocated in one piece; env- and log-free, the
+  logger is injected per call site
 - `src/lib/job-store.ts` + `job-db.ts` — sqlite job durability + heartbeat reaping; also owns
   the drain (`beginDraining` / `waitForDrain`) and the admission state
 - `src/lib/admission.ts` — the pure "may a new job start" decision (draining > memory pressure

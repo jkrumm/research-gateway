@@ -138,12 +138,15 @@ async function readOriginHtml(
   return { terminal: null, block: null }
 }
 
-// The step-1 body cap: a PDF needs the whole document for poppler (MAX_PDF_BYTES), every
-// non-PDF body is bounded at MAX_BODY_BYTES. A PDF served under a wrong or absent Content-Type
-// is recognised by the `%PDF-` magic in the bytes handed here, which is why the cap can be
-// resolved from the first chunk as well as from the whole body.
-function bodyCapFor(contentType: string | null, bytes: Uint8Array): number {
-  return isPdf(contentType, bytes) ? MAX_PDF_BYTES : MAX_BODY_BYTES
+// The step-1 body cap plus the PDF verdict it was decided from: a PDF needs the whole document
+// for poppler (MAX_PDF_BYTES), every non-PDF body is bounded at MAX_BODY_BYTES. A PDF served
+// under a wrong or absent Content-Type is recognised by the `%PDF-` magic in the bytes handed
+// here — bundled into one return so the caller's `chooseCap` closure (bounded-read.ts's
+// `readBoundedBytesByCap` only returns a number) can still hand the verdict back without a
+// second, redundant `isPdf` call on the same bytes once the read is done.
+function bodyCapFor(contentType: string | null, bytes: Uint8Array): { capBytes: number; isPdfBody: boolean } {
+  const isPdfBody = isPdf(contentType, bytes)
+  return { capBytes: isPdfBody ? MAX_PDF_BYTES : MAX_BODY_BYTES, isPdfBody }
 }
 
 // The body pipeline of step 1, once a 2xx response is in hand: read it once as bytes, then
@@ -165,13 +168,19 @@ async function readOriginBody(
   // document for poppler, so it is read at MAX_PDF_BYTES; every non-PDF body is bounded at
   // MAX_BODY_BYTES. The cap is chosen from the DECLARED Content-Type up front, but a PDF served
   // under a wrong or absent Content-Type only announces itself in the `%PDF-` magic at the
-  // start of the body, so the cap is re-decided when the first chunk arrives — a mislabeled PDF
-  // still reaches the 40 MB cap. A truncated read is treated as a miss, same as any other
-  // step-1 failure, and falls through to rendering/Tavily.
+  // start of the body, so the cap is re-decided once a real prefix of the body has arrived
+  // (bounded-read.ts buffers at least 8 bytes before trusting the chooser) — a mislabeled PDF
+  // delivered one byte at a time still reaches the 40 MB cap, not the 8 MB one. The verdict
+  // `bodyCapFor` reached on that prefix is captured via closure rather than re-derived from the
+  // final bytes, so there is exactly one place that decides it. A truncated read is treated as
+  // a miss, same as any other step-1 failure, and falls through to rendering/Tavily.
   const contentType = res.headers.get('content-type')
-  const { bytes, truncated } = await readBoundedBytesByCap(res.body, (firstChunk) => bodyCapFor(contentType, firstChunk))
-  const capBytes = bodyCapFor(contentType, bytes)
-  const isPdfBody = isPdf(contentType, bytes)
+  let isPdfBody = false
+  const { bytes, truncated, cap: capBytes } = await readBoundedBytesByCap(res.body, (prefix) => {
+    const decision = bodyCapFor(contentType, prefix)
+    isPdfBody = decision.isPdfBody
+    return decision.capBytes
+  })
 
   if (truncated) {
     // An oversized PDF still IS a PDF — the renderer (step 2) has nothing to add to a
