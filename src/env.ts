@@ -196,10 +196,13 @@ const Env = z.object({
   // Result retention. A finished job's status and result stay readable from sqlite for this
   // long, so the `jobId` is a durable handle: a client whose wait was cut (a closed session, a
   // restart, a dropped stream) can still fetch the result later. The in-memory map holds only
-  // queued/running jobs (plus a terminal one for the ~60s until the next sweep), so a week of
-  // finished jobs costs no memory; the sweep deletes rows older than this. Default 10080
-  // (7 days). SQLite growth is roughly 50-100 KB per finished job — trivial.
-  JOB_TTL_MINUTES: z.coerce.number().default(10080),
+  // queued/running jobs (plus a terminal one for the ~60s until the next sweep), so this costs
+  // no memory; the sweep deletes rows older than this. 240, not a multi-day default: a fan-out
+  // caller submits many jobs and reads them one by one, and its reader is slower than the
+  // writers — at 30 minutes (the previous default) finished reports expired before they were
+  // read; SQLite growth is roughly 50-100 KB per finished job, so the floor is read-latency, not
+  // storage.
+  JOB_TTL_MINUTES: z.coerce.number().default(240),
   // How long index.ts's shutdown path waits for RUNNING jobs to finish before force-exiting
   // (see `drainThenExit`, `waitForDrain`).
   //
@@ -220,14 +223,42 @@ const Env = z.object({
   // MUST stay strictly below the compose `stop_grace_period` (1860s, vps repo) or SIGKILL wins
   // first and the drain buys nothing. `process.boot` logs this value so the drift is visible.
   SHUTDOWN_DRAIN_MS: z.coerce.number().default(1_800_000),
-  // bun:sqlite job store (status-only durability — see lib/job-db.ts). Relative default
-  // resolves against the process CWD (the repo root in local dev); scripts/launch.sh overrides
-  // this to an absolute path under the mini's dedicated deploy layout (~/.research-gateway/data).
+  // bun:sqlite job store (durable status + lease + resumable checkpoint — see lib/job-db.ts).
+  // Relative default resolves against the process CWD (the repo root in local dev);
+  // scripts/launch.sh overrides this to an absolute path under the mini's dedicated deploy
+  // layout (~/.research-gateway/data).
   JOB_DB_PATH: z.string().default('./data/jobs.sqlite'),
   // yt-dlp binary path — installed and pinned by scripts/install-bins.sh, an absolute path
   // under the mini's dedicated deploy layout (scripts/launch.sh overrides this default). See
   // agent/ytdlp.ts.
   YTDLP_PATH: z.string().default('/usr/local/bin/yt-dlp'),
+  // Optional. Enables the `unpaywall` academicSearch source (a DOI -> best open-access
+  // location lookup) — unpaywall requires a real contact address in every request and
+  // BLOCKLISTS `@example.com` outright (measured 2026-09-23: `@example.com` -> 422 same as no
+  // email). Empty-as-unset, same pattern as GITHUB_TOKEN: an unseeded `op://` ref in local
+  // dev must not send a broken address, it must take the source out of the enum entirely.
+  ACADEMIC_CONTACT_EMAIL: z
+    .string()
+    .trim()
+    .optional()
+    .transform((v) => (v ? v : undefined)),
+  // Optional. Raises CORE's search-API rate limit above the keyless 100 tokens/day, 10/min —
+  // the tool works without it. See agent/direct-sources.ts's `core` source.
+  CORE_API_KEY: z
+    .string()
+    .trim()
+    .optional()
+    .transform((v) => (v ? v : undefined)),
+  // Optional, and load-bearing for whether `semanticscholar` even appears in academicSearch's
+  // source enum at all: MEASURED 2026-08-03 (and again 2026-09-20, docs/measurements.md),
+  // unauthenticated api.semanticscholar.org/graph/v1/paper/search returns HTTP 429 on the
+  // very first call from the VPS. Without a key the source is not offered, rather than
+  // offered and failing every time it is used.
+  S2_API_KEY: z
+    .string()
+    .trim()
+    .optional()
+    .transform((v) => (v ? v : undefined)),
   // MEASURED 2026-08-06 from the VPS: YouTube rate-limits this datacenter IP under burst
   // (`HTTP Error 429` on a `--sub-langs` glob expansion). Bounded on purpose, not a tuning
   // default — raising it trades a slower queue for a higher chance of a 429 mid-job.

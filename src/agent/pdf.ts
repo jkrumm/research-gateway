@@ -59,7 +59,13 @@ export async function extractPdfText(bytes: Uint8Array, opts?: { jobId?: string 
     const inPath = join(dir, 'in.pdf')
     await writeFile(inPath, bytes)
 
-    const proc = Bun.spawn([env.PDFTOTEXT_PATH, '-enc', 'UTF-8', '-layout', inPath, '-'], {
+    // DEFAULT layout mode, deliberately not `-layout`: MEASURED against three real two-column
+    // papers (AMS MWR-D-21-0150.1, Copernicus GMD doi:10.5194/gmd-19-4703-2026, arXiv:2309.04452)
+    // — `-layout` interleaves the two columns onto the same line on all three, corrupting most
+    // of the prose; the default mode keeps correct reading order, auto-dehyphenates, and renders
+    // ligatures cleanly, at the cost of collapsed tables (an accepted limitation — a paper's
+    // prose is what a worker cites, not its tables).
+    const proc = Bun.spawn([env.PDFTOTEXT_PATH, '-enc', 'UTF-8', inPath, '-'], {
       stdout: 'pipe',
       stderr: 'pipe',
       timeout: PDFTOTEXT_TIMEOUT_MS,
