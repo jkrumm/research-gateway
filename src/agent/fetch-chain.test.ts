@@ -1143,4 +1143,41 @@ describe('arXiv HTML→PDF fallback (origin.ts consuming site.fallbackUrl)', () 
     expect(renderRequestBody).toEqual({ url: PDF_URL })
     expect(tavilyCalls[0]).toEqual([PDF_URL])
   })
+
+  // The bug this closes: `runOrigin`'s `dialledUrl` parameter used to default to `ctx.fetchUrl`
+  // (the ORIGINAL planned address), and `runOriginStage`'s impersonation-rung calls omit that
+  // argument entirely — so once the html build 404'd and the chain fell through to the PDF
+  // fallback, a markerless block on the fallback still sent the impersonation rung back to
+  // re-dial the html address that already 404'd, never the pdf address that was actually
+  // blocked. Defaulting to `ctx.dialUrl` (which `useFallbackUrl()` already switched by the time
+  // the impersonation rung runs) fixes it.
+  it('sends the impersonation rung to the pdf fallback address, not the html address that already 404d', async () => {
+    const requested: string[] = []
+    stubFetch((u) => {
+      requested.push(u)
+      if (u === HTML_URL) return new Response('not found', { status: 404 })
+      // A markerless 403 on the fallback — no vendor fingerprint, same shape idealo's does —
+      // unlocks the impersonation rung.
+      return new Response('Access Denied', { status: 403 })
+    })
+    const impersonateRequested: string[] = []
+    const impersonatedFetch: NonNullable<FetchChainOptions['impersonatedFetch']> = async (u) => {
+      impersonateRequested.push(u)
+      return new Response('Access Denied', { status: 403 })
+    }
+
+    const result = await runFetchChain(CITED_URL, {
+      ledger: createLedger(),
+      hostGate: createHostGate(),
+      tavilyExtract: stubTavilyFail(),
+      impersonatedFetch,
+      assertPublicUrl: stubAssertPublicUrlOk(),
+    })
+
+    expect(result.via).toBeNull()
+    expect(requested).toContain(HTML_URL)
+    expect(requested).toContain(PDF_URL)
+    expect(impersonateRequested).toEqual([PDF_URL])
+    expect(impersonateRequested).not.toContain(HTML_URL)
+  })
 })
