@@ -21,9 +21,9 @@ export type { Semaphore } from '../lib/semaphore.js'
 // 2 concurrent extractions is ample fan-out against the process's own MEMORY_LIMIT_MB
 // watchdog (lib/memory-watch.ts) — pdftotext's real-world RSS is modest (single-digit to
 // low-double-digit MB per invocation), so this bounds subprocess fan-out, not a measured cost.
-// Local, not exported: nothing outside this module needs the number itself, only the shared
-// `pdfExtractionSemaphore` instance below.
-const PDF_EXTRACTION_CONCURRENCY = 2
+// Exported so `/health`'s schema description (routes/health.ts) can name the real cap instead
+// of a number hand-copied here that would silently go stale the next time this changes.
+export const PDF_EXTRACTION_CONCURRENCY = 2
 
 /** The one process-wide instance every `extractPdfText` call acquires/releases — see pdf.ts. */
 export const pdfExtractionSemaphore: Semaphore = createSemaphore(PDF_EXTRACTION_CONCURRENCY)
