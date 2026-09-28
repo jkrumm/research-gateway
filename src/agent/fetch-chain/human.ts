@@ -21,7 +21,7 @@ import type { FetchChainResult, FetchStep, HumanSolveRequest } from './types.js'
 // `opts.signal` directly (or a signal that never aborts, if the caller passed none). The
 // solver owns its own hang guard.
 export const humanEligible = (ctx: ChainContext): boolean =>
-  ctx.opts.humanSolve !== undefined && ctx.policy.humanSolve && !ctx.policy.skip.includes('human') && ctx.sawBlock && !ctx.site.skipToExtract && !isArchiveUrl(ctx.fetchUrl)
+  ctx.opts.humanSolve !== undefined && ctx.policy.humanSolve && !ctx.policy.skip.includes('human') && ctx.sawBlock && !ctx.site.skipToExtract && !isArchiveUrl(ctx.dialUrl)
 
 export async function tryHumanSolve(ctx: ChainContext, reason: string): Promise<FetchChainResult | null> {
   const tH = performance.now()
@@ -29,7 +29,7 @@ export async function tryHumanSolve(ctx: ChainContext, reason: string): Promise<
   // browser-mode result is a 'browser' failure, not a human one).
   let step: FetchStep = 'human'
   try {
-    const req: HumanSolveRequest = { url: ctx.fetchUrl, host: ctx.host, reason, signal: ctx.opts.signal ?? NEVER_ABORT }
+    const req: HumanSolveRequest = { url: ctx.dialUrl, host: ctx.host, reason, signal: ctx.opts.signal ?? NEVER_ABORT }
     const result = await ctx.opts.humanSolve!(req)
     if (!result.ok) {
       const ms = attempt(ctx.attempts, 'human', tH, { ok: false, error: result.reason })
@@ -95,7 +95,7 @@ export async function tryHumanSolve(ctx: ChainContext, reason: string): Promise<
     // signal instead: 30s is generous for parsing HTML already in memory, and `opts.signal`
     // (the job/tool abort, not the chain budget) still cancels it if the caller went away.
     const parseSignal = AbortSignal.any([AbortSignal.timeout(30_000), ctx.opts.signal ?? NEVER_ABORT])
-    const { text } = await extractText(ctx.fetchUrl, result.html, parseSignal)
+    const { text } = await extractText(ctx.dialUrl, result.html, parseSignal)
     if (!text || text.length < MIN_USABLE_CHARS || looksBinary(text)) {
       let reason2: string
       if (!text) reason2 = 'empty after parse'

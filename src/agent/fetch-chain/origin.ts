@@ -305,7 +305,7 @@ async function runOrigin(
     const { res, finalUrl } = await ctx.hostGate.run(
       ctx.host,
       ctx.policy,
-      () => safeFetch(dialledUrl, ctx.jobId, 3, ctx.budget, fetcher, ctx.assertPublicUrl),
+      () => safeFetch(dialledUrl, { jobId: ctx.jobId, signal: ctx.budget, fetcher, assertPublicUrl: ctx.assertPublicUrl }),
       ctx.budget,
     )
     if (isDefinitivelyMissing(res.status)) {
@@ -320,6 +320,11 @@ async function runOrigin(
         const reason = `HTTP ${res.status} — no build at this address; trying fallback`
         attempt(ctx.attempts, stepRef.current, t1, { ok: false, error: reason })
         log('tool.fetchPage', { jobId: ctx.jobId, url: ctx.url, via: 'origin-fallback', dialledUrl, fallbackUrl, status: res.status })
+        // Every stage that runs AFTER this one (render, extract/Tavily, human, wayback) reads
+        // `ctx.dialUrl`, not `ctx.fetchUrl` — without this, a fallback that itself falls through
+        // (a 500, a thin body) would leave those stages re-dialling the SAME address that just
+        // 404'd instead of the fallback this chain is now committed to.
+        ctx.useFallbackUrl()
         return await runOrigin(ctx, fetcher, label, fallbackUrl)
       }
       const reason = `HTTP ${res.status} — the resource does not exist at this URL`

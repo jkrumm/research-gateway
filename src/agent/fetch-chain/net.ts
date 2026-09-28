@@ -37,22 +37,24 @@ export const defaultFetcher: Fetcher = (url, init) =>
 // `followRedirects: false` / `redirect: 'manual'` for exactly this reason) — `fetcher` is
 // swapped, this loop and its SSRF re-check are not.
 //
-// Returns the final URL alongside the response: with `redirect: 'manual'` the response is
-// the REDIRECT TARGET's, and callers that attribute anything to the requested URL (the
-// ledger's missing tier) must attribute it to where the answer actually came from.
-export async function safeFetch(
-  startUrl: string,
-  jobId = '-',
-  maxHops = 3,
-  signal?: AbortSignal,
-  fetcher: Fetcher = defaultFetcher,
+export interface SafeFetchOptions {
+  jobId?: string
+  maxHops?: number
+  signal?: AbortSignal
+  fetcher?: Fetcher
   // Injectable replacement for the SSRF guard — same test-seam convention as `tavilyExtract`/
   // `impersonatedFetch` (types.ts): production never sets this (`ctx.assertPublicUrl` defaults
   // to the real `assertPublicHttpUrl`), but a test exercising a real hostname (an arXiv fixture
   // keyed on `resolveSite`, not a TEST-NET literal) needs to skip the real DNS lookup this
   // would otherwise make on every hop.
-  assertPublicUrl: (url: string) => Promise<void> = assertPublicHttpUrl,
-): Promise<{ res: Response; finalUrl: string }> {
+  assertPublicUrl?: (url: string) => Promise<void>
+}
+
+// Returns the final URL alongside the response: with `redirect: 'manual'` the response is
+// the REDIRECT TARGET's, and callers that attribute anything to the requested URL (the
+// ledger's missing tier) must attribute it to where the answer actually came from.
+export async function safeFetch(startUrl: string, opts: SafeFetchOptions = {}): Promise<{ res: Response; finalUrl: string }> {
+  const { jobId = '-', maxHops = 3, signal, fetcher = defaultFetcher, assertPublicUrl = assertPublicHttpUrl } = opts
   let current = startUrl
   for (let hop = 0; ; hop++) {
     await assertPublicUrl(current) // re-validate EVERY hop (initial + each redirect target)

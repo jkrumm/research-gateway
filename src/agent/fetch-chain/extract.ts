@@ -19,7 +19,7 @@ export async function runYtdlpStage(ctx: ChainContext): Promise<FetchChainResult
   // from a genuine timeout below — `budget` folds in `opts.signal`, so a CANCELLED job would
   // otherwise be misreported as "budget exhausted".
   if (ctx.budget.aborted) return ctx.fail(ctx.opts.signal?.aborted ? 'cancelled' : ctx.budgetReason)
-  const ytResult = await fetchYoutubeTranscript(ctx.fetchUrl, { jobId: ctx.jobId })
+  const ytResult = await fetchYoutubeTranscript(ctx.dialUrl, { jobId: ctx.jobId })
   if (ytResult) {
     const ms = attempt(ctx.attempts, 'yt-dlp', tY, { ok: true, chars: ytResult.chars })
     ctx.opts.onYtdlp?.({ ok: true, ms })
@@ -49,7 +49,7 @@ export async function runTavilyStage(ctx: ChainContext): Promise<FetchChainResul
     attempt(ctx.attempts, 'tavily-extract', t3, { ok: false, error: reason })
     const chain = describeAttempts(ctx.attempts, reason)
     ctx.ledger.recordFailed(ctx.url, chain)
-    log('tool.fetchPage', { jobId: ctx.jobId, url: ctx.url, via: 'error', reason: chain, host: hostOf(ctx.fetchUrl) })
+    log('tool.fetchPage', { jobId: ctx.jobId, url: ctx.url, via: 'error', reason: chain, host: hostOf(ctx.dialUrl) })
     return await runRescue(ctx, chain)
   }
 
@@ -67,7 +67,7 @@ export async function runTavilyStage(ctx: ChainContext): Promise<FetchChainResul
   const remainingMs = ctx.budgetMs - (performance.now() - ctx.chainStartedAt)
   const tavilyTimeoutSec = Math.max(1, Math.min(30, Math.ceil(remainingMs / 1000)))
   try {
-    const ex = await ctx.tavilyExtract([ctx.fetchUrl], {
+    const ex = await ctx.tavilyExtract([ctx.dialUrl], {
       extractDepth: 'basic',
       format: 'markdown',
       timeout: tavilyTimeoutSec,
