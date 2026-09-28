@@ -137,6 +137,14 @@ export interface FetchChainOptions {
    * test cases.
    */
   impersonationMemory?: ImpersonationMemory
+  /**
+   * Injectable replacement for the SSRF guard (`lib/ssrf.ts`'s `assertPublicHttpUrl`) — same
+   * test-seam convention as `tavilyExtract`/`impersonatedFetch` above: production never sets
+   * this. Exists for tests that must exercise a real hostname (`resolveSite` is keyed on the
+   * actual host, so a site-adapter fixture like arXiv's HTML→PDF fallback can't use a TEST-NET
+   * literal instead) without making a real DNS lookup on every hop.
+   */
+  assertPublicUrl?: (url: string) => Promise<void>
 }
 
 /** One human-solve request — the URL to open, the host it's on (for the solver's own

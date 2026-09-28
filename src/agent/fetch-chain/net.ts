@@ -46,10 +46,16 @@ export async function safeFetch(
   maxHops = 3,
   signal?: AbortSignal,
   fetcher: Fetcher = defaultFetcher,
+  // Injectable replacement for the SSRF guard — same test-seam convention as `tavilyExtract`/
+  // `impersonatedFetch` (types.ts): production never sets this (`ctx.assertPublicUrl` defaults
+  // to the real `assertPublicHttpUrl`), but a test exercising a real hostname (an arXiv fixture
+  // keyed on `resolveSite`, not a TEST-NET literal) needs to skip the real DNS lookup this
+  // would otherwise make on every hop.
+  assertPublicUrl: (url: string) => Promise<void> = assertPublicHttpUrl,
 ): Promise<{ res: Response; finalUrl: string }> {
   let current = startUrl
   for (let hop = 0; ; hop++) {
-    await assertPublicHttpUrl(current) // re-validate EVERY hop (initial + each redirect target)
+    await assertPublicUrl(current) // re-validate EVERY hop (initial + each redirect target)
     const res = await fetcher(current, {
       // The per-hop timeout AND the chain-wide budget: whichever fires first aborts the hop.
       signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(10_000)]) : AbortSignal.timeout(10_000),
