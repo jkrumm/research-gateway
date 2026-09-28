@@ -10,15 +10,21 @@
 // Dependency-free by design (same convention as `ledger.ts`/`round.ts`) so it is unit-testable
 // without booting the env-parsing chain.
 export function createRateGate(minIntervalMs: number): <T>(fn: () => Promise<T>) => Promise<T> {
+  if (!Number.isFinite(minIntervalMs) || minIntervalMs < 0) {
+    throw new Error(`createRateGate: minIntervalMs must be a finite number >= 0, got ${minIntervalMs}`)
+  }
   let chain: Promise<void> = Promise.resolve()
   let lastRunAt = 0
   return function gated<T>(fn: () => Promise<T>): Promise<T> {
     const runAfter = chain.then(async () => {
       // The interval is counted from the previous request's START, not the previous
       // request's END — stamped here, immediately before this call's own fn() runs.
-      const wait = lastRunAt + minIntervalMs - Date.now()
+      // `performance.now()` (monotonic, process-relative) rather than `Date.now()` — a system
+      // clock adjustment (NTP step, DST, manual change) must never shorten or widen the gap
+      // this gate is enforcing between two live calls to a rate-limited origin.
+      const wait = lastRunAt + minIntervalMs - performance.now()
       if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait))
-      lastRunAt = Date.now()
+      lastRunAt = performance.now()
       return fn()
     })
     // The queue advances only once fn() has SETTLED, not merely once the wait has elapsed —
