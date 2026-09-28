@@ -17,7 +17,7 @@ import { env } from '../env.js'
 import { log } from '../lib/log.js'
 import { createIdleWatchdog } from '../lib/idle-watchdog.js'
 import { pdfExtractionSemaphore } from './pdf-semaphore.js'
-import { mapPdftotextResult, MAX_PDFTOTEXT_OUTPUT_BYTES } from './pdf-extract.js'
+import { mapPdftotextResult, readIdleCapped, MAX_PDFTOTEXT_OUTPUT_BYTES } from './pdf-extract.js'
 import type { PdfExtractResult } from './pdf-extract.js'
 
 // An idle watchdog, not a flat wall-clock kill — mirrors YTDLP_TIMEOUT_MS's ROLE (a hang
@@ -55,89 +55,26 @@ async function sweepStalePdfTmpDirs(): Promise<void> {
 
 void sweepStalePdfTmpDirs()
 
-// Thrown internally when the idle watchdog aborts while a read here is mid-await — never
-// escapes `extractPdfText`, which always translates it into the honest "no output" result.
-class PdfIdleError extends Error {}
-
-// Races `promise` against the idle watchdog's abort signal, so a stall on stdout OR stderr
-// unblocks the read the moment the watchdog fires, rather than leaving it hung on a promise
-// that only resolves once the (already-killed) process closes its pipes.
-function withIdle<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
-  if (signal.aborted) return Promise.reject(new PdfIdleError('idle'))
-  return new Promise<T>((resolve, reject) => {
-    const onAbort = (): void => reject(new PdfIdleError('idle'))
-    signal.addEventListener('abort', onAbort, { once: true })
-    promise.then(
-      (v) => {
-        signal.removeEventListener('abort', onAbort)
-        resolve(v)
-      },
-      (e) => {
-        signal.removeEventListener('abort', onAbort)
-        reject(e)
-      },
-    )
-  })
-}
-
-// Reads a stream up to `capBytes`, arming `watchdog` on every chunk so IDLE silence — not
-// total size — is what can kill the read, and keeping (not discarding) whatever text was
-// captured before a cap-crossing or an idle abort. Deliberately local rather than reusing
-// lib/bounded-read.ts's shared reader: that module has no idle-signal hook, and adding one
-// there would change every other caller's timing semantics for a need only this spawn
-// wrapper has.
-async function readIdleCapped(
-  stream: ReadableStream<Uint8Array> | null,
-  capBytes: number,
-  watchdog: ReturnType<typeof createIdleWatchdog>,
-): Promise<{ text: string; truncated: boolean }> {
-  if (!stream) return { text: '', truncated: false }
-  const reader = stream.getReader()
-  const decoder = new TextDecoder()
-  let text = ''
-  let bytes = 0
-  let truncated = false
-  try {
-    for (;;) {
-      const { done, value } = await withIdle(reader.read(), watchdog.signal)
-      if (done || !value) break
-      watchdog.arm()
-      if (truncated) {
-        bytes += value.byteLength
-        continue
-      }
-      const room = capBytes - bytes
-      if (value.byteLength <= room) {
-        bytes += value.byteLength
-        text += decoder.decode(value, { stream: true })
-        continue
-      }
-      // This chunk crosses the cap — keep the part that still fits rather than discarding the
-      // whole chunk, so a cap that lands mid-write still returns real (if incomplete) text.
-      truncated = true
-      bytes += value.byteLength
-      if (room > 0) text += decoder.decode(value.subarray(0, room), { stream: true })
-    }
-  } catch {
-    // An idle-aborted read, or the stream erroring because the process was just SIGKILLed —
-    // either way this returns what was captured so far, marked truncated, rather than
-    // rejecting: every call site below relies on this function never throwing.
-    return { text, truncated: true }
-  } finally {
-    reader.releaseLock()
-  }
-  if (!truncated) text += decoder.decode()
-  return { text, truncated }
-}
-
-export async function extractPdfText(bytes: Uint8Array, opts?: { jobId?: string }): Promise<PdfExtractResult> {
+export async function extractPdfText(bytes: Uint8Array, opts?: { jobId?: string; signal?: AbortSignal }): Promise<PdfExtractResult> {
   const jobId = opts?.jobId ?? '-'
   let dir: string | null = null
   // Bounded process-wide: nothing else caps how many pdftotext subprocesses run at once
   // across every job's worker fan-out (pdf-semaphore.ts's header). A waiter here just WAITS —
-  // no timeout, no rejection — same reasoning as the agent loop's own lack of a step/turn/
-  // wall-clock ceiling (rules/agent-limits.md).
-  await pdfExtractionSemaphore.acquire()
+  // no timeout — same reasoning as the agent loop's own lack of a step/turn/wall-clock ceiling
+  // (rules/agent-limits.md). It IS tied to `opts.signal` (the fetch chain's budget/cancel,
+  // threaded in from fetch-chain/origin.ts): a queued wait that outlives the chain it belongs
+  // to aborts with it instead of sitting forever past the point anything is still listening
+  // for its result.
+  const gotSlot = await pdfExtractionSemaphore.acquire(opts?.signal)
+  if (!gotSlot) {
+    const error = 'aborted while waiting for a PDF extraction slot'
+    log('tool.pdf', { jobId, ok: false, error })
+    return { ok: false, text: '', error }
+  }
+  // Hoisted above the try so `watchdog.clear()` can run in an OUTER finally regardless of
+  // which branch below returns or throws — idle-watchdog.ts requires clear() on every path or
+  // its timer leaks for PDFTOTEXT_IDLE_MS past a call that already finished.
+  const watchdog = createIdleWatchdog(PDFTOTEXT_IDLE_MS)
   try {
     dir = await mkdtemp(join(tmpdir(), PDF_TMP_PREFIX))
     const inPath = join(dir, 'in.pdf')
@@ -164,7 +101,6 @@ export async function extractPdfText(bytes: Uint8Array, opts?: { jobId?: string 
     // observe (a chunk on stdout, a chunk on stderr) — replaces the old flat
     // `timeout: PDFTOTEXT_TIMEOUT_MS` kill, which fired on total runtime even while pdftotext
     // was actively producing output on a large-but-healthy document.
-    const watchdog = createIdleWatchdog(PDFTOTEXT_IDLE_MS)
     let idleFired = false
     watchdog.signal.addEventListener('abort', () => {
       idleFired = true
@@ -181,7 +117,6 @@ export async function extractPdfText(bytes: Uint8Array, opts?: { jobId?: string 
       readIdleCapped(proc.stderr, MAX_PDFTOTEXT_OUTPUT_BYTES, watchdog),
     ])
     const code = await proc.exited
-    watchdog.clear()
 
     const result = mapPdftotextResult({
       // `idleFired` takes precedence over `proc.signalCode`: the watchdog is the only thing
@@ -204,6 +139,7 @@ export async function extractPdfText(bytes: Uint8Array, opts?: { jobId?: string 
     log('tool.pdf', { jobId, ok: false, error: String(err) })
     return { ok: false, text: '', error: String(err) }
   } finally {
+    watchdog.clear()
     if (dir) await rm(dir, { recursive: true, force: true }).catch(() => {})
     pdfExtractionSemaphore.release()
   }
