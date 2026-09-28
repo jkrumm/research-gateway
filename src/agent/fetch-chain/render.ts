@@ -37,7 +37,7 @@ export async function runRenderStage(ctx: ChainContext): Promise<FetchChainResul
         fetch(renderUrl(renderBaseUrl), {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ url: ctx.fetchUrl }),
+          body: JSON.stringify({ url: ctx.dialUrl }),
           // Generous on purpose: the sidecar's own budget is a 20s queue wait plus a 35s
           // render, and it answers a saturated queue with a fast, explicit failure. This
           // only has to outlast that, so a slow render is never cut off by the caller.

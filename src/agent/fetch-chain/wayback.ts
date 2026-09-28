@@ -4,7 +4,7 @@ import { readabilityText } from '../html-parse.js'
 import { waybackLookupUrl, isArchiveUrl, parseSnapshotDate, archiveBanner, snapshotAgeDays } from '../archive.js'
 import { attempt, MIN_USABLE_CHARS } from './context.js'
 import type { ChainContext } from './context.js'
-import { safeFetch, defaultFetcher } from './net.js'
+import { safeFetch } from './net.js'
 import type { FetchChainResult } from './types.js'
 
 // ── Step wayback (rescue): the Wayback Machine — only reached once Tavily Extract has
@@ -13,7 +13,7 @@ import type { FetchChainResult } from './types.js'
 export async function runWaybackStage(ctx: ChainContext, originalReason: string): Promise<FetchChainResult> {
   // No parse/protocol re-check here: `assertPublicHttpUrl(fetchUrl)` at the top of the chain
   // already threw on anything that is not a parseable, public http(s) URL.
-  if (ctx.site.skipToExtract || isArchiveUrl(ctx.fetchUrl)) return ctx.fail(originalReason)
+  if (ctx.site.skipToExtract || isArchiveUrl(ctx.dialUrl)) return ctx.fail(originalReason)
 
   const tW = performance.now()
   try {
@@ -24,7 +24,7 @@ export async function runWaybackStage(ctx: ChainContext, originalReason: string)
     // — five hops, where the chain's default of 3 failed the whole rescue with "too many
     // redirects". Every hop is still re-validated against the SSRF guard inside safeFetch, so
     // this widens the budget, not the trust.
-    const { res } = await safeFetch(waybackLookupUrl(ctx.fetchUrl), ctx.jobId, 8, ctx.budget, defaultFetcher, ctx.assertPublicUrl)
+    const { res } = await safeFetch(waybackLookupUrl(ctx.dialUrl), { jobId: ctx.jobId, maxHops: 8, signal: ctx.budget, assertPublicUrl: ctx.assertPublicUrl })
     if (!res.ok) {
       const ms = attempt(ctx.attempts, 'wayback', tW, { ok: false, error: `HTTP ${res.status}` })
       ctx.opts.onArchive?.({ ok: false, ms, snapshotAgeDays: null })

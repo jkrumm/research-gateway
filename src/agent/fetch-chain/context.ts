@@ -70,16 +70,22 @@ export function attempt(
 // `createContext` below, then read by whichever stage runs next. Deliberately a plain object
 // rather than a class: each stage is a free function `(ctx) => Promise<FetchChainResult |
 // null>`, and this is the one thing they all close over. The stage flags below
-// (`sawBlock`/`originDecisiveBlock`/`isPdfBody`/`rdReason`/`rdChars`) are `readonly` on this
-// interface — every write goes through one of the named `mark*`/`note*` methods instead of a
-// bare field assignment, so `grep -rn 'ctx\.\(sawBlock\|originDecisiveBlock\|isPdfBody\|rdReason\|
-// rdChars\) =' src/agent/fetch-chain/` finds nothing outside this file: a write site is always a
-// named call, never an assignment a reader could miss.
+// (`sawBlock`/`originDecisiveBlock`/`isPdfBody`/`rdReason`/`rdChars`/`dialUrl`) are `readonly`
+// on this interface — every write goes through one of the named `mark*`/`note*`/`useFallbackUrl`
+// methods instead of a bare field assignment, so `grep -rn 'ctx\.\(sawBlock\|originDecisiveBlock\|
+// isPdfBody\|rdReason\|rdChars\|dialUrl\) =' src/agent/fetch-chain/` finds nothing outside this
+// file: a write site is always a named call, never an assignment a reader could miss.
 export interface ChainContext {
   /** The URL asked for — what the ledger recorded and what a citation will name. */
   readonly url: string
   /** The URL actually dialled. Differs from `url` only when a site adapter rewrites it. */
   readonly fetchUrl: string
+  /** The address the LATER stages (render, extract/Tavily, human, wayback) should dial right
+   * now. Starts equal to `fetchUrl` and switches to `site.fallbackUrl` once origin.ts has
+   * observed `fetchUrl` answer 404/410 (`useFallbackUrl()`) — a later stage that kept dialling
+   * `fetchUrl` after that point would just repeat the same 404 every one of them already knows
+   * about. `url` (the ledger/citation name) never changes; only this does. */
+  readonly dialUrl: string
   readonly host: string
   readonly jobId: string
   readonly site: ReturnType<typeof resolveSite>
@@ -134,6 +140,10 @@ export interface ChainContext {
   markDecisiveOriginBlock: (decisive: boolean) => void
   /** Sets `isPdfBody`. Origin-only (a PDF is identified while reading step 1's body). */
   markPdfBody: () => void
+  /** Switches `dialUrl` to `site.fallbackUrl` — a no-op when the site has none. Called once, by
+   * origin.ts, the moment it decides to retry the fallback address after a 404/410 against
+   * `fetchUrl`; every stage that runs after that point reads `dialUrl`, not `fetchUrl`. */
+  useFallbackUrl: () => void
   /** Sets `rdReason` and `rdChars` together — the pair always describes ONE observation about
    * step 1's Readability attempt (it ran and was thin, or it threw before finishing), so they
    * are written together rather than through two separately-timed calls that could disagree. */
@@ -145,11 +155,12 @@ export interface ChainContext {
    * so a render attempt during cooldown spends the same reputation for the same certain miss. */
   stageSkipReason: (stage: ChainStage) => string | null
   fail: (error: string) => FetchChainResult
-  /** `dialledUrl` is the address that actually produced `text` — every stage but origin.ts
-   * always means `ctx.fetchUrl` (the default), which is why every other call site omits it.
-   * origin.ts is the one stage that can dial a SECOND address (`site.fallbackUrl`, after a
-   * 404/410 against `fetchUrl`) and passes that address explicitly, so a success recorded
-   * there names the address genuinely read, never the rewritten one that 404'd. */
+  /** `dialledUrl` is the address that actually produced `text` — every call site but origin.ts
+   * omits it and gets `ctx.dialUrl` (the default): the current dial address, which is
+   * `fetchUrl` until origin.ts's `useFallbackUrl()` has switched it, and `site.fallbackUrl`
+   * after. origin.ts is the one stage that can dial a SECOND address within a single call and
+   * passes that address explicitly, so a success recorded there names the address genuinely
+   * read, never the rewritten one that 404'd. */
   done: (via: FetchStep, text: string, dialledUrl?: string) => FetchChainResult
 }
 
@@ -226,9 +237,13 @@ export function createContext(url: string, opts: FetchChainOptions): ChainContex
   let isPdfBody = false
   let rdReason: 'thin' | 'threw' = 'thin'
   let rdChars = 0
+  let dialUrl = fetchUrl
 
   const markBlocked = (): void => {
     sawBlock = true
+  }
+  const useFallbackUrl = (): void => {
+    if (site.fallbackUrl) dialUrl = site.fallbackUrl
   }
   // Last write wins, like the pre-split `ctx.originDecisiveBlock = verdict.decisive`: the origin
   // pipeline can run twice (plain, then impersonate), and a decisive plain block followed by a
@@ -250,7 +265,7 @@ export function createContext(url: string, opts: FetchChainOptions): ChainContex
     emitAttempts()
     return { url, fetchUrl, via: null, text: null, error, attempts }
   }
-  const done = (via: FetchStep, text: string, dialledUrl: string = fetchUrl): FetchChainResult => {
+  const done = (via: FetchStep, text: string, dialledUrl: string = dialUrl): FetchChainResult => {
     emitAttempts()
     ledger.recordRetrieved(url)
     // When an adapter rewrote the address, BOTH forms name the page that was genuinely read,
@@ -279,6 +294,9 @@ export function createContext(url: string, opts: FetchChainOptions): ChainContex
   return {
     url,
     fetchUrl,
+    get dialUrl() {
+      return dialUrl
+    },
     host,
     jobId,
     site,
@@ -314,6 +332,7 @@ export function createContext(url: string, opts: FetchChainOptions): ChainContex
     markBlocked,
     markDecisiveOriginBlock,
     markPdfBody,
+    useFallbackUrl,
     noteReadabilityMiss,
     stageSkipReason,
     fail,

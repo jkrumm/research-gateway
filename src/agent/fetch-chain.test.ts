@@ -1100,4 +1100,43 @@ describe('arXiv HTML→PDF fallback (origin.ts consuming site.fallbackUrl)', () 
     expect(requested).toContain(HTML_URL)
     expect(requested).not.toContain(PDF_URL)
   })
+
+  // The bug this closes: the fallback dial (PDF_URL) does NOT terminate the chain on its own
+  // (a 500, not a 2xx) here — so without `ctx.dialUrl`, render and Tavily would keep dialling
+  // HTML_URL, the address that already answered 404, instead of following the chain onto the
+  // fallback it just committed to.
+  it('keeps dialling the pdf fallback address on render and Tavily once the html build 404s and the fallback itself does not terminate the chain', async () => {
+    const RENDER = 'https://198.51.100.9'
+    let renderRequestBody: unknown = null
+    const tavilyCalls: string[][] = []
+
+    globalThis.fetch = (async (input: unknown, init?: RequestInit) => {
+      const u = String(input)
+      if (u === HTML_URL) return new Response('not found', { status: 404 })
+      if (u === PDF_URL) return new Response('server error', { status: 500 })
+      if (u.startsWith(RENDER)) {
+        renderRequestBody = init?.body ? JSON.parse(String(init.body)) : null
+        return new Response('sidecar down', { status: 500 })
+      }
+      return new Response('nope', { status: 404 })
+    }) as typeof fetch
+
+    const tavilyExtract: NonNullable<FetchChainOptions['tavilyExtract']> = async (urls) => {
+      tavilyCalls.push(urls)
+      return { results: [], failedResults: urls.map((u) => ({ url: u, error: 'stub' })), responseTime: 0, requestId: 'test' }
+    }
+
+    const result = await runFetchChain(CITED_URL, {
+      ledger: createLedger(),
+      hostGate: createHostGate(),
+      renderBaseUrl: RENDER,
+      tavilyExtract,
+      impersonatedFetch: stubImpersonateUnavailable(),
+      assertPublicUrl: stubAssertPublicUrlOk(),
+    })
+
+    expect(result.via).toBeNull()
+    expect(renderRequestBody).toEqual({ url: PDF_URL })
+    expect(tavilyCalls[0]).toEqual([PDF_URL])
+  })
 })
