@@ -181,6 +181,7 @@ export async function extractPdfText(bytes: Uint8Array, opts?: { jobId?: string;
       idleMs: PDFTOTEXT_IDLE_MS,
       stdoutTruncated: stdoutResult.outcome === 'cap',
       stdoutFailure: stdoutResult.outcome === 'idle' || stdoutResult.outcome === 'aborted' || stdoutResult.outcome === 'error' ? stdoutResult.outcome : undefined,
+      stderrOverflow: stderrResult.outcome === 'cap',
     })
     if (!result.ok) log('tool.pdf', { jobId, ok: false, error: result.error })
     else if (result.truncated) log('tool.pdf', { jobId, ok: true, truncated: true, chars: result.text.length })

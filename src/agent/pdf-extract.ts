@@ -56,8 +56,15 @@ export function mapPdftotextResult(args: {
    * or worse — if it also happened to satisfy `stdoutTruncated` — be reported as a success.
    */
   stdoutFailure?: 'idle' | 'aborted' | 'error' | undefined
+  /**
+   * True when MAX_PDFTOTEXT_OUTPUT_BYTES cut STDERR, not stdout (`readIdleCapped`'s `outcome`
+   * on the stderr read, pdf.ts) — pdf.ts kills the child the moment either stream crosses its
+   * cap, so a stderr-only overflow still ends the process. Defaults false for callers (existing
+   * tests) that never overflow stderr.
+   */
+  stderrOverflow?: boolean
 }): PdfExtractResult {
-  const { signalCode, code, stdout, stderr, idleMs, stdoutTruncated = false, stdoutFailure } = args
+  const { signalCode, code, stdout, stderr, idleMs, stdoutTruncated = false, stdoutFailure, stderrOverflow = false } = args
 
   // Truncation wins over everything below: crossing MAX_PDFTOTEXT_OUTPUT_BYTES cancels the
   // reader (readIdleCapped) and pdf.ts then kills the (now-useless) child explicitly — which
@@ -75,6 +82,16 @@ export function mapPdftotextResult(args: {
   }
   if (stdoutFailure === 'error') {
     return { ok: false, text: '', error: 'pdftotext stdout read failed' }
+  }
+  // A stderr-only cap crossing kills the child same as any other cap-kill — but ONLY when the
+  // kill actually cut off a still-running process: `signalCode` set means that, and means
+  // stdout cannot be trusted complete even though its own read reported 'complete' (that
+  // outcome only means the pipe closed, which a SIGKILL also causes). When the process had
+  // already exited on its own (`signalCode` null — pdf.ts's `killChild()` was a no-op on an
+  // already-dead process), stdout genuinely finished before stderr's cap ever mattered, and
+  // this falls through to be judged on its own merits below instead of being failed here.
+  if (stderrOverflow && signalCode) {
+    return { ok: false, text: '', error: 'pdftotext stderr overflow' }
   }
   if (signalCode) {
     return { ok: false, text: '', error: `pdftotext produced no output for ${idleMs}ms and was killed` }
