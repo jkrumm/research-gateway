@@ -71,8 +71,15 @@ export function mapPdftotextResult(args: {
   // means `signalCode`/`code` on THIS exit reflect that kill, not a real failure. A byte-capped
   // extraction is a complete, honest partial result and must report `ok: true, truncated: true`
   // even though the process died by signal.
+  // The usable-text floor still applies: megabytes of whitespace or glyph junk normalise to
+  // almost nothing, and that is the scanned-PDF miss below (fall through to Tavily's OCR), not a
+  // truncated success.
   if (stdoutTruncated) {
-    return { ok: true, text: normalizeText(stdout), truncated: true }
+    const capped = normalizeText(stdout)
+    if (capped.length < MIN_PDF_TEXT_CHARS) {
+      return { ok: false, text: '', error: `thin (${capped.length} chars) after the output cap — likely a scanned/image PDF` }
+    }
+    return { ok: true, text: capped, truncated: true }
   }
   if (stdoutFailure === 'idle') {
     return { ok: false, text: '', error: `pdftotext idle for ${idleMs}ms and was killed` }
@@ -107,7 +114,7 @@ export function mapPdftotextResult(args: {
     // miss, not an error: the chain falls through to Tavily Extract, which OCRs server-side.
     return { ok: false, text: '', error: `thin (${text.length} chars) — likely a scanned/image PDF` }
   }
-  return { ok: true, text, truncated: stdoutTruncated }
+  return { ok: true, text, truncated: false }
 }
 
 // Mirrors extract.ts's `capText` notice — an honest, actionable marker rather than a bare
