@@ -135,12 +135,13 @@ describe('readIdleCapped', () => {
     })
     watchdog.arm()
     const result = await readIdleCapped(stream, 1_000, watchdog)
-    expect(result).toEqual({ text: 'hello world', truncated: false })
+    expect(result).toEqual({ text: 'hello world', truncated: false, outcome: 'complete' })
     watchdog.clear()
   })
 
   // A chunk landing exactly on the cap boundary: only the part that still fits is kept, the
-  // rest discarded — not the whole chunk.
+  // rest discarded — not the whole chunk. The ONLY outcome that reports `truncated: true` —
+  // a complete, honest partial extraction pdf.ts reports as a success.
   it('keeps only the part of a chunk that fits when it straddles the byte cap', async () => {
     const watchdog = createIdleWatchdog(10_000)
     const stream = new ReadableStream<Uint8Array>({
@@ -151,16 +152,18 @@ describe('readIdleCapped', () => {
     })
     watchdog.arm()
     const result = await readIdleCapped(stream, 5, watchdog)
-    expect(result).toEqual({ text: '01234', truncated: true })
+    expect(result).toEqual({ text: '01234', truncated: true, outcome: 'cap' })
     watchdog.clear()
   })
 
   // The bug this guards: an idle abort firing while `reader.read()` is still pending must not
-  // let `reader.releaseLock()` throw a TypeError over the designed `{ text, truncated: true }`
-  // return — it must return normally with whatever was read before the stall. Driven off the
+  // let `reader.releaseLock()` throw a TypeError over the designed return — it must return
+  // normally with whatever was read before the stall. But a wedged pdftotext (this) is NOT a
+  // successful extraction — `truncated` must stay false and `outcome` must say `'idle'`, so
+  // pdf.ts's mapPdftotextResult reports a failure rather than a success. Driven off the
   // watchdog's job-signal escape hatch rather than a real idle timer, so the abort fires on a
   // deterministic tick instead of a wall-clock wait.
-  it('returns truncated text instead of throwing when the idle watchdog aborts mid-read', async () => {
+  it('reports an idle failure, not a truncated success, when the idle watchdog aborts mid-read', async () => {
     const job = new AbortController()
     const watchdog = createIdleWatchdog(10_000, job.signal)
     let pullCount = 0
@@ -182,14 +185,59 @@ describe('readIdleCapped', () => {
     await new Promise((resolve) => setTimeout(resolve, 5))
     job.abort(new Error('idle'))
     const result = await resultPromise
-    expect(result).toEqual({ text: 'partial', truncated: true })
+    expect(result).toEqual({ text: 'partial', truncated: false, outcome: 'idle' })
+    watchdog.clear()
+  })
+
+  // A caller abort (the fetch chain's own budget/cancel, threaded through as `callerSignal`)
+  // must report its OWN outcome — 'aborted' — never folded into the idle-kill's 'idle', even
+  // though both race the same read and both ultimately kill the same child.
+  it('reports an aborted failure when the caller signal fires mid-read, distinct from an idle kill', async () => {
+    const watchdog = createIdleWatchdog(10_000)
+    const caller = new AbortController()
+    let pullCount = 0
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        pullCount++
+        if (pullCount === 1) {
+          controller.enqueue(new TextEncoder().encode('partial'))
+          return
+        }
+        return new Promise<void>(() => {})
+      },
+    })
+    watchdog.arm()
+    const resultPromise = readIdleCapped(stream, 1_000, watchdog, caller.signal)
+    await new Promise((resolve) => setTimeout(resolve, 5))
+    caller.abort(new Error('caller cancelled'))
+    const result = await resultPromise
+    expect(result).toEqual({ text: 'partial', truncated: false, outcome: 'aborted' })
+    expect(watchdog.signal.aborted).toBe(false)
+    watchdog.clear()
+  })
+
+  // A genuine stream error (the pipe erroring for a reason neither signal caused) is its own
+  // failure outcome too — not `truncated`, not folded into 'idle' or 'aborted'.
+  it('reports an error outcome, carrying the message, when the stream itself errors', async () => {
+    const watchdog = createIdleWatchdog(10_000)
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('partial'))
+      },
+      pull() {
+        throw new Error('pipe reset')
+      },
+    })
+    watchdog.arm()
+    const result = await readIdleCapped(stream, 1_000, watchdog)
+    expect(result).toEqual({ text: 'partial', truncated: false, outcome: 'error', error: 'pipe reset' })
     watchdog.clear()
   })
 
   it('returns an empty, non-truncated result for a null stream', async () => {
     const watchdog = createIdleWatchdog(10_000)
     const result = await readIdleCapped(null, 1_000, watchdog)
-    expect(result).toEqual({ text: '', truncated: false })
+    expect(result).toEqual({ text: '', truncated: false, outcome: 'complete' })
     watchdog.clear()
   })
 })

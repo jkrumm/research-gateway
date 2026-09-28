@@ -46,8 +46,18 @@ export function mapPdftotextResult(args: {
   idleMs: number
   /** Whether MAX_PDFTOTEXT_OUTPUT_BYTES cut stdout while pdftotext was still writing — see the `PdfExtractResult` header above. Defaults false for callers (existing tests) that never truncate. */
   stdoutTruncated?: boolean
+  /**
+   * Non-`'cap'`/`'complete'` outcome for the STDOUT read specifically (`readIdleCapped`'s
+   * `outcome`, pdf.ts) — takes precedence over `signalCode`-based inference below because it is
+   * the DIRECT reason stdout stopped, where `signalCode` is only ever 'SIGKILL' regardless of
+   * WHICH of idle/caller-abort/a different stream's cap crossing caused the kill. Without this,
+   * a caller abort or a stderr-only cap crossing (which also kills the child, and so also
+   * leaves `signalCode: 'SIGKILL'`) would fall through to the generic idle-kill message below,
+   * or worse — if it also happened to satisfy `stdoutTruncated` — be reported as a success.
+   */
+  stdoutFailure?: 'idle' | 'aborted' | 'error' | undefined
 }): PdfExtractResult {
-  const { signalCode, code, stdout, stderr, idleMs, stdoutTruncated = false } = args
+  const { signalCode, code, stdout, stderr, idleMs, stdoutTruncated = false, stdoutFailure } = args
 
   // Truncation wins over everything below: crossing MAX_PDFTOTEXT_OUTPUT_BYTES cancels the
   // reader (readIdleCapped) and pdf.ts then kills the (now-useless) child explicitly — which
@@ -56,6 +66,15 @@ export function mapPdftotextResult(args: {
   // even though the process died by signal.
   if (stdoutTruncated) {
     return { ok: true, text: normalizeText(stdout), truncated: true }
+  }
+  if (stdoutFailure === 'idle') {
+    return { ok: false, text: '', error: `pdftotext idle for ${idleMs}ms and was killed` }
+  }
+  if (stdoutFailure === 'aborted') {
+    return { ok: false, text: '', error: 'aborted' }
+  }
+  if (stdoutFailure === 'error') {
+    return { ok: false, text: '', error: 'pdftotext stdout read failed' }
   }
   if (signalCode) {
     return { ok: false, text: '', error: `pdftotext produced no output for ${idleMs}ms and was killed` }
@@ -135,31 +154,56 @@ function concatText(chunks: Uint8Array[], total: number): string {
   return new TextDecoder().decode(bytes)
 }
 
+// Why a stop happened. Only `cap` is a complete, honest partial extraction a caller may report
+// as a SUCCESS (`truncated: true`) — `idle`, `aborted` and `error` all mean the read produced
+// no trustworthy text and MUST be reported as a failure, never silently folded into `truncated`
+// (see `ReadIdleCappedResult`'s header — this is the distinction pdf.ts's `mapPdftotextResult`
+// call depends on to avoid reporting a wedged or cancelled extraction as a success).
+export type PdfReadOutcome = 'complete' | 'cap' | 'idle' | 'aborted' | 'error'
+
+export interface ReadIdleCappedResult {
+  text: string
+  /** True ONLY for `outcome: 'cap'` — kept as its own field because pdf.ts/mapPdftotextResult
+   * already key off it directly; derive it from `outcome`, never set independently. */
+  truncated: boolean
+  outcome: PdfReadOutcome
+  /** Set only on `outcome: 'error'` — the underlying stream error's message. */
+  error?: string
+}
+
 /**
  * Reads a stream up to `capBytes`, arming `watchdog` on every chunk so IDLE silence — not
  * total size — is what can kill the read, and keeping (not discarding) whatever text was
- * captured before a cap-crossing or an idle abort. Deliberately local rather than reusing
- * lib/bounded-read.ts's shared reader: that module has no idle-signal hook, and adding one
- * there would change every other caller's timing semantics for a need only this spawn wrapper
- * has. Mirrors bounded-read.ts's `readBounded` on two points: raw chunks are buffered and
- * decoded once at the end (never decode-and-concat per chunk), and `reader.cancel()` is
- * always awaited BEFORE the reader's lock is released — releasing a lock while a `read()` is
- * still pending throws a TypeError that would otherwise replace this function's designed
- * `{ text, truncated: true }` return with an uncaught throw.
+ * captured before a cap-crossing, an idle abort, or a caller abort. Deliberately local rather
+ * than reusing lib/bounded-read.ts's shared reader: that module has no idle-signal hook, and
+ * adding one there would change every other caller's timing semantics for a need only this
+ * spawn wrapper has. Mirrors bounded-read.ts's `readBounded` on two points: raw chunks are
+ * buffered and decoded once at the end (never decode-and-concat per chunk), and
+ * `reader.cancel()` is always awaited BEFORE the reader's lock is released — releasing a lock
+ * while a `read()` is still pending throws a TypeError that would otherwise replace this
+ * function's designed return with an uncaught throw.
+ *
+ * `callerSignal` (pdf.ts's `opts.signal`, the fetch chain's own budget/cancel) races alongside
+ * `watchdog.signal` via `AbortSignal.any` so a caller abort unblocks a pending read immediately
+ * instead of waiting for the killed child's pipe to close on its own — and so the catch below
+ * can tell WHICH signal fired and report the right `outcome`.
  */
 export async function readIdleCapped(
   stream: ReadableStream<Uint8Array> | null,
   capBytes: number,
   watchdog: ReturnType<typeof createIdleWatchdog>,
-): Promise<{ text: string; truncated: boolean }> {
-  if (!stream) return { text: '', truncated: false }
+  callerSignal?: AbortSignal,
+): Promise<ReadIdleCappedResult> {
+  if (!stream) return { text: '', truncated: false, outcome: 'complete' }
   const reader = stream.getReader()
   const chunks: Uint8Array[] = []
   let total = 0
-  let truncated = false
+  let outcome: PdfReadOutcome = 'complete'
+  let errorMessage: string | undefined
+  const abortSignal = callerSignal ? AbortSignal.any([watchdog.signal, callerSignal]) : watchdog.signal
   try {
     for (;;) {
-      const { done, value } = await withIdle(reader.read(), watchdog.signal)
+      const { done, value } = await withIdle(reader.read(), abortSignal)
       if (done || !value) break
       watchdog.arm()
       const room = capBytes - total
@@ -171,8 +215,9 @@ export async function readIdleCapped(
       // This chunk crosses the cap — keep the part that still fits rather than discarding the
       // whole chunk, so a cap that lands mid-write still returns real (if incomplete) text.
       // Cancel and stop here — there is no reason to keep draining a stream whose cap is
-      // already known to be exceeded (no "dead" byte counter kept past this point).
-      truncated = true
+      // already known to be exceeded (no "dead" byte counter kept past this point). The ONLY
+      // outcome that reports `truncated: true` — every other early stop below is a failure.
+      outcome = 'cap'
       if (room > 0) {
         chunks.push(value.subarray(0, room))
         total += room
@@ -180,14 +225,27 @@ export async function readIdleCapped(
       await reader.cancel().catch(() => {})
       break
     }
-  } catch {
-    // An idle-aborted read, or the stream erroring because the process was just SIGKILLed —
-    // either way this returns what was captured so far, marked truncated. `cancel()` settles
-    // the still-pending `read()` before `finally` releases the lock (see the header comment).
+  } catch (err) {
+    // `cancel()` settles the still-pending `read()` before `finally` releases the lock (see
+    // the header comment). `withIdle` only ever rejects with `PdfIdleError` for an abort or
+    // the ORIGINAL error for anything else (a genuine stream error, e.g. the pipe erroring
+    // because the process was just SIGKILLed for a reason neither signal above caused) — that
+    // distinction, not a blanket "any abnormal stop is a truncated success", is what decides
+    // `outcome` here.
     await reader.cancel().catch(() => {})
-    truncated = true
+    if (err instanceof PdfIdleError) {
+      outcome = watchdog.signal.aborted ? 'idle' : 'aborted'
+    } else {
+      outcome = 'error'
+      errorMessage = err instanceof Error ? err.message : String(err)
+    }
   } finally {
     reader.releaseLock()
   }
-  return { text: concatText(chunks, total), truncated }
+  return {
+    text: concatText(chunks, total),
+    truncated: outcome === 'cap',
+    outcome,
+    ...(errorMessage !== undefined ? { error: errorMessage } : {}),
+  }
 }

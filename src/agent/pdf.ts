@@ -80,9 +80,24 @@ export async function extractPdfText(bytes: Uint8Array, opts?: { jobId?: string;
   // until the unrelated 60s idle watchdog eventually catches the now-abandoned process.
   let onCallerAbort: (() => void) | undefined
   try {
+    // A slot was granted, but the caller may have aborted in the time it took to get here —
+    // check before ever spawning pdftotext, so an already-cancelled fetch chain never starts a
+    // subprocess it has no use for.
+    if (opts?.signal?.aborted) {
+      const error = 'aborted'
+      log('tool.pdf', { jobId, ok: false, error })
+      return { ok: false, text: '', error }
+    }
+
     dir = await mkdtemp(join(tmpdir(), PDF_TMP_PREFIX))
     const inPath = join(dir, 'in.pdf')
     await writeFile(inPath, bytes)
+
+    if (opts?.signal?.aborted) {
+      const error = 'aborted'
+      log('tool.pdf', { jobId, ok: false, error })
+      return { ok: false, text: '', error }
+    }
 
     // DEFAULT layout mode, deliberately not `-layout`: MEASURED against three real two-column
     // papers (AMS MWR-D-21-0150.1, Copernicus GMD doi:10.5194/gmd-19-4703-2026, arXiv:2309.04452)
@@ -101,11 +116,6 @@ export async function extractPdfText(bytes: Uint8Array, opts?: { jobId?: string;
       env: { PATH: process.env['PATH'] ?? '/usr/bin:/bin', LANG: 'C.UTF-8' },
     })
 
-    // Armed from the moment the process spawns, reset by every unit of progress this call can
-    // observe (a chunk on stdout, a chunk on stderr) — replaces the old flat
-    // `timeout: PDFTOTEXT_TIMEOUT_MS` kill, which fired on total runtime even while pdftotext
-    // was actively producing output on a large-but-healthy document.
-    let idleFired = false
     const killChild = (): void => {
       try {
         proc.kill('SIGKILL')
@@ -113,43 +123,64 @@ export async function extractPdfText(bytes: Uint8Array, opts?: { jobId?: string;
         // already gone
       }
     }
+
+    // Registered the INSTANT the child exists, before any other setup below (the watchdog
+    // listener, the reads) — a caller abort landing in the gap between spawn and the rest of
+    // this function must still kill the child rather than run unbounded until the unrelated
+    // 60s idle watchdog eventually catches it. Checked again right after registering: an
+    // already-aborted signal never fires its `abort` event for a listener added after the
+    // fact, so a signal that aborted in the instant between spawn and this line would
+    // otherwise leave the child running forever.
+    onCallerAbort = killChild
+    opts?.signal?.addEventListener('abort', onCallerAbort, { once: true })
+    if (opts?.signal?.aborted) {
+      killChild()
+      const error = 'aborted'
+      log('tool.pdf', { jobId, ok: false, error })
+      return { ok: false, text: '', error }
+    }
+
+    // Armed from the moment the process spawns, reset by every unit of progress this call can
+    // observe (a chunk on stdout, a chunk on stderr) — replaces the old flat
+    // `timeout: PDFTOTEXT_TIMEOUT_MS` kill, which fired on total runtime even while pdftotext
+    // was actively producing output on a large-but-healthy document.
+    let idleFired = false
     watchdog.signal.addEventListener('abort', () => {
       idleFired = true
       killChild()
     })
     watchdog.arm()
 
-    onCallerAbort = killChild
-    opts?.signal?.addEventListener('abort', onCallerAbort, { once: true })
-
     // A byte-cap truncation on either stream means the child has no more use — its output past
-    // the cap is discarded either way — so it is killed the moment `readIdleCapped` reports
-    // `truncated`, rather than left to keep writing into a pipe nothing is draining (which would
-    // otherwise block until the 60s idle watchdog eventually caught it).
-    const killIfTruncated = (result: { text: string; truncated: boolean }): { text: string; truncated: boolean } => {
-      if (result.truncated) killChild()
+    // the cap is discarded either way — so it is killed the moment `readIdleCapped` reports the
+    // `'cap'` outcome, rather than left to keep writing into a pipe nothing is draining (which
+    // would otherwise block until the 60s idle watchdog eventually caught it). Tracked per
+    // stream by its OWN outcome — a stderr cap crossing kills the child same as a stdout one
+    // would, but must never be read back as the STDOUT read having crossed its cap.
+    const killIfCapped = <T extends { outcome: string }>(result: T): T => {
+      if (result.outcome === 'cap') killChild()
       return result
     }
 
     const [stdoutResult, stderrResult] = await Promise.all([
-      readIdleCapped(proc.stdout, MAX_PDFTOTEXT_OUTPUT_BYTES, watchdog).then(killIfTruncated),
-      readIdleCapped(proc.stderr, MAX_PDFTOTEXT_OUTPUT_BYTES, watchdog).then(killIfTruncated),
+      readIdleCapped(proc.stdout, MAX_PDFTOTEXT_OUTPUT_BYTES, watchdog, opts?.signal).then(killIfCapped),
+      readIdleCapped(proc.stderr, MAX_PDFTOTEXT_OUTPUT_BYTES, watchdog, opts?.signal).then(killIfCapped),
     ])
     const code = await proc.exited
 
     const result = mapPdftotextResult({
       // `idleFired` takes precedence over `proc.signalCode` for the idle-kill message
-      // specifically. `killChild()` now also fires on a byte-cap truncation and on the
-      // caller's own abort — `mapPdftotextResult` no longer needs to tell those apart from a
-      // real idle kill because `stdoutTruncated` (checked first, there) already wins for the
-      // truncation case, and an abort mid-run surfaces through the caller's own signal, not
-      // through this result.
+      // specifically; `stdoutFailure` below takes precedence over BOTH when stdout's own read
+      // resolved a specific reason (idle/aborted/error) — `signalCode` alone cannot tell an
+      // idle kill apart from a caller abort or a stderr-only cap crossing, since `killChild()`
+      // now fires on all three and every one of them leaves the same 'SIGKILL'.
       signalCode: idleFired ? 'SIGKILL' : proc.signalCode,
       code,
       stdout: stdoutResult.text,
       stderr: stderrResult.text,
       idleMs: PDFTOTEXT_IDLE_MS,
-      stdoutTruncated: stdoutResult.truncated,
+      stdoutTruncated: stdoutResult.outcome === 'cap',
+      stdoutFailure: stdoutResult.outcome === 'idle' || stdoutResult.outcome === 'aborted' || stdoutResult.outcome === 'error' ? stdoutResult.outcome : undefined,
     })
     if (!result.ok) log('tool.pdf', { jobId, ok: false, error: result.error })
     else if (result.truncated) log('tool.pdf', { jobId, ok: true, truncated: true, chars: result.text.length })
