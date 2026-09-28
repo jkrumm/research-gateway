@@ -3,7 +3,8 @@
 // pdf.ts, imports env for PDFTOTEXT_PATH and is not itself unit-tested for the same reason
 // ytdlp.ts isn't).
 
-import { normalizeText } from './extract.js'
+import { normalizeText, TEXT_CAP } from './extract.js'
+import type { createIdleWatchdog } from '../lib/idle-watchdog.js'
 
 // Above this, a PDF is rejected before pdftotext ever runs — a hang guard on input size, not
 // a tuning default: an unbounded download of a pathological body is the failure this exists
@@ -73,4 +74,112 @@ export function mapPdftotextResult(args: {
 // consumption of it stay worded identically.
 export function pdfTruncationNotice(maxOutputBytes: number = MAX_PDFTOTEXT_OUTPUT_BYTES): string {
   return `\n\n[truncated: this PDF's extracted text exceeded pdftotext's ${maxOutputBytes}-byte output cap and was cut short. The remainder was not included — if the information you need is not above, it may be further down this paper.]`
+}
+
+/**
+ * The text a successful PDF extraction hands the worker: `pdfTruncationNotice()` appended
+ * when `truncated`, capped so the notice itself always survives. A truncated pdftotext output
+ * can be up to MAX_PDFTOTEXT_OUTPUT_BYTES (80 MB) — far longer than TEXT_CAP (80k chars) — so
+ * appending the notice AFTER the full text and letting a later `capText(text, TEXT_CAP)` run
+ * over the combined string sliced the notice off the end entirely; it never reached the
+ * worker. Capping HERE, with room reserved for the notice before it is appended, means the
+ * text a caller (fetch-chain/origin.ts) hands to `ctx.done` is already at or under TEXT_CAP, so
+ * `capText`'s own cap downstream is a no-op.
+ */
+export function finalizePdfText(text: string, truncated: boolean): string {
+  if (!truncated) return text
+  const notice = pdfTruncationNotice()
+  return `${text.slice(0, Math.max(0, TEXT_CAP - notice.length))}${notice}`
+}
+
+// Thrown internally when the idle watchdog aborts while a read is mid-await — never escapes
+// `readIdleCapped`, which always translates it into the honest `{ text, truncated: true }`.
+class PdfIdleError extends Error {}
+
+// Races `promise` against the idle watchdog's abort signal, so a stall on stdout OR stderr
+// unblocks the read the moment the watchdog fires, rather than leaving it hung on a promise
+// that only resolves once the (already-killed) process closes its pipes.
+function withIdle<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) return Promise.reject(new PdfIdleError('idle'))
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = (): void => reject(new PdfIdleError('idle'))
+    signal.addEventListener('abort', onAbort, { once: true })
+    promise.then(
+      (v) => {
+        signal.removeEventListener('abort', onAbort)
+        resolve(v)
+      },
+      (e) => {
+        signal.removeEventListener('abort', onAbort)
+        reject(e)
+      },
+    )
+  })
+}
+
+function concatText(chunks: Uint8Array[], total: number): string {
+  const bytes = new Uint8Array(total)
+  let offset = 0
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset)
+    offset += chunk.byteLength
+  }
+  return new TextDecoder().decode(bytes)
+}
+
+/**
+ * Reads a stream up to `capBytes`, arming `watchdog` on every chunk so IDLE silence — not
+ * total size — is what can kill the read, and keeping (not discarding) whatever text was
+ * captured before a cap-crossing or an idle abort. Deliberately local rather than reusing
+ * lib/bounded-read.ts's shared reader: that module has no idle-signal hook, and adding one
+ * there would change every other caller's timing semantics for a need only this spawn wrapper
+ * has. Mirrors bounded-read.ts's `readBounded` on two points: raw chunks are buffered and
+ * decoded once at the end (never decode-and-concat per chunk), and `reader.cancel()` is
+ * always awaited BEFORE the reader's lock is released — releasing a lock while a `read()` is
+ * still pending throws a TypeError that would otherwise replace this function's designed
+ * `{ text, truncated: true }` return with an uncaught throw.
+ */
+export async function readIdleCapped(
+  stream: ReadableStream<Uint8Array> | null,
+  capBytes: number,
+  watchdog: ReturnType<typeof createIdleWatchdog>,
+): Promise<{ text: string; truncated: boolean }> {
+  if (!stream) return { text: '', truncated: false }
+  const reader = stream.getReader()
+  const chunks: Uint8Array[] = []
+  let total = 0
+  let truncated = false
+  try {
+    for (;;) {
+      const { done, value } = await withIdle(reader.read(), watchdog.signal)
+      if (done || !value) break
+      watchdog.arm()
+      const room = capBytes - total
+      if (value.byteLength <= room) {
+        chunks.push(value)
+        total += value.byteLength
+        continue
+      }
+      // This chunk crosses the cap — keep the part that still fits rather than discarding the
+      // whole chunk, so a cap that lands mid-write still returns real (if incomplete) text.
+      // Cancel and stop here — there is no reason to keep draining a stream whose cap is
+      // already known to be exceeded (no "dead" byte counter kept past this point).
+      truncated = true
+      if (room > 0) {
+        chunks.push(value.subarray(0, room))
+        total += room
+      }
+      await reader.cancel().catch(() => {})
+      break
+    }
+  } catch {
+    // An idle-aborted read, or the stream erroring because the process was just SIGKILLed —
+    // either way this returns what was captured so far, marked truncated. `cancel()` settles
+    // the still-pending `read()` before `finally` releases the lock (see the header comment).
+    await reader.cancel().catch(() => {})
+    truncated = true
+  } finally {
+    reader.releaseLock()
+  }
+  return { text: concatText(chunks, total), truncated }
 }
