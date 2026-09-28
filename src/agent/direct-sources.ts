@@ -966,7 +966,10 @@ async function lookupCrossref(query: string, limit: number, ledger: RetrievalLed
 async function lookupCore(query: string, limit: number, ledger: RetrievalLedger): Promise<unknown> {
   const q = query.trim()
   if (normalizeDoi(q)) {
-    return { error: 'CORE errors on a bare DOI as the query — use unpaywall (or openalex) for a DOI lookup instead.' }
+    // Same reasoning as UNPAYWALL_DESCRIPTION_SUFFIX/DOI_RESOLUTION_HINT below: naming
+    // `unpaywall` here is only true advice when this job's academicSearch actually offers it.
+    const alternative = UNPAYWALL_ENABLED ? 'unpaywall (or openalex)' : 'openalex'
+    return { error: `CORE errors on a bare DOI as the query — use ${alternative} for a DOI lookup instead.` }
   }
   // Unquoted multi-word queries returned irrelevant results (measured) — quoting is load-bearing.
   const searchTerm = q.includes(' ') ? `"${q}"` : q
