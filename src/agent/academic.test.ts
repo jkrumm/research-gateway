@@ -400,6 +400,25 @@ describe('normalizeDoi', () => {
     expect(normalizeDoi('https://doi.org/10.5194/npg-30-503-2023?utm_source=x')).toBe('10.5194/npg-30-503-2023')
     expect(normalizeDoi('10.5194/npg-30-503-2023#section-2')).toBe('10.5194/npg-30-503-2023')
   })
+
+  // Old-style (SICI convention) DOIs legitimately carry balanced parentheses as part of the
+  // DOI itself — a trailing closer must only be stripped when it is NOT balanced by an earlier
+  // opener, or these are mangled into an invalid DOI.
+  it('keeps a DOI whose own suffix legitimately ends on a balanced closing paren', () => {
+    const sici = '10.1002/(SICI)1097-4636(199706)35:4<477::AID-JBM9>3.0.CO;2-A'
+    expect(normalizeDoi(sici)).toBe(sici)
+    // Confirm the case actually exercises a trailing closer: swap the ending so it ends in ')'.
+    const siciTrailingParen = '10.1002/(SICI)1097-4636(199706)'
+    expect(normalizeDoi(siciTrailingParen)).toBe(siciTrailingParen)
+  })
+
+  it('still strips an UNBALANCED trailing closer even when the DOI has earlier balanced pairs', () => {
+    // The whole citation wrapped in a sentence-level paren — the outer ')' has no opener of its
+    // own anywhere in the string, unlike the SICI pair before it, so only that one is stripped.
+    const sici = '10.1002/(SICI)1097-4636(199706)35:4<477::AID-JBM9>3.0.CO;2-A'
+    expect(normalizeDoi(`${sici})`)).toBe(sici)
+    expect(normalizeDoi(`${sici}).`)).toBe(sici)
+  })
 })
 
 describe('mapSemanticScholarPaper', () => {
