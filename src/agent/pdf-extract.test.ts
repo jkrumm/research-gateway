@@ -21,6 +21,25 @@ describe('mapPdftotextResult', () => {
     expect(result.truncated).toBe(true)
   })
 
+  // pdf.ts kills the (now-useless) child once the byte cap is crossed, so the child can die by
+  // signal on the very same exit that produced a genuine, complete-up-to-the-cap partial text.
+  // Truncation must win over `signalCode` — this must stay `ok:true, truncated:true`, never the
+  // idle-kill failure branch.
+  it('reports ok:true truncated:true even when the cap-crossing kill left a signalCode', () => {
+    const result = mapPdftotextResult({
+      signalCode: 'SIGKILL',
+      code: 0,
+      stdout: longText,
+      stderr: '',
+      idleMs: 60_000,
+      stdoutTruncated: true,
+    })
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error('unreachable')
+    expect(result.truncated).toBe(true)
+    expect(result.text.length).toBeGreaterThan(0)
+  })
+
   // The idle-watchdog kill — `signalCode` is the discriminator, not exit code, mirroring the
   // Bun trap ytdlp.ts documents (`proc.killed` is true on a clean exit too).
   it('treats a signalCode as an idle kill regardless of exit code', () => {

@@ -75,6 +75,10 @@ export async function extractPdfText(bytes: Uint8Array, opts?: { jobId?: string;
   // which branch below returns or throws — idle-watchdog.ts requires clear() on every path or
   // its timer leaks for PDFTOTEXT_IDLE_MS past a call that already finished.
   const watchdog = createIdleWatchdog(PDFTOTEXT_IDLE_MS)
+  // Hoisted so the outer `finally` can always remove it — once a slot is granted, the caller's
+  // OWN abort (the fetch chain's budget/cancel) must kill the child immediately rather than sit
+  // until the unrelated 60s idle watchdog eventually catches the now-abandoned process.
+  let onCallerAbort: (() => void) | undefined
   try {
     dir = await mkdtemp(join(tmpdir(), PDF_TMP_PREFIX))
     const inPath = join(dir, 'in.pdf')
@@ -102,27 +106,44 @@ export async function extractPdfText(bytes: Uint8Array, opts?: { jobId?: string;
     // `timeout: PDFTOTEXT_TIMEOUT_MS` kill, which fired on total runtime even while pdftotext
     // was actively producing output on a large-but-healthy document.
     let idleFired = false
-    watchdog.signal.addEventListener('abort', () => {
-      idleFired = true
+    const killChild = (): void => {
       try {
         proc.kill('SIGKILL')
       } catch {
         // already gone
       }
+    }
+    watchdog.signal.addEventListener('abort', () => {
+      idleFired = true
+      killChild()
     })
     watchdog.arm()
 
+    onCallerAbort = killChild
+    opts?.signal?.addEventListener('abort', onCallerAbort, { once: true })
+
+    // A byte-cap truncation on either stream means the child has no more use — its output past
+    // the cap is discarded either way — so it is killed the moment `readIdleCapped` reports
+    // `truncated`, rather than left to keep writing into a pipe nothing is draining (which would
+    // otherwise block until the 60s idle watchdog eventually caught it).
+    const killIfTruncated = (result: { text: string; truncated: boolean }): { text: string; truncated: boolean } => {
+      if (result.truncated) killChild()
+      return result
+    }
+
     const [stdoutResult, stderrResult] = await Promise.all([
-      readIdleCapped(proc.stdout, MAX_PDFTOTEXT_OUTPUT_BYTES, watchdog),
-      readIdleCapped(proc.stderr, MAX_PDFTOTEXT_OUTPUT_BYTES, watchdog),
+      readIdleCapped(proc.stdout, MAX_PDFTOTEXT_OUTPUT_BYTES, watchdog).then(killIfTruncated),
+      readIdleCapped(proc.stderr, MAX_PDFTOTEXT_OUTPUT_BYTES, watchdog).then(killIfTruncated),
     ])
     const code = await proc.exited
 
     const result = mapPdftotextResult({
-      // `idleFired` takes precedence over `proc.signalCode`: the watchdog is the only thing
-      // that ever calls `proc.kill()` in this function, so any signalCode it produced IS the
-      // idle kill, but reading `idleFired` directly is honest even in the (untested) case of
-      // an external kill this function did not cause.
+      // `idleFired` takes precedence over `proc.signalCode` for the idle-kill message
+      // specifically. `killChild()` now also fires on a byte-cap truncation and on the
+      // caller's own abort — `mapPdftotextResult` no longer needs to tell those apart from a
+      // real idle kill because `stdoutTruncated` (checked first, there) already wins for the
+      // truncation case, and an abort mid-run surfaces through the caller's own signal, not
+      // through this result.
       signalCode: idleFired ? 'SIGKILL' : proc.signalCode,
       code,
       stdout: stdoutResult.text,
@@ -140,6 +161,7 @@ export async function extractPdfText(bytes: Uint8Array, opts?: { jobId?: string;
     return { ok: false, text: '', error: String(err) }
   } finally {
     watchdog.clear()
+    if (onCallerAbort) opts?.signal?.removeEventListener('abort', onCallerAbort)
     if (dir) await rm(dir, { recursive: true, force: true }).catch(() => {})
     pdfExtractionSemaphore.release()
   }
