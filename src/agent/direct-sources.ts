@@ -111,6 +111,27 @@ function checkRegistryResult<T, C>(params: {
   return { core }
 }
 
+// Shared by the academic-search lookups below (openalex/crossref/core/semanticscholar/
+// unpaywall): each did its own hand-copied ok-check, `ledger.recordFailed` call and error
+// string — four identical copies plus unpaywall's near-identical one. Mirrors
+// `checkRegistryResult`'s shape one section up, minus the ecosystem-specific field mapping
+// those lookups don't need.
+function failIfNoData<T>(params: {
+  res: JsonResult<T>
+  url: string
+  label: string
+  ledger: RetrievalLedger
+  notFoundMessage?: string
+}): { error: string } | { data: T } {
+  const { res, url, label, ledger, notFoundMessage = 'no results' } = params
+  if (!res.ok || !res.data) {
+    const error = res.error ?? notFoundMessage
+    ledger.recordFailed(url, error)
+    return { error: `${label}: ${error}` }
+  }
+  return { data: res.data }
+}
+
 // Registry JSON gets its own, higher cap than the shared MAX_BODY_BYTES (8 MB): PyPI's full
 // document lists every release a package ever published, and a heavily-released package —
 // torch, boto3 — blows past 8 MB in current measurement, well above the ~3.7 MB `numpy` used
@@ -717,14 +738,11 @@ async function lookupOpenAlex(query: string, limit: number, ledger: RetrievalLed
   const url = `https://api.openalex.org/works?search=${encodeURIComponent(query)}&per_page=${limit}&select=id,doi,title,publication_year,cited_by_count,open_access,primary_location,authorships,type`
 
   const res = await getJson<OpenAlexSearchResponse>(url, { 'user-agent': UA, accept: 'application/json' })
-  if (!res.ok || !res.data) {
-    const error = res.error ?? 'no results'
-    ledger.recordFailed(url, error)
-    return { error: `OpenAlex search failed: ${error}` }
-  }
+  const check = failIfNoData({ res, url, label: 'OpenAlex search failed', ledger })
+  if ('error' in check) return check
 
   ledger.recordRetrieved(url)
-  const results = (res.data.results ?? []).map(mapOpenAlexWork)
+  const results = (check.data.results ?? []).map(mapOpenAlexWork)
   // Every URL a model can cite from this response must be on the ledger, or groundDigest
   // strips the finding at the worker boundary before it ever reaches synthesis. MEASURED:
   // recording only the query URL above cost 9 of 14 findings in one job — the worker cited
@@ -742,7 +760,7 @@ async function lookupOpenAlex(query: string, limit: number, ledger: RetrievalLed
   return {
     source: 'openalex',
     query,
-    totalCount: res.data.meta?.count ?? results.length,
+    totalCount: check.data.meta?.count ?? results.length,
     results,
     // OpenAlex offers a "polite pool" (a `mailto` query param) with more reliable rate
     // limits. Deliberately not wired up here — that means shipping a real address into
@@ -817,6 +835,23 @@ async function lookupPubmed(query: string, limit: number, ledger: RetrievalLedge
 const arxivGate = createRateGate(3_000)
 const semanticScholarGate = createRateGate(1_000)
 
+// The gated operation itself — fetch AND read the body, not just fetch. export.arxiv.org's
+// policy is ONE connection at a time, so the gate must hold the queue until the response body
+// has actually been consumed, not merely until `fetch()`'s promise settles (which happens on
+// receipt of headers, long before the body is drained). Releasing early there let a second
+// worker's request open a concurrent connection while this one's body was still streaming.
+async function fetchArxivFeed(url: string): Promise<{ ok: true; text: string } | { ok: false; error: string }> {
+  const res = await fetch(url, { headers: { 'user-agent': UA }, signal: AbortSignal.timeout(TIMEOUT_MS) })
+  if (!res.ok) return { ok: false, error: `HTTP ${res.status} ${res.statusText}` }
+  // Bounded like every other network body in this file — an unbounded `res.text()` was the
+  // only such read left here.
+  const { text, truncated } = await readBoundedText(res, MAX_BODY_BYTES, (info) =>
+    log('tool.academicSearch', { source: 'arxiv', url, via: 'oversized', ...info }),
+  )
+  if (truncated) return { ok: false, error: `response exceeds ${MAX_BODY_BYTES} byte cap` }
+  return { ok: true, text }
+}
+
 async function lookupArxiv(query: string, limit: number, ledger: RetrievalLedger): Promise<unknown> {
   const q = query.trim()
   const params = new URLSearchParams()
@@ -826,24 +861,26 @@ async function lookupArxiv(query: string, limit: number, ledger: RetrievalLedger
   if (isArxivId(q)) params.set('id_list', q)
   else params.set('search_query', buildArxivSearchQuery(q))
   params.set('start', '0')
-  params.set('max_results', String(Math.min(Math.max(limit, 1), 2000)))
+  // Clamped to the academicSearch tool's own schema max (10, see buildAcademicSearchTool
+  // below) — arXiv's API itself allows far more, but nothing calling this ever legitimately
+  // asks for more than the schema lets a worker request.
+  params.set('max_results', String(Math.min(Math.max(limit, 1), 10)))
   const url = `https://export.arxiv.org/api/query?${params.toString()}`
 
-  let res: Response
+  let feed: { ok: true; text: string } | { ok: false; error: string }
   try {
-    res = await arxivGate(() => fetch(url, { headers: { 'user-agent': UA }, signal: AbortSignal.timeout(TIMEOUT_MS) }))
+    feed = await arxivGate(() => fetchArxivFeed(url))
   } catch (err) {
     const reason = String(err)
     ledger.recordFailed(url, reason)
     return { error: `arXiv lookup failed: ${reason}` }
   }
-  if (!res.ok) {
-    const reason = `HTTP ${res.status} ${res.statusText}`
-    ledger.recordFailed(url, reason)
-    return { error: `arXiv lookup failed: ${reason}` }
+  if (!feed.ok) {
+    ledger.recordFailed(url, feed.error)
+    return { error: `arXiv lookup failed: ${feed.error}` }
   }
 
-  const entries = parseArxivFeed(await res.text())
+  const entries = parseArxivFeed(feed.text)
   // Snippet, not retrieved — this is the feed's metadata, not the paper. Citing `htmlUrl`
   // (site-adapters.ts rewrites it to the LaTeXML build automatically) or `pdfUrl` and reading
   // it via fetchPage is what earns `retrieved` and a `high`-confidence citation.
@@ -872,13 +909,10 @@ async function lookupUnpaywall(doiInput: string, ledger: RetrievalLedger): Promi
   const url = `https://api.unpaywall.org/v2/${encodeURIComponent(doi)}?email=${encodeURIComponent(env.ACADEMIC_CONTACT_EMAIL ?? '')}`
 
   const res = await getJson<UnpaywallResponse>(url, { 'user-agent': UA, accept: 'application/json' })
-  if (!res.ok || !res.data) {
-    const error = res.error ?? 'not found'
-    ledger.recordFailed(url, error)
-    return { error: `Unpaywall lookup failed for "${doi}": ${error}` }
-  }
+  const check = failIfNoData({ res, url, label: `Unpaywall lookup failed for "${doi}"`, ledger, notFoundMessage: 'not found' })
+  if ('error' in check) return check
 
-  const mapped = mapUnpaywallResponse(res.data)
+  const mapped = mapUnpaywallResponse(check.data)
   ledger.recordSnippet(`https://doi.org/${doi}`)
   const locations = [mapped.bestOaLocation, ...mapped.oaLocations].filter((l): l is NonNullable<typeof l> => l !== null)
   for (const loc of locations) {
@@ -909,16 +943,13 @@ async function lookupCrossref(query: string, limit: number, ledger: RetrievalLed
   if (env.ACADEMIC_CONTACT_EMAIL) params.set('mailto', env.ACADEMIC_CONTACT_EMAIL)
   const url = `https://api.crossref.org/works?${params.toString()}`
 
+  // A transient 429 with an empty body happens (measured) — treated as an ordinary failed
+  // lookup, not a special case the worker needs to reason about differently.
   const res = await getJson<CrossrefWorksResponse>(url, { 'user-agent': UA, accept: 'application/json' })
-  if (!res.ok || !res.data) {
-    // A transient 429 with an empty body happens (measured) — treated as an ordinary failed
-    // lookup, not a special case the worker needs to reason about differently.
-    const error = res.error ?? 'no results'
-    ledger.recordFailed(url, error)
-    return { error: `Crossref search failed: ${error}` }
-  }
+  const check = failIfNoData({ res, url, label: 'Crossref search failed', ledger })
+  if ('error' in check) return check
 
-  const results = (res.data.message?.items ?? []).map(mapCrossrefWork)
+  const results = (check.data.message?.items ?? []).map(mapCrossrefWork)
   for (const r of results) {
     if (r.url) ledger.recordSnippet(r.url)
     for (const link of r.fullTextLinks) ledger.recordSnippet(link)
@@ -946,13 +977,10 @@ async function lookupCore(query: string, limit: number, ledger: RetrievalLedger)
   if (env.CORE_API_KEY) headers['authorization'] = `Bearer ${env.CORE_API_KEY}`
 
   const res = await getJson<{ results?: CoreWorkRaw[] }>(url, headers)
-  if (!res.ok || !res.data) {
-    const error = res.error ?? 'no results'
-    ledger.recordFailed(url, error)
-    return { error: `CORE search failed: ${error}` }
-  }
+  const check = failIfNoData({ res, url, label: 'CORE search failed', ledger })
+  if ('error' in check) return check
 
-  const results = (res.data.results ?? []).map(mapCoreWork)
+  const results = (check.data.results ?? []).map(mapCoreWork)
   for (const r of results) {
     if (r.landingPageUrl) ledger.recordSnippet(r.landingPageUrl)
     if (r.downloadUrl) ledger.recordSnippet(r.downloadUrl)
@@ -978,13 +1006,10 @@ async function lookupSemanticScholar(query: string, limit: number, ledger: Retri
   const res = await semanticScholarGate(() =>
     getJson<{ data?: S2PaperRaw[] }>(url, { 'user-agent': UA, accept: 'application/json', 'x-api-key': env.S2_API_KEY ?? '' }),
   )
-  if (!res.ok || !res.data) {
-    const error = res.error ?? 'no results'
-    ledger.recordFailed(url, error)
-    return { error: `Semantic Scholar search failed: ${error}` }
-  }
+  const check = failIfNoData({ res, url, label: 'Semantic Scholar search failed', ledger })
+  if ('error' in check) return check
 
-  const results = (res.data.data ?? []).map(mapSemanticScholarPaper)
+  const results = (check.data.data ?? []).map(mapSemanticScholarPaper)
   for (const r of results) {
     if (r.url) ledger.recordSnippet(r.url)
     if (r.openAccessPdfUrl) ledger.recordSnippet(r.openAccessPdfUrl)
@@ -1025,10 +1050,20 @@ const ACADEMIC_LOOKUPS: Record<string, (query: string, limit: number, ledger: Re
   semanticscholar: lookupSemanticScholar,
 }
 
+// Named rather than inlined into the description template below — each was a ternary
+// re-evaluating the same `OPTIONAL_ACADEMIC_SOURCES.some(...)` lookup at the exact call site
+// that consumes it.
+const UNPAYWALL_DESCRIPTION_SUFFIX = OPTIONAL_ACADEMIC_SOURCES.some((s) => s.name === 'unpaywall' && s.enabled)
+  ? ', `unpaywall` (best open-access location for ONE DOI — pass the DOI as `query`)'
+  : ''
+const SEMANTIC_SCHOLAR_DESCRIPTION_SUFFIX = OPTIONAL_ACADEMIC_SOURCES.some((s) => s.name === 'semanticscholar' && s.enabled)
+  ? ', `semanticscholar`'
+  : ''
+
 function buildAcademicSearchTool(ledger: RetrievalLedger, jobId: string): AnyTool {
   return tool({
     description:
-      `Search academic/scientific literature for authoritative bibliographic metadata and open-access full text. Sources: \`openalex\` (broad multi-disciplinary coverage), \`pubmed\` (biomedical/life-science), \`arxiv\` (preprints — pass an arXiv id directly for an exact lookup), \`crossref\` (DOI registration metadata), \`core\` (aggregated OA fulltext index)${OPTIONAL_ACADEMIC_SOURCES.some((s) => s.name === 'unpaywall' && s.enabled) ? ', `unpaywall` (best open-access location for ONE DOI — pass the DOI as \`query\`)' : ''}${OPTIONAL_ACADEMIC_SOURCES.some((s) => s.name === 'semanticscholar' && s.enabled) ? ', `semanticscholar`' : ''}. For a DOI, resolve it through \`unpaywall\` (or \`openalex\`) BEFORE fetching a publisher page — then \`fetchPage\` the open-access URL to READ the paper, which is what earns a high-confidence citation; metadata alone stays medium. Prefer this over searchWeb for "who wrote / what year / how many citations / is there a paper on X" questions.`,
+      `Search academic/scientific literature for authoritative bibliographic metadata and open-access full text. Sources: \`openalex\` (broad multi-disciplinary coverage), \`pubmed\` (biomedical/life-science), \`arxiv\` (preprints — pass an arXiv id directly for an exact lookup), \`crossref\` (DOI registration metadata), \`core\` (aggregated OA fulltext index)${UNPAYWALL_DESCRIPTION_SUFFIX}${SEMANTIC_SCHOLAR_DESCRIPTION_SUFFIX}. For a DOI, resolve it through \`unpaywall\` (or \`openalex\`) BEFORE fetching a publisher page — then \`fetchPage\` the open-access URL to READ the paper, which is what earns a high-confidence citation; metadata alone stays medium. Prefer this over searchWeb for "who wrote / what year / how many citations / is there a paper on X" questions.`,
     inputSchema: z.object({
       source: z.enum(ACADEMIC_SOURCES).describe('Which index to query'),
       query: z.string().describe('Search terms, an arXiv id, or (for `unpaywall`) a DOI'),
