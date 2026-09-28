@@ -54,8 +54,12 @@ export function createUnboundedSemaphore(limit: number): UnboundedSemaphore {
   }
 }
 
-/** Measured pdftotext RSS on real papers: 12-22 MB (pdf.ts's header). 2 concurrent extractions is ample fan-out for that cost against a shared 2 GiB container. */
-export const PDF_EXTRACTION_CONCURRENCY = 2
+// 2 concurrent extractions is ample fan-out against the process's own MEMORY_LIMIT_MB
+// watchdog (lib/memory-watch.ts) — pdftotext's real-world RSS is modest (single-digit to
+// low-double-digit MB per invocation), so this bounds subprocess fan-out, not a measured cost.
+// Local, not exported: nothing outside this module needs the number itself, only the shared
+// `pdfExtractionSemaphore` instance below.
+const PDF_EXTRACTION_CONCURRENCY = 2
 
 /** The one process-wide instance every `extractPdfText` call acquires/releases — see pdf.ts. */
 export const pdfExtractionSemaphore: UnboundedSemaphore = createUnboundedSemaphore(PDF_EXTRACTION_CONCURRENCY)
