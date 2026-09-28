@@ -854,6 +854,30 @@ describe('bounded body reads', () => {
     expect(result.attempts.some((a) => a.step === 'pdf')).toBe(true)
   })
 
+  it('reads a mislabeled 9 MB PDF delivered one byte per chunk for the first 16 bytes without being cut at the 8 MB cap', async () => {
+    // The bug this closes: the cap used to be decided from the FIRST chunk only, so a body
+    // delivered one byte at a time never showed the `%PDF-` magic to the chooser in time and
+    // got locked to the 8 MB non-PDF cap forever. Sixteen one-byte chunks (well past the magic's
+    // 5 bytes and the reader's 8-byte decision prefix), then the rest of a 9 MB body as normal
+    // chunks — served under a Content-Type that carries no PDF information of its own.
+    const magic = Array.from(enc.encode('%PDF-1.7\n'))
+    const oneBytePrefix = magic.concat(Array.from({ length: 16 - magic.length }, () => 0x20)).map((byte) => new Uint8Array([byte]))
+    const rest = Array.from({ length: 9 }, () => new Uint8Array(1024 * 1024).fill(0x20))
+    stubFetch((u) =>
+      u === PAGE ? new Response(ofChunks([...oneBytePrefix, ...rest]), { headers: { 'content-type': 'application/octet-stream' } }) : new Response('nope', { status: 404 }),
+    )
+
+    const result = await runFetchChain(PAGE, {
+      ledger: createLedger(),
+      hostGate: createHostGate(),
+      tavilyExtract: stubTavilyFail(),
+      impersonatedFetch: stubImpersonateUnavailable(),
+    })
+
+    expect(result.attempts.some((a) => a.error?.includes('byte cap'))).toBe(false)
+    expect(result.attempts.some((a) => a.step === 'pdf')).toBe(true)
+  })
+
   it('misses a PDF larger than 40 MB', async () => {
     stubFetch((u) =>
       u === PAGE ? new Response(hugeStream(enc.encode('%PDF-1.7\n'), 1024 * 1024), { headers: { 'content-type': 'application/pdf' } }) : new Response('nope', { status: 404 }),

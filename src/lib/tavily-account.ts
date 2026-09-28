@@ -16,6 +16,7 @@ import { env } from '../env.js'
 import { buildTavilyAccountRecord } from './cost.js'
 import { postUsageRecord } from './usage.js'
 import { readBoundedText, MAX_BODY_BYTES } from './bounded-read.js'
+import { log } from './log.js'
 
 const TIMEOUT_MS = 10_000
 
@@ -61,8 +62,9 @@ export async function fetchTavilyUsage(): Promise<TavilyUsageResponse | null> {
     if (!res.ok) return null
 
     // Bounded like every other network body (bounded-read.ts): a cut account-usage response is
-    // not a real account, so treat it as a failed read rather than a misparsed one.
-    const bounded = await readBoundedText(res, MAX_BODY_BYTES)
+    // not a real account, so treat it as a failed read rather than a misparsed one. `onOversized`
+    // logs like every other call site, so a cut account read is visible rather than a silent null.
+    const bounded = await readBoundedText(res, MAX_BODY_BYTES, (info) => log('tavily.usage', { via: 'oversized', ...info }))
     if (bounded.truncated) return null
     const body = JSON.parse(bounded.text) as TavilyUsageResponse
     // `account` missing means a malformed or unexpected response — treat it as a failed read

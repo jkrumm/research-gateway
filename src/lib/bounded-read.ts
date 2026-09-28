@@ -23,6 +23,18 @@ export interface BoundedBytes {
   truncated: boolean
 }
 
+export interface BoundedBytesByCap extends BoundedBytes {
+  /** The cap `chooseCap` actually decided on, so a caller doesn't have to re-derive it. */
+  cap: number
+}
+
+// How much of the stream `readBounded` buffers before it trusts `chooseCap`'s answer. A
+// mislabeled PDF only announces itself in the 5-byte `%PDF-` magic (response-kind.ts), and a
+// chunk boundary is a network/runtime accident, not a content boundary — a host (or a test)
+// that happens to deliver one byte per chunk must not lock the cap to the wrong value forever
+// from a 1-byte first chunk. 8 bytes comfortably covers the magic with room to spare.
+const CAP_DECISION_PREFIX_BYTES = 8
+
 export interface BoundedText {
   /** The decoded body: the whole of it, unless `truncated`. */
   text: string
@@ -32,9 +44,7 @@ export interface BoundedText {
 
 export interface OversizedInfo {
   capBytes: number
-  /** The origin's declared size, when a `content-length` header made the cut known up front. */
-  declaredBytes?: number
-  /** The byte count at the moment the reader gave up. */
+  /** The byte count actually kept before the cap stopped the reader. */
   readBytes?: number
 }
 
@@ -49,39 +59,75 @@ function concat(chunks: Uint8Array[], total: number): Uint8Array {
 }
 
 /**
- * The shared core of every bounded byte read: pulls the stream chunk by chunk, asks `chooseCap`
- * for the cap the FIRST time a chunk arrives, and cancels the body the moment the next chunk
- * would cross it. Cancelling — rather than reading to the end and discarding — is the point:
- * a pathological body is never downloaded in full before being rejected. On truncation the
- * bytes already read are KEPT, so a caller whose cap depended on the prefix can still inspect
- * it.
+ * The shared core of every bounded byte read: pulls the stream chunk by chunk, buffers a
+ * `CAP_DECISION_PREFIX_BYTES`-byte prefix (or the whole body, if it ends sooner) before it asks
+ * `chooseCap` for the cap, then cancels the body the moment the next chunk would cross it.
+ * Deciding on a prefix rather than on the first raw chunk is what stops a mislabeled body from
+ * locking onto the wrong cap when the origin (or a test) happens to deliver it one byte at a
+ * time: `chooseCap` never sees fewer than the prefix unless the stream itself was shorter.
+ * Cancelling — rather than reading to the end and discarding — is the point: a pathological
+ * body is never downloaded in full before being rejected. On truncation the bytes already read
+ * are KEPT, so a caller whose cap depended on the prefix can still inspect it. Every chunk,
+ * including the ones buffered before the cap was known, still goes through the same
+ * cap-crossing check once the cap IS known — nothing pre-decision is exempt from enforcement.
  */
 async function readBounded(
   body: ReadableStream<Uint8Array> | null,
-  chooseCap: (firstChunk: Uint8Array) => number,
-): Promise<BoundedBytes> {
-  if (!body) return { bytes: new Uint8Array(0), truncated: false }
+  chooseCap: (prefix: Uint8Array) => number,
+): Promise<BoundedBytesByCap> {
+  if (!body) return { bytes: new Uint8Array(0), truncated: false, cap: 0 }
   const reader = body.getReader()
-  const chunks: Uint8Array[] = []
+  const committed: Uint8Array[] = []
   let total = 0
-  let capBytes = 0
+  let capBytes: number | null = null
+
+  // Applies one chunk against the now-known cap. Returns true when it crossed the cap (the
+  // chunk is NOT added, matching readBounded's long-standing "never buffer past the cap"
+  // contract) — the caller cancels the reader and returns on true.
+  const take = (chunk: Uint8Array): boolean => {
+    const next = total + chunk.length
+    if (next > (capBytes as number)) return true
+    committed.push(chunk)
+    total = next
+    return false
+  }
+
   try {
+    const pending: Uint8Array[] = []
+    let pendingTotal = 0
     for (;;) {
       const { done, value } = await reader.read()
-      if (done) break
-      if (chunks.length === 0) capBytes = chooseCap(value)
-      const next = total + value.length
-      if (next > capBytes) {
-        await reader.cancel().catch(() => {})
-        return { bytes: concat(chunks, total), truncated: true }
+      if (done) {
+        if (capBytes === null) capBytes = chooseCap(concat(pending, pendingTotal))
+        for (const chunk of pending) {
+          if (take(chunk)) return { bytes: concat(committed, total), truncated: true, cap: capBytes }
+        }
+        break
       }
-      chunks.push(value)
-      total = next
+      if (capBytes === null) {
+        pending.push(value)
+        pendingTotal += value.length
+        if (pendingTotal < CAP_DECISION_PREFIX_BYTES) continue
+        capBytes = chooseCap(concat(pending, pendingTotal))
+        const flushed = pending.splice(0, pending.length)
+        pendingTotal = 0
+        for (const chunk of flushed) {
+          if (take(chunk)) {
+            await reader.cancel().catch(() => {})
+            return { bytes: concat(committed, total), truncated: true, cap: capBytes }
+          }
+        }
+        continue
+      }
+      if (take(value)) {
+        await reader.cancel().catch(() => {})
+        return { bytes: concat(committed, total), truncated: true, cap: capBytes }
+      }
     }
   } finally {
     reader.releaseLock()
   }
-  return { bytes: concat(chunks, total), truncated: false }
+  return { bytes: concat(committed, total), truncated: false, cap: capBytes ?? 0 }
 }
 
 /**
@@ -89,23 +135,26 @@ async function readBounded(
  * still use a cut body (a raw JSON/CSV answer) may, while one that needs the whole document
  * (Readability, a PDF) treats `truncated` as a miss.
  */
-export function readBoundedBytes(
+export async function readBoundedBytes(
   body: ReadableStream<Uint8Array> | null,
   capBytes: number,
 ): Promise<BoundedBytes> {
-  return readBounded(body, () => capBytes)
+  const { bytes, truncated } = await readBounded(body, () => capBytes)
+  return { bytes, truncated }
 }
 
 /**
- * Reads a stream whose cap depends on what its first bytes turn out to be. The fetch chain's
+ * Reads a stream whose cap depends on what its content turns out to be. The fetch chain's
  * step 1 needs exactly this: a PDF is read at MAX_PDF_BYTES, but a PDF served under a wrong or
  * absent Content-Type only announces itself in the `%PDF-` magic at the start of the body, so
- * the cap cannot be fixed before the first chunk arrives.
+ * the cap cannot be fixed before a real prefix of it has arrived. Returns the cap it actually
+ * used, so a caller that based a second decision (is this body a PDF at all?) on the same
+ * bytes doesn't have to re-derive it from scratch.
  */
 export function readBoundedBytesByCap(
   body: ReadableStream<Uint8Array> | null,
-  chooseCap: (firstChunk: Uint8Array) => number,
-): Promise<BoundedBytes> {
+  chooseCap: (prefix: Uint8Array) => number,
+): Promise<BoundedBytesByCap> {
   return readBounded(body, chooseCap)
 }
 
@@ -122,11 +171,14 @@ export async function readCappedText(stream: ReadableStream<Uint8Array> | null, 
 }
 
 /**
- * Reads a response body as text under `capBytes`, with a `content-length` early-out so an
- * over-cap body the origin declared up front is never pulled a single byte. Partial text is
- * kept on truncation, same contract as readBoundedBytes. `onOversized` fires with the numbers
- * the moment the cap trips, so an operator can see a body was cut — it is the caller's own
- * logger, injected to keep this module env-free.
+ * Reads a response body as text under `capBytes`, decoded in one pass once the bytes are in
+ * hand. No `content-length` early-out: the streaming cap below already bounds the read, and an
+ * origin that over-states its own `content-length` (a misconfigured proxy, a stale cache
+ * header) must not turn an otherwise-readable body into a miss before a single byte is pulled.
+ * Partial text is kept on truncation, same contract as readBoundedBytes. `onOversized` fires
+ * with the numbers the moment the cap trips, so an operator can see a body was cut — it is the
+ * caller's own logger, injected to keep this module env-free. Built on readBoundedBytes rather
+ * than a second "never buffer past the cap" loop, so there is exactly one home for that logic.
  */
 export async function readBoundedText(
   res: Response,
@@ -137,34 +189,7 @@ export async function readBoundedText(
   // A 204/304 or a HEAD has no body: res.text() returned '' for these, and so does this.
   if (!body) return { text: '', truncated: false }
 
-  const declared = Number(res.headers.get('content-length') ?? '')
-  if (Number.isFinite(declared) && declared > capBytes) {
-    await body.cancel().catch(() => {})
-    onOversized?.({ capBytes, declaredBytes: declared })
-    return { text: '', truncated: true }
-  }
-
-  const reader = body.getReader()
-  const decoder = new TextDecoder()
-  let bytes = 0
-  let text = ''
-  try {
-    for (;;) {
-      const { done, value } = await reader.read()
-      if (done) break
-      const next = bytes + value.byteLength
-      if (next > capBytes) {
-        await reader.cancel().catch(() => {})
-        onOversized?.({ capBytes, readBytes: next })
-        return { text, truncated: true }
-      }
-      bytes = next
-      text += decoder.decode(value, { stream: true })
-    }
-    return { text: text + decoder.decode(), truncated: false }
-  } finally {
-    // A body that errors mid-read (a dropped connection) must release the reader too, and the
-    // error still reaches the caller — a truncated body is not a substitute for a throw.
-    reader.releaseLock()
-  }
+  const { bytes, truncated } = await readBoundedBytes(body, capBytes)
+  if (truncated) onOversized?.({ capBytes, readBytes: bytes.length })
+  return { text: new TextDecoder().decode(bytes), truncated }
 }

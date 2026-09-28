@@ -57,21 +57,38 @@ describe('readBoundedBytes', () => {
 })
 
 describe('readBoundedBytesByCap', () => {
-  it('re-decides the cap from the first chunk when it is too large for the base cap', async () => {
-    // The origin case: the first chunk announces a PDF, so the cap chosen from it is far above
-    // the 4-byte base cap the chooser would otherwise apply — the whole body is read.
-    const { bytes, truncated } = await readBoundedBytesByCap(
+  it('re-decides the cap from the buffered prefix when it is too large for the base cap', async () => {
+    // The origin case: the prefix announces a PDF, so the cap chosen from it is far above the
+    // 4-byte base cap the chooser would otherwise apply — the whole body is read.
+    const { bytes, truncated, cap } = await readBoundedBytesByCap(
       byteStream([[1, 2, 3], [4, 5, 6]]),
-      (first) => (first[0] === 1 ? 100 : 4),
+      (prefix) => (prefix[0] === 1 ? 100 : 4),
     )
     expect(truncated).toBe(false)
+    expect(cap).toBe(100)
     expect(Array.from(bytes)).toEqual([1, 2, 3, 4, 5, 6])
   })
 
   it('cuts at the chosen cap, keeping the partial bytes', async () => {
-    const { bytes, truncated } = await readBoundedBytesByCap(byteStream([[7, 8, 9], [10, 11]]), () => 3)
+    const { bytes, truncated, cap } = await readBoundedBytesByCap(byteStream([[7, 8, 9], [10, 11]]), () => 3)
     expect(truncated).toBe(true)
+    expect(cap).toBe(3)
     expect(Array.from(bytes)).toEqual([7, 8, 9])
+  })
+
+  it('does not decide the cap on a single sub-prefix-sized first chunk — a mislabeled body delivered one byte per chunk still gets the right cap', async () => {
+    // Delivers 16 one-byte chunks that spell a PDF magic, then a run past MAX_BODY_BYTES worth
+    // of filler as a second, single big chunk. The first chunk alone is far short of the 8-byte
+    // decision prefix, so a chooser keyed on "first chunk only" would see a single 0x25 byte and
+    // guess wrong; keyed on the buffered prefix it sees the whole magic and picks the high cap.
+    const magic = Array.from(new TextEncoder().encode('%PDF-1.7'))
+    const chunks = magic.map((byte) => [byte])
+    const filler = new Uint8Array(20).fill(0x20)
+    const { truncated, cap } = await readBoundedBytesByCap(byteStream([...chunks, Array.from(filler)]), (prefix) =>
+      prefix.length >= 8 && prefix[0] === 0x25 ? 1000 : 4,
+    )
+    expect(cap).toBe(1000)
+    expect(truncated).toBe(false)
   })
 })
 
@@ -90,16 +107,12 @@ describe('readBoundedText', () => {
     expect(text).toBe('hello world')
   })
 
-  it('short-circuits on a declared content-length over the cap, pulling no bytes', async () => {
-    const res = new Response(textStream(['never read']), { headers: { 'content-length': '1000' } })
-    const { text, truncated } = await readBoundedText(res, 10)
-    expect(truncated).toBe(true)
-    expect(text).toBe('')
-  })
-
-  it('ignores a content-length at or under the cap and reads normally', async () => {
-    const res = new Response(textStream(['hi']), { headers: { 'content-length': '2' } })
-    const { text, truncated } = await readBoundedText(res, 2)
+  it('never trusts a content-length header — an over-stated one does not turn a readable body into a miss', async () => {
+    // An origin can lie in either direction; the streaming cap is what bounds the read, not the
+    // header, so a body that is actually small still reads in full even under a wildly
+    // over-stated content-length.
+    const res = new Response(textStream(['hi']), { headers: { 'content-length': '1000' } })
+    const { text, truncated } = await readBoundedText(res, 100)
     expect(truncated).toBe(false)
     expect(text).toBe('hi')
   })
@@ -114,7 +127,7 @@ describe('readBoundedText', () => {
     const calls: OversizedInfo[] = []
     const res = new Response(textStream(['hello', ' world', ' extra']), {})
     await readBoundedText(res, 11, (info) => calls.push(info))
-    expect(calls).toEqual([{ capBytes: 11, readBytes: 17 }])
+    expect(calls).toEqual([{ capBytes: 11, readBytes: 11 }])
   })
 
   it('releases the stream lock on every path', async () => {

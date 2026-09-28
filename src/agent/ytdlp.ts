@@ -155,8 +155,8 @@ export async function fetchYoutubeTranscript(
       }
       // Bounded like every other network body — a cut caption track is not a transcript, so it
       // is a miss (return null), never a reason to hand parseJson3 a truncated document.
-      const bounded = await readBoundedText(res, MAX_BODY_BYTES, (info) =>
-        log('tool.ytdlp', { jobId, url: watchUrl, via: 'oversized', ...info }),
+      const bounded = await readBoundedText(res, MAX_BODY_BYTES, (oversizedInfo) =>
+        log('tool.ytdlp', { jobId, url: watchUrl, via: 'oversized', ...oversizedInfo }),
       )
       if (bounded.truncated) {
         log('tool.ytdlp', { jobId, url: watchUrl, ok: false, error: `caption track exceeds ${MAX_BODY_BYTES} byte cap`, extractMs })
