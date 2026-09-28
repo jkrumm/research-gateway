@@ -1,7 +1,8 @@
-import type { Finding, Grounding, ResearchReport, SubmittedReport, WorkerDigest } from './schema.js'
+import type { Finding, Grounding, ResearchReport, SubmittedReport, UnverifiedEntry, WorkerDigest } from './schema.js'
 import { normalizeUrl } from './ledger.js'
 import type { RetrievalLedger, RetrievalTier } from './ledger.js'
 import { unmatchedNumbers } from './numbers.js'
+import { scrubBody } from './body-mentions.js'
 
 // Grounding — the code-side gate between what a model CLAIMS it verified and what the run
 // actually retrieved. Applied twice: at the worker boundary (findings, before they can
@@ -57,7 +58,7 @@ function capConfidence(asserted: Confidence, ceiling: Confidence): Confidence {
 
 export interface GroundedClaims {
   kept: Finding[]
-  dropped: Array<{ topic: string; url: string | null; reason: string }>
+  dropped: UnverifiedEntry[]
   // Indices into `kept` of the claims whose confidence this gate lowered — held as
   // positions, not a count, so the job boundary can union them with the subject-degrade
   // pass's indices and never double-count a claim that was capped here and degraded there.
@@ -353,11 +354,9 @@ export function degradeClaimsOnUnverifiedSources(
   return { kept, degraded }
 }
 
-function dedupeUnverified(
-  entries: ReadonlyArray<{ topic: string; url: string | null; reason: string }>,
-): Array<{ topic: string; url: string | null; reason: string }> {
+function dedupeUnverified(entries: ReadonlyArray<UnverifiedEntry>): UnverifiedEntry[] {
   const seen = new Set<string>()
-  const out: Array<{ topic: string; url: string | null; reason: string }> = []
+  const out: UnverifiedEntry[] = []
   for (const entry of entries) {
     const key = `${entry.url ?? ''}\u0000${entry.topic.trim().toLowerCase()}`
     if (seen.has(key)) continue
@@ -370,12 +369,22 @@ function dedupeUnverified(
 // A `partial` report is one where evidence was demonstrably lost. Prepending the banner to
 // the markdown matters as much as the `status` field: a consuming agent that reads only the
 // prose (every text-only MCP client does) must still see that the run degraded.
-function banner(grounding: Grounding): string {
+// `annotated` is a parameter rather than read off `Grounding` because the scrub count is
+// computed from the FINAL unverified set, after the ledger-vindication detachment — it is not
+// a ledger tally. It must be passed in: a body-scrub-only degradation (one clean citation,
+// plus prose naming a source that was never fetched, so it is not in the ledger's `failed`
+// list either) otherwise leaves `parts` empty and emits a banner reading "Partial result —
+// evidence was lost during this run. . Anything below…" — a malformed sentence that names no
+// cause at all.
+function banner(grounding: Grounding, annotated: number): string {
   const parts: string[] = []
   if (grounding.citationsDropped > 0) {
     parts.push(
       `${grounding.citationsDropped} claim(s) were dropped because the pages backing them could not be retrieved`,
     )
+  }
+  if (annotated > 0) {
+    parts.push(`${annotated} source(s) named in the report body could not be verified and are flagged inline below`)
   }
   if (grounding.pagesRetrieved === 0 && grounding.pagesMissing > 0) {
     // A 404-only run is not a loss of evidence: the origin's answer IS the evidence, and an
@@ -477,6 +486,15 @@ export function groundReport(
     }
   })
 
+  // The prose is scrubbed against the FINAL unverified set: an entry whose URL was vindicated
+  // by the ledger is detached above precisely so it can support citations — flagging mentions
+  // of it in the body would contradict the citation next to it.
+  //
+  // A scrub note is evidence lost, exactly like a dropped citation: the body named a source
+  // this run could not verify. It therefore feeds `degradedRun` — without that, issue #7 is
+  // only half closed and the contradiction still ships under `status: ok`.
+  const scrubbed = scrubBody(submitted.report, unverified)
+
   // A `partial` report is one where evidence was demonstrably LOST — a citation dropped for
   // lack of a retrieved source, nothing retrievable at all, or failures outnumbering the
   // pages that were read. A subject-degraded citation is a confidence cap, not lost evidence:
@@ -486,10 +504,16 @@ export function groundReport(
   // (docs/architecture-review-2026-09.md §2b).
   const degradedRun =
     grounding.citationsDropped > 0 ||
+    scrubbed.annotated > 0 ||
     (grounding.pagesRetrieved === 0 && grounding.pagesMissing === 0) ||
     grounding.pagesFailed > grounding.pagesRetrieved
 
   const warnings: string[] = []
+  if (scrubbed.annotated > 0) {
+    warnings.push(
+      `${scrubbed.annotated} source(s) named in the report body could not be verified; each is flagged inline in the prose.`,
+    )
+  }
   if (grounding.citationsDropped > 0) {
     warnings.push(
       `${grounding.citationsDropped} citation(s) were removed: their URLs were never retrieved in this run or their fetch failed.`,
@@ -528,7 +552,7 @@ export function groundReport(
 
   return {
     ...submitted,
-    report: degradedRun ? banner(grounding) + submitted.report : submitted.report,
+    report: degradedRun ? banner(grounding, scrubbed.annotated) + scrubbed.body : scrubbed.body,
     citations: kept,
     sources,
     unverified,
