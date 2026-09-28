@@ -368,6 +368,16 @@ describe('mapCoreWork', () => {
 })
 
 describe('normalizeDoi', () => {
+  it('accepts a doi.org link whose tracking query pushes the raw input past 300 chars', () => {
+    const url = `https://doi.org/10.5194/acp-21-1-2021?${'utm_source=x&'.repeat(40)}`
+    expect(url.length).toBeGreaterThan(300)
+    expect(normalizeDoi(url)).toBe('10.5194/acp-21-1-2021')
+  })
+
+  it('still rejects a raw input beyond the loose bound without doing any work', () => {
+    expect(normalizeDoi(`10.1234/${'a'.repeat(3000)}`)).toBeNull()
+  })
+
   it('accepts a bare DOI', () => {
     expect(normalizeDoi('10.5194/npg-30-503-2023')).toBe('10.5194/npg-30-503-2023')
   })

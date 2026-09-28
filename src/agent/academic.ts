@@ -65,16 +65,20 @@ export function stripTrailer(s: string): string {
 // scraped citation dragging along thousands of trailing characters) before doing any work on
 // it at all, rather than relying on stripTrailer alone to stay cheap.
 const MAX_DOI_INPUT_LENGTH = 300
+// The raw input may carry a doi.org wrapper plus a long tracking query/fragment that is stripped
+// below, so the raw bound is looser; stripDoiTrailer is linear, so this stays cheap.
+const MAX_RAW_DOI_INPUT_LENGTH = 2048
 
 /** Strips a `doi:` prefix or a `https://doi.org/`/`https://dx.doi.org/` wrapper and validates what remains. Returns null for anything that is not a DOI at all. */
 export function normalizeDoi(input: string): string | null {
-  if (input.length > MAX_DOI_INPUT_LENGTH) return null
+  if (input.length > MAX_RAW_DOI_INPUT_LENGTH) return null
   const stripped = stripDoiTrailer(
     input
       .trim()
       .replace(/^doi:\s*/i, '')
       .replace(/^https?:\/\/(dx\.)?doi\.org\//i, ''),
   )
+  if (stripped.length > MAX_DOI_INPUT_LENGTH) return null
   return DOI_RE.test(stripped) ? stripped : null
 }
 
