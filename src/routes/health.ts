@@ -4,8 +4,8 @@ import { env } from '../env.js'
 import { fetchTavilyUsage } from '../lib/tavily-account.js'
 import { restartStats, isDraining, jobCounts } from '../lib/job-store.js'
 import { memorySnapshot } from '../lib/memory-watch.js'
-import { loopSnapshot } from '../lib/loop-watch.js'
-import { pdfExtractionSemaphore } from '../agent/pdf-semaphore.js'
+import { loopSnapshot, SAMPLE_INTERVAL_MS } from '../lib/loop-watch.js'
+import { pdfExtractionSemaphore, PDF_EXTRACTION_CONCURRENCY } from '../agent/pdf-semaphore.js'
 
 async function readYtdlpVersion(): Promise<string> {
   const proc = Bun.spawn([env.YTDLP_PATH, '--version'], {
@@ -87,7 +87,7 @@ export const healthRoute = new Elysia()
           queued: z.number().describe('Jobs waiting for a concurrency slot'),
         }),
         pdf: z.object({
-          active: z.number().describe('pdftotext subprocesses currently running (pdf-semaphore.ts, cap 2)'),
+          active: z.number().describe(`pdftotext subprocesses currently running (pdf-semaphore.ts, cap ${PDF_EXTRACTION_CONCURRENCY})`),
           queued: z.number().describe('PDF extractions waiting for a subprocess slot'),
         }),
         memory: z
@@ -107,7 +107,7 @@ export const healthRoute = new Elysia()
           .number()
           .nullable()
           .describe(
-            'How late the last event-loop sample fired against its 5s interval — the one in-process signal that this Bun process\'s single event loop was starved by synchronous work (large-page parsing). Null before the first sample. Nothing gates on this.',
+            `How late the last event-loop sample fired against its ${SAMPLE_INTERVAL_MS / 1000}s interval — the one in-process signal that this Bun process's single event loop was starved by synchronous work (large-page parsing). Null before the first sample. Nothing gates on this.`,
           ),
         eventLoopLagPeakMs: z
           .number()

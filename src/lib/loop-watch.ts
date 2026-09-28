@@ -27,7 +27,9 @@ import { log } from './log.js'
 // as an injectable clock/scheduler specifically so that part does not have to wait on this
 // file's own env-parsing chain — see loop-watch.test.ts.
 
-const SAMPLE_INTERVAL_MS = 5_000
+// Exported so `/health`'s schema description (routes/health.ts) can name the real interval
+// instead of a number hand-copied there that would silently go stale the next time this changes.
+export const SAMPLE_INTERVAL_MS = 5_000
 const LAG_THRESHOLD_MS = 1_000
 // How many samples `loopSnapshot` reports a peak over. 12 samples is a minute: longer than any
 // monitor's poll interval, short enough that a peak still means "recently". See LoopSnapshot.
