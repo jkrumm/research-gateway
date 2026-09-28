@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'bun:test'
+import { describe, it, expect, spyOn } from 'bun:test'
 import { createRateGate } from './rate-gate.js'
 
 const tick = (ms = 0) => new Promise((resolve) => setTimeout(resolve, ms))
@@ -47,6 +47,25 @@ describe('createRateGate', () => {
     expect(starts.length).toBe(3)
     expect(starts[1]! - starts[0]!).toBeGreaterThanOrEqual(45) // small slack for timer jitter
     expect(starts[2]! - starts[1]!).toBeGreaterThanOrEqual(45)
+  })
+
+  it('never waits on the first call, even at a nonzero fake clock reading (boot regression)', async () => {
+    const nowSpy = spyOn(performance, 'now').mockReturnValue(100)
+    const originalSetTimeout = globalThis.setTimeout
+    let setTimeoutCalled = false
+    const setTimeoutSpy = spyOn(globalThis, 'setTimeout').mockImplementation(((cb: () => void, ms?: number) => {
+      setTimeoutCalled = true
+      return originalSetTimeout(cb, ms)
+    }) as typeof setTimeout)
+    try {
+      const gate = createRateGate(3000)
+      const result = await gate(() => Promise.resolve('ok'))
+      expect(result).toBe('ok')
+      expect(setTimeoutCalled).toBe(false)
+    } finally {
+      nowSpy.mockRestore()
+      setTimeoutSpy.mockRestore()
+    }
   })
 
   it('rejects a non-finite or negative minIntervalMs rather than silently misbehaving', () => {
