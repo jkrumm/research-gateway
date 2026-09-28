@@ -1,4 +1,3 @@
-import { assertPublicHttpUrl } from '../lib/ssrf.js'
 import { log } from '../lib/log.js'
 import { createContext } from './fetch-chain/context.js'
 import { runOriginStage } from './fetch-chain/origin.js'
@@ -75,7 +74,7 @@ export async function runFetchChain(url: string, opts: FetchChainOptions): Promi
   // SSRF guard — refuse any non-public URL before making any fetch. Guards the address
   // actually dialled, not the one asked for.
   try {
-    await assertPublicHttpUrl(ctx.fetchUrl)
+    await ctx.assertPublicUrl(ctx.fetchUrl)
   } catch (err) {
     ctx.ledger.recordFailed(url, `refused: ${String(err)}`)
     log('tool.fetchPage', { jobId: ctx.jobId, url, via: 'refused' })

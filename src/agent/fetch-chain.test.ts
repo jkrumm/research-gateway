@@ -34,6 +34,15 @@ function stubTavilyFail(errorMsg = 'stubbed: no tavily in tests'): NonNullable<F
 // or the chain falls through to the REAL `impersonatedFetch`, which touches the native impit
 // binding and the real network. Tests that don't care about the rung use this: an immediate
 // failure that puts the chain back on exactly the path it took before the rung existed.
+// The SSRF guard's own injectable seam (net.ts's `assertPublicUrl` parameter, threaded through
+// `ctx.assertPublicUrl`) — production never sets this. A test that must exercise a REAL
+// hostname (`resolveSite` is keyed on the actual host, so a site-adapter fixture can't use a
+// TEST-NET literal) injects this no-op instead, so the SSRF check's `node:dns` lookup never
+// runs and the suite stays offline/deterministic.
+function stubAssertPublicUrlOk(): NonNullable<FetchChainOptions['assertPublicUrl']> {
+  return async () => {}
+}
+
 function stubImpersonateUnavailable(): NonNullable<FetchChainOptions['impersonatedFetch']> {
   return async () => {
     throw new Error('stub: impersonation not available in this test')
@@ -1010,10 +1019,11 @@ describe('real pdftotext extraction (fixtures)', () => {
 // ── arXiv HTML→PDF fallback (origin.ts consuming site.fallbackUrl) ────────────────────────
 // The real `arxiv.org` hostname is used deliberately, not a TEST-NET literal: `resolveSite`
 // is keyed on the actual hostname, and only a genuine arXiv URL exercises `arxivAdapter.plan`'s
-// real `fallbackUrl` — the thing this fallback-wiring is actually about. That pulls in one real
-// DNS lookup per test (`assertPublicHttpUrl`, resolving to arXiv's own stable Fastly IPs, never
-// a private range) — the only place this file touches the real network; the page fetch itself
-// stays stubbed via `stubFetch` like every other test here.
+// real `fallbackUrl` — the thing this fallback-wiring is actually about. That hostname would
+// otherwise cost a real `node:dns` lookup per origin/wayback hop (`assertPublicHttpUrl`) — every
+// test below injects `stubAssertPublicUrlOk()` instead, so the suite stays offline/deterministic
+// even though it is exercising a real hostname; the page fetch itself stays stubbed via
+// `stubFetch` like every other test here.
 describe('arXiv HTML→PDF fallback (origin.ts consuming site.fallbackUrl)', () => {
   const CITED_URL = 'https://arxiv.org/abs/2309.04452'
   const HTML_URL = 'https://arxiv.org/html/2309.04452'
@@ -1037,6 +1047,7 @@ describe('arXiv HTML→PDF fallback (origin.ts consuming site.fallbackUrl)', () 
       hostGate: createHostGate(),
       tavilyExtract: stubTavilyFail(),
       impersonatedFetch: stubImpersonateUnavailable(),
+      assertPublicUrl: stubAssertPublicUrlOk(),
     })
 
     expect(result.via).toBe('pdf')
@@ -1061,6 +1072,7 @@ describe('arXiv HTML→PDF fallback (origin.ts consuming site.fallbackUrl)', () 
       hostGate: createHostGate(),
       tavilyExtract: stubTavilyFail(),
       impersonatedFetch: stubImpersonateUnavailable(),
+      assertPublicUrl: stubAssertPublicUrlOk(),
     })
 
     expect(result.via).toBeNull()
@@ -1081,6 +1093,7 @@ describe('arXiv HTML→PDF fallback (origin.ts consuming site.fallbackUrl)', () 
       hostGate: createHostGate(),
       tavilyExtract: stubTavilyFail(),
       impersonatedFetch: stubImpersonateUnavailable(),
+      assertPublicUrl: stubAssertPublicUrlOk(),
     })
 
     expect(result.via).toBe('readability')

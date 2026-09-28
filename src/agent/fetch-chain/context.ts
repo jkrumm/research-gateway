@@ -4,6 +4,7 @@ import { capText, TEXT_CAP } from '../extract.js'
 import { resolveSite } from '../site-adapters.js'
 import { log } from '../../lib/log.js'
 import { getActiveSpan } from '../../lib/otel.js'
+import { assertPublicHttpUrl } from '../../lib/ssrf.js'
 import type { RetrievalLedger } from '../ledger.js'
 import { policyFor, type ChainStage, type HostPolicy } from '../host-policy.js'
 import { createHostGate, type HostGate } from '../host-gate.js'
@@ -89,6 +90,10 @@ export interface ChainContext {
   readonly tavilyExtract: NonNullable<FetchChainOptions['tavilyExtract']>
   readonly impersonatedFetcher: Fetcher
   readonly impersonationMemory: ImpersonationMemory
+  /** The SSRF guard every `safeFetch` hop (and the top-level pre-flight check in
+   * fetch-chain.ts) runs a URL through. Defaults to the real `lib/ssrf.ts` check —
+   * `opts.assertPublicUrl` is the test-only override (types.ts's header comment). */
+  readonly assertPublicUrl: (url: string) => Promise<void>
   readonly renderBaseUrl: string | undefined
   /** One budget for the WHOLE chain (see FETCH_CHAIN_BUDGET_MS), aborted into every network
    * step. Combines `opts.signal` (the job/tool abort) on top of it — cancelling the job must
@@ -155,6 +160,7 @@ export function createContext(url: string, opts: FetchChainOptions): ChainContex
   const tavilyExtract = opts.tavilyExtract ?? tvly.extract
   const impersonatedFetcher: Fetcher = opts.impersonatedFetch ?? defaultImpersonatedFetch
   const impersonationMemory: ImpersonationMemory = opts.impersonationMemory ?? defaultImpersonationMemory
+  const assertPublicUrl = opts.assertPublicUrl ?? assertPublicHttpUrl
   const ledger = opts.ledger
   const attempts: FetchAttempt[] = []
 
@@ -262,7 +268,12 @@ export function createContext(url: string, opts: FetchChainOptions): ChainContex
     // passes the fallback address explicitly on a fallback success — recording `fetchUrl`
     // there would be a FALSE retrieved claim on an address that actually answered 404/410.
     if (dialledUrl !== url) ledger.recordRetrieved(dialledUrl)
-    return { url, fetchUrl, via, text: capText(text, TEXT_CAP), error: null, attempts }
+    // `fetchUrl` on the RESULT is `dialledUrl`, not the closure's `fetchUrl` (the site
+    // adapter's originally PLANNED address) — on an origin fallback success those two differ,
+    // and probe.ts/fetch-bench.ts/tools.ts all read this field as "the URL actually dialled".
+    // Reporting the planned address there would name the one that 404'd, not the one that
+    // answered.
+    return { url, fetchUrl: dialledUrl, via, text: capText(text, TEXT_CAP), error: null, attempts }
   }
 
   return {
@@ -278,6 +289,7 @@ export function createContext(url: string, opts: FetchChainOptions): ChainContex
     tavilyExtract,
     impersonatedFetcher,
     impersonationMemory,
+    assertPublicUrl,
     renderBaseUrl,
     budget,
     budgetMs,
