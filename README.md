@@ -37,9 +37,10 @@ talk to — and plain bearer HTTP for everything else (Hermes, scripts, curl).
 - **Tools:** two kinds, and the split is the point.
   - *Source-of-truth lookups* — `packageInfo` (npm, PyPI, crates.io, the Go module proxy,
     Docker Hub), `githubFile`, `githubRepo`, `findPackages`, `academicSearch` (OpenAlex,
-    PubMed), `findVideos` (YouTube via a bundled `yt-dlp`), `libraryDocs` (Context7, when
-    `CONTEXT7_API_KEY` is set). These answer a question exactly instead of approximately, and
-    workers are told to reach for them first.
+    PubMed, arXiv, Crossref, CORE — keyless; `unpaywall` and `semanticscholar` join the source
+    enum only when `ACADEMIC_CONTACT_EMAIL` / `S2_API_KEY` are set), `findVideos` (YouTube via
+    a bundled `yt-dlp`), `libraryDocs` (Context7, when `CONTEXT7_API_KEY` is set). These answer
+    a question exactly instead of approximately, and workers are told to reach for them first.
   - *Open-web research* — `searchWeb` (Perplexity Sonar over the IU endpoint by default, Tavily
     as the per-call fallback) plus `fetchPage`, for everything the lookups cannot answer.
 - **Grounding:** a retrieval ledger records what each tool actually returned; findings and
@@ -59,7 +60,7 @@ talk to — and plain bearer HTTP for everything else (Hermes, scripts, curl).
 | Endpoint | Auth | Body / Params | Returns |
 |-|-|-|-|
 | `GET /` | public | — | discovery: the public route list, `/openapi`, the MCP tools |
-| `GET /health` | public | — | `{ status: "ok", lastRestartAt, resumed, failedAfterRestarts }` — only `status` gates anything (the mini's deploy poller, a keyword monitor); the counts show adoption/crash-loop activity. Also carries `draining`, `jobs`, `degraded`, the memory ratio and `eventLoopLagMs` / `eventLoopLagPeakMs`. See [Restarts](#restarts-and-what-they-cost) |
+| `GET /health` | public | — | `{ status: "ok", lastRestartAt, resumed, failedAfterRestarts }` — only `status` gates anything (the mini's deploy poller, a keyword monitor); the counts show adoption/crash-loop activity. Also carries `draining`, `jobs`, `degraded`, the memory ratio and `eventLoopLagMs` / `eventLoopLagPeakMs` — the event-loop watchdog's timer-drift samples (`lib/loop-watch.ts`), the one in-process signal that this single-loop process was starved by synchronous work. See [Restarts](#restarts-and-what-they-cost) |
 | `GET /health/render` | public | — | `{ renderer, active, queued, error }` — the sidecar. **Deliberately not part of `/health`**: the renderer is optional, and a broken one must not block deploys of a gateway that is otherwise fine |
 | `GET /health/tavily` | public | — | live account state from `api.tavily.com/usage` incl. `overPlan` — crossing into pay-as-you-go was otherwise silent |
 | `GET /health/ytdlp` | public | — | `{ ytdlp, version, error }` — `yt-dlp --version` inside the container |
@@ -193,6 +194,9 @@ do not mock env. `scripts/smoke.ts` runs one `runResearch()` end to end without 
 | `LIGHTPANDA_URL` | no (off) | the JavaScript-rendering sidecar, e.g. `http://research-gateway-lightpanda:7781`. Unset takes the renderer out of the chain — the gateway must run without it |
 | `CONTEXT7_API_KEY` | no | enables `libraryDocs` |
 | `GITHUB_TOKEN` | no | anonymous GitHub is **60 req/h per IP** shared across all jobs; a no-scope token raises it to 5000/h. Empty is treated as unset |
+| `ACADEMIC_CONTACT_EMAIL` | no | enables the `unpaywall` `academicSearch` source (unpaywall requires a real contact address, and blocklists `@example.com`) and joins Crossref's "polite pool". Empty is treated as unset |
+| `CORE_API_KEY` | no | raises CORE's search-API rate limit above the keyless 100 tokens/day, 10/min — the `core` source works without it |
+| `S2_API_KEY` | no | enables the `semanticscholar` `academicSearch` source — unauthenticated calls measure a 429 on the first request, so it is not offered without a key |
 | `ARGO_USAGE_URL` / `ARGO_API_SECRET` | no | spend telemetry → argo `POST /usage/records`; no-op if either is unset |
 | `USAGE_SINK` | no (`argo`) | `argo` \| `jsonl` — `jsonl` appends each record to `USAGE_JSONL_PATH` for the mini's local usage-tracker instead of POSTing (it syncs to argo; posting to both duplicates rows) |
 | `USAGE_JSONL_PATH` | for `jsonl` | absolute JSONL path; no code default — the mini's launcher sets it. Unset with `USAGE_SINK=jsonl` logs `usage.sink_failed` and falls back to argo |
@@ -242,7 +246,7 @@ as it decides to (there is no step cap since 2026-09-12), not as much as it is g
 | a repo file, verbatim | `githubFile` | api.github.com |
 | is a project alive, latest release, archived | `githubRepo` | api.github.com |
 | which library for X | `findPackages` | npm search · GitHub search |
-| who published what, what year, how many citations, is there a paper on X | `academicSearch` + `openalex` / `pubmed` / `arxiv` / `crossref` / `core` (`unpaywall` when `ACADEMIC_CONTACT_EMAIL` is set, `semanticscholar` when `S2_API_KEY` is set) | api.openalex.org · eutils.ncbi.nlm.nih.gov · export.arxiv.org · api.crossref.org · api.core.ac.uk · api.unpaywall.org · api.semanticscholar.org (429s unauthenticated) |
+| who published what, what year, how many citations, and the paper itself | `academicSearch` + `openalex` / `pubmed` / `arxiv` / `crossref` / `core` (keyless; `unpaywall` / `semanticscholar` join only with `ACADEMIC_CONTACT_EMAIL` / `S2_API_KEY` set — Semantic Scholar 429s unauthenticated) | api.openalex.org · eutils.ncbi.nlm.nih.gov · export.arxiv.org (rate-gated: 1 req/3s) · api.crossref.org · api.core.ac.uk · api.unpaywall.org · api.semanticscholar.org (rate-gated: 1 req/s) |
 | best open-access location for a DOI | `academicSearch` + `unpaywall` | api.unpaywall.org — read it, then `fetchPage` the OA URL to earn a `high`-confidence citation |
 | what a practitioner said, at length, out loud | `findVideos` | `yt-dlp` search, keyless; `fetchPage` on a watch URL returns the transcript |
 | current API surface of a library | `libraryDocs` | Context7 |
@@ -264,8 +268,8 @@ that would fail on every call.
 |-|-|-|
 | 1. `@mozilla/readability` | ordinary article pages | serves the large majority; 404/410 short-circuit here (`response-kind.ts`) |
 | 1a. browser impersonation | origins that 403 our bot request at the TLS layer | `impersonate.ts` (`impit`, Chrome TLS/HTTP2 fingerprint + its UA). Only after a plain 401/403/503, never a 429; a host where it worked goes straight to it for 24h. Measured: idealo.de 403 → 200 |
-| 1b. PDF | `application/pdf` (by content-type or `%PDF-` magic bytes) | `agent/pdf.ts`: `pdftotext` (poppler-utils), default layout mode (not `-layout` — measured, see the file's header), 25 MB input cap (`MAX_PDF_BYTES`). Bytes never decoded as text; skips the renderer; over-cap or a thin/scanned extraction falls to Tavily Extract, never a negative claim |
-| 2. site adapter | pages the generic path structurally cannot read | `site-adapters.ts`: Reddit (`old.reddit.com`), dpreview forum threads, YouTube (yt-dlp transcript), arXiv (`/abs/`, `/pdf/` rewritten to the LaTeXML `/html/` build, with the PDF as an automatic fallback on a 404/410) |
+| 1b. `pdftotext` | a PDF (by Content-Type or `%PDF-` magic) | `pdf.ts`, poppler, bytes never decoded as text; skips the renderer; a scanned PDF below the floor falls to Tavily Extract. Bounded process-wide to 2 concurrent extractions (`pdf-semaphore.ts`) and an idle watchdog (no output for 60s, not a flat wall-clock kill) instead of a fixed timeout; output cut at its own byte cap is reported honestly as truncated, not silently returned as the whole paper |
+| 2. site adapter | pages the generic path structurally cannot read | `site-adapters.ts`: Reddit (`old.reddit.com`), dpreview forum threads, YouTube (yt-dlp transcript), arXiv (`arxiv.org/abs\|pdf/<id>` rewritten to the LaTeXML HTML build, equations kept as LaTeX and tables as real rows instead of prose-flattened or PDF-glyph-reconstructed, with the PDF as an automatic fallback on a 404/410) |
 | 3. lightpanda sidecar | pages whose text is not in the HTML at all | self-hosted browser, own container and memory budget; on when `LIGHTPANDA_URL` is set — skipped for a PDF, a browser cannot read one any better |
 | 4. Tavily Extract | static pages Readability could not parse | costs a credit |
 | 5. human solve (mini) | Cloudflare/anti-bot challenges nothing automated passes | `human-solve.ts` + `bin/solver.ts`: a dialog on the MacBook, **Open** → Screen Sharing into the mini, solve in the mini's dedicated solver Chrome; the page comes back from that browser. Only when this chain saw a block. A solved host is re-read through the same browser (no dialog) for 12h, so the clearance stays on the mini's IP. A browser-first attempt tries the solver Chrome alone before ever prompting a human, and is recorded `via: 'browser'`, never `'human'`, when it clears the page unassisted |
