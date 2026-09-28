@@ -262,7 +262,12 @@ const Env = z.object({
   // MEASURED 2026-08-06 from the VPS: YouTube rate-limits this datacenter IP under burst
   // (`HTTP Error 429` on a `--sub-langs` glob expansion). Bounded on purpose, not a tuning
   // default — raising it trades a slower queue for a higher chance of a 429 mid-job.
-  YTDLP_MAX_CONCURRENCY: z.coerce.number().default(2),
+  //
+  // `.int().min(1)` — this feeds `createSemaphore` (lib/semaphore.ts, via ytdlp.ts) directly as
+  // `limit`, which throws at construction time for anything <= 0. A 0/garbage value here must
+  // fail env parsing with a clear message at boot instead of crashing the process the first
+  // time ytdlp.ts's module scope runs `createSemaphore(env.YTDLP_MAX_CONCURRENCY, ...)`.
+  YTDLP_MAX_CONCURRENCY: z.coerce.number().int().min(1).default(2),
   // MEASURED 2026-08-06: a `-J` extraction + caption fetch completed in 3.6-4.2s per video
   // (three-video sample). 45s leaves headroom for a slow one without lingering forever on a
   // wedged process.
