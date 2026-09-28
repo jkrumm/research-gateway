@@ -947,7 +947,11 @@ describe('bounded body reads', () => {
 // (both import env.ts for their binary path — see AGENTS.md's Local dev section). The pure
 // mapping (`mapPdftotextResult`, `truncated`, `pdfTruncationNotice`) is unit-tested directly in
 // pdf-extract.test.ts; this covers the real subprocess wiring around it.
-describe('real pdftotext extraction (fixtures)', () => {
+// These run the real poppler binary. The mini has it; a CI runner without poppler skips them
+// visibly rather than failing — the chain's PDF logic is still covered by the stubbed tests above.
+const PDFTOTEXT_AVAILABLE = Bun.which(process.env['PDFTOTEXT_PATH'] ?? 'pdftotext') !== null
+
+describe.skipIf(!PDFTOTEXT_AVAILABLE)('real pdftotext extraction (fixtures)', () => {
   const FIXTURES = `${import.meta.dir}/__fixtures__`
   const readFixture = (name: string) => Bun.file(`${FIXTURES}/${name}`).arrayBuffer().then((b) => new Uint8Array(b))
 
@@ -1031,7 +1035,7 @@ describe('arXiv HTML→PDF fallback (origin.ts consuming site.fallbackUrl)', () 
   const FIXTURES = `${import.meta.dir}/__fixtures__`
   const readFixture = (name: string) => Bun.file(`${FIXTURES}/${name}`).arrayBuffer().then((b) => new Uint8Array(b))
 
-  it('falls back to the PDF fixture when the HTML build 404s, without a false missing record', async () => {
+  it.skipIf(!PDFTOTEXT_AVAILABLE)('falls back to the PDF fixture when the HTML build 404s, without a false missing record', async () => {
     const pdfBytes = await readFixture('paper.pdf')
     const requested: string[] = []
     stubFetch((u) => {
