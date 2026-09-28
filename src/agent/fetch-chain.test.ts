@@ -1144,6 +1144,49 @@ describe('arXiv HTML→PDF fallback (origin.ts consuming site.fallbackUrl)', () 
     expect(tavilyCalls[0]).toEqual([PDF_URL])
   })
 
+  // The wayback rescue dials `waybackLookupUrl(ctx.dialUrl)`, and `ctx.dialUrl` is the PDF
+  // fallback by the time this stage runs (the html build already 404d) — a DIFFERENT address
+  // than the one the top-of-chain `assertPublicHttpUrl(fetchUrl)` pre-flight validated. Proves
+  // that address is still re-checked: `safeFetch`'s own per-hop `assertPublicUrl` call covers
+  // its start URL, not only redirect targets (net.ts), so the wayback lookup built from the
+  // fallback is never dialled unchecked.
+  it('re-validates the pdf fallback address through assertPublicUrl before dialling the wayback rescue', async () => {
+    const RENDER = 'https://198.51.100.9'
+    const checkedUrls: string[] = []
+    const assertPublicUrl: NonNullable<FetchChainOptions['assertPublicUrl']> = async (u) => {
+      checkedUrls.push(u)
+    }
+
+    globalThis.fetch = (async (input: unknown) => {
+      const u = String(input)
+      if (u === HTML_URL) return new Response('not found', { status: 404 })
+      if (u === PDF_URL) return new Response('server error', { status: 500 })
+      if (u.startsWith(RENDER)) return new Response('sidecar down', { status: 500 })
+      // Everything else — including the wayback lookup — is a genuine miss; only whether
+      // `assertPublicUrl` saw the address before it was dialled is under test here.
+      return new Response('nope', { status: 404 })
+    }) as typeof fetch
+
+    const tavilyExtract: NonNullable<FetchChainOptions['tavilyExtract']> = async (urls) => ({
+      results: [],
+      failedResults: urls.map((u) => ({ url: u, error: 'stub' })),
+      responseTime: 0,
+      requestId: 'test',
+    })
+
+    const result = await runFetchChain(CITED_URL, {
+      ledger: createLedger(),
+      hostGate: createHostGate(),
+      renderBaseUrl: RENDER,
+      tavilyExtract,
+      impersonatedFetch: stubImpersonateUnavailable(),
+      assertPublicUrl,
+    })
+
+    expect(result.via).toBeNull()
+    expect(checkedUrls).toContain(`https://web.archive.org/web/9999/${PDF_URL}`)
+  })
+
   // The bug this closes: `runOrigin`'s `dialledUrl` parameter used to default to `ctx.fetchUrl`
   // (the ORIGINAL planned address), and `runOriginStage`'s impersonation-rung calls omit that
   // argument entirely — so once the html build 404'd and the chain fell through to the PDF
