@@ -30,6 +30,8 @@ const EMPTY_USAGE: UsageStats = {
   reasoningTokens: 0,
   cachedInputTokens: 0,
   durationMs: 0,
+  reportedCostUsd: 0,
+  unreportedCalls: 0,
 }
 
 function sumUsage(a: UsageStats, b: UsageStats): UsageStats {
@@ -40,6 +42,8 @@ function sumUsage(a: UsageStats, b: UsageStats): UsageStats {
     reasoningTokens: a.reasoningTokens + b.reasoningTokens,
     cachedInputTokens: a.cachedInputTokens + b.cachedInputTokens,
     durationMs: a.durationMs + b.durationMs,
+    reportedCostUsd: a.reportedCostUsd + b.reportedCostUsd,
+    unreportedCalls: a.unreportedCalls + b.unreportedCalls,
   }
 }
 

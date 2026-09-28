@@ -59,7 +59,16 @@ function report(overrides: Partial<ResearchReport> = {}): ResearchReport {
   }
 }
 
-const zeroUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0, reasoningTokens: 0, cachedInputTokens: 0, durationMs: 0 }
+const zeroUsage = {
+  inputTokens: 0,
+  outputTokens: 0,
+  totalTokens: 0,
+  reasoningTokens: 0,
+  cachedInputTokens: 0,
+  durationMs: 0,
+  reportedCostUsd: 0,
+  unreportedCalls: 0,
+}
 
 function checkpointFixture(overrides: Partial<ResearchCheckpoint> = {}): ResearchCheckpoint {
   return {

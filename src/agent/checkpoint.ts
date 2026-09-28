@@ -37,6 +37,8 @@ const UsageStatsSchema = z.object({
   reasoningTokens: z.number(),
   cachedInputTokens: z.number(),
   durationMs: z.number(),
+  reportedCostUsd: z.number(),
+  unreportedCalls: z.number(),
 })
 
 const ResearchCheckpointSchema = z.object({

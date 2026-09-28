@@ -14,6 +14,8 @@ const usage = (n: number) => ({
   reasoningTokens: 0,
   cachedInputTokens: 0,
   durationMs: n,
+  reportedCostUsd: 0,
+  unreportedCalls: 0,
 })
 
 const digest = (q: string): WorkerDigest => ({ findings: [], question: q }) as unknown as WorkerDigest
@@ -25,11 +27,12 @@ function okResult(qs: SubQuestion[], n: number): RoundResult {
     usage: usage(n),
     ledgers: [],
     failures: [],
+    undigested: [],
   }
 }
 
 function emptyResult(failures: string[]): RoundResult {
-  return { digests: [], usage: usage(0), ledgers: [], failures }
+  return { digests: [], usage: usage(0), ledgers: [], failures, undigested: [] }
 }
 
 const noSleep = () => Promise.resolve()
