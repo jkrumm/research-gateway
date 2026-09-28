@@ -13,9 +13,41 @@ const DOI_RE = /^10\.\d{4,9}\/\S+$/i
 // A model routinely hands this a DOI copied out of prose — trailing sentence punctuation
 // (`.,;:)]}`) or a `?query`/`#fragment` a link-shortened citation picked up is not part of the
 // DOI itself and must be stripped BEFORE `DOI_RE` runs, or the whole string fails to match and
-// a real DOI is reported as "not a DOI".
+// a real DOI is reported as "not a DOI". `.,;:` at the very end are always sentence
+// punctuation and stripped unconditionally, but a trailing `)`/`]`/`}` is NOT — old-style DOIs
+// (the SICI convention, e.g. `10.1002/(SICI)1097-4636(199706)35:4<477::AID-JBM9>3.0.CO;2-A`)
+// legitimately carry balanced brackets, and a DOI whose own suffix happens to end on one of
+// those closers must keep it. Only an UNBALANCED trailing closer — one more of that bracket
+// type closed than opened anywhere in the string, the signature of a sentence wrapping the
+// citation in parens — is sentence punctuation and gets stripped.
 function stripDoiTrailer(s: string): string {
-  return s.replace(/[?#].*$/, '').replace(/[.,;:)\]}]+$/, '')
+  return stripTrailer(s.replace(/[?#].*$/, ''))
+}
+
+// Recurses rather than loops: each round strips trailing `.,;:` unconditionally, then at most
+// one trailing UNBALANCED closer — stopping the moment a round changes nothing, which is also
+// what lets a real DOI ending on a BALANCED closer (the SICI case) survive untouched.
+function stripTrailer(s: string): string {
+  const withoutPunct = s.replace(/[.,;:]+$/, '')
+  const withoutCloser = stripUnbalancedCloser(withoutPunct)
+  return withoutCloser !== null ? stripTrailer(withoutCloser) : withoutPunct
+}
+
+// A trailing `)`/`]`/`}` is DOI content, not sentence punctuation, unless it is UNBALANCED —
+// more of that bracket closed than opened anywhere in the string, the signature of a sentence
+// wrapping the citation in parens. Returns null when there is nothing to strip.
+function stripUnbalancedCloser(s: string): string | null {
+  const last = s.at(-1)
+  if (last === undefined) return null
+  const open = last === ')' ? '(' : last === ']' ? '[' : last === '}' ? '{' : null
+  if (open === null) return null
+  return countChar(s, last) > countChar(s, open) ? s.slice(0, -1) : null
+}
+
+function countChar(s: string, ch: string): number {
+  let n = 0
+  for (const c of s) if (c === ch) n++
+  return n
 }
 
 /** Strips a `doi:` prefix or a `https://doi.org/`/`https://dx.doi.org/` wrapper and validates what remains. Returns null for anything that is not a DOI at all. */
@@ -388,6 +420,10 @@ export function mapCrossrefWork(work: CrossrefWorkRaw): CrossrefWork {
 
 // ── CORE (api.core.ac.uk/v3/search/works) ───────────────────────────────────
 
+// CORE returns no landing-page field of its own — `mapCoreWork` builds one from `id`. Named so
+// the one call site and any future one (or a test asserting on it) share a single source.
+const CORE_LANDING_PAGE_BASE_URL = 'https://core.ac.uk/works/'
+
 export interface CoreResult {
   id: string | null
   doi: string | null
@@ -415,7 +451,7 @@ export interface CoreWorkRaw {
 }
 
 export function mapCoreWork(work: CoreWorkRaw): CoreResult {
-  const id = work.id != null ? String(work.id) : null
+  const id = work.id !== undefined && work.id !== null ? String(work.id) : null
   return {
     id,
     doi: work.doi ?? null,
@@ -426,7 +462,7 @@ export function mapCoreWork(work: CoreWorkRaw): CoreResult {
     sourceFulltextUrls: work.sourceFulltextUrls ?? [],
     publisher: work.publisher ?? null,
     journal: work.journals?.[0]?.title ?? null,
-    landingPageUrl: id ? `https://core.ac.uk/works/${id}` : null,
+    landingPageUrl: id ? `${CORE_LANDING_PAGE_BASE_URL}${id}` : null,
   }
 }
 
