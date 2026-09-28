@@ -20,7 +20,7 @@
 import { join } from 'node:path'
 import { env } from '../env.js'
 import { createSemaphore } from '../lib/semaphore.js'
-import { readCappedText } from './pdf-extract.js'
+import { readCappedText } from '../lib/bounded-read.js'
 import { createHumanSolveState, parseSolverOutput, parseDialogOutput, type SolverOutput } from './human-solve-state.js'
 import { createHumanSolver, SOLVER_SAFETY_MARGIN_MS, type HumanSolverPorts } from './human-solver.js'
 

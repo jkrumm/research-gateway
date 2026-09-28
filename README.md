@@ -256,6 +256,10 @@ tool is not. Podcasts needed no code: episode pages are ordinary web pages Reada
 | 5. human solve (mini) | Cloudflare/anti-bot challenges nothing automated passes | `human-solve.ts` + `bin/solver.ts`: a dialog on the MacBook, **Open** → Screen Sharing into the mini, solve in the mini's dedicated solver Chrome; the page comes back from that browser. Only when this chain saw a block. A solved host is re-read through the same browser (no dialog) for 12h, so the clearance stays on the mini's IP. A browser-first attempt tries the solver Chrome alone before ever prompting a human, and is recorded `via: 'browser'`, never `'human'`, when it clears the page unassisted |
 | 6. Wayback Machine | origins that refuse this crawler outright | `archive.ts`; free; only after every live step failed, never for a 404 |
 
+No remote body is ever read unbounded: every network response goes through one bounded reader
+(`lib/bounded-read.ts`) — non-PDF bodies are capped at 8 MB, a PDF at 40 MB, and a body cut at
+its cap is a miss, never a partial answer.
+
 Every renderer reports failure by not failing — a PDF decoded as UTF-8 (1.98M chars of binary recorded as a `readability` success until 2026-09-23; `looksBinary` now fails any such body), Reddit's 200 + JS shell, lightpanda's `exit 0`
 on a dead domain, a Medium paywall that returns the lede above the 200-char floor — and each
 shape is detected and unit-tested against the measured bytes. The fetch-level bench

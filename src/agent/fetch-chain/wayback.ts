@@ -1,4 +1,5 @@
 import { log } from '../../lib/log.js'
+import { readBoundedText, MAX_BODY_BYTES } from '../../lib/bounded-read.js'
 import { readabilityText } from '../html-parse.js'
 import { waybackLookupUrl, isArchiveUrl, parseSnapshotDate, archiveBanner, snapshotAgeDays } from '../archive.js'
 import { attempt, MIN_USABLE_CHARS } from './context.js'
@@ -29,10 +30,21 @@ export async function runWaybackStage(ctx: ChainContext, originalReason: string)
       ctx.opts.onArchive?.({ ok: false, ms, snapshotAgeDays: null })
       return ctx.fail(originalReason)
     }
-    const body = await res.text()
+    // The same bound as every other network body (bounded-read.ts): an archived copy of a huge
+    // page stalls the loop just as hard as the live one, and a body cut at MAX_BODY_BYTES is
+    // not a document Readability can read — a miss like any other, never an error out of the
+    // chain.
+    const bounded = await readBoundedText(res, MAX_BODY_BYTES, (info) =>
+      log('tool.fetchPage', { jobId: ctx.jobId, url: ctx.url, via: 'oversized', step: 'wayback', ...info }),
+    )
+    if (bounded.truncated) {
+      const ms = attempt(ctx.attempts, 'wayback', tW, { ok: false, error: `body exceeds ${MAX_BODY_BYTES} byte cap` })
+      ctx.opts.onArchive?.({ ok: false, ms, snapshotAgeDays: null })
+      return ctx.fail(originalReason)
+    }
     // Parsing runs in the same worker pool as step 1 (html-parse.ts) — Readability only, no
     // site adapter, matching what the inline wayback step always did.
-    const { text } = await readabilityText(body, ctx.budget)
+    const { text } = await readabilityText(bounded.text, ctx.budget)
     if (!text || text.length < MIN_USABLE_CHARS) {
       const ms = attempt(ctx.attempts, 'wayback', tW, { ok: false, chars: text?.length ?? 0, error: `thin (${text?.length ?? 0} chars)` })
       ctx.opts.onArchive?.({ ok: false, ms, snapshotAgeDays: null })

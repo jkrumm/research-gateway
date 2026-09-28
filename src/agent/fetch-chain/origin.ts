@@ -1,8 +1,9 @@
 import { normalizeText } from '../extract.js'
 import { extractText } from '../html-parse.js'
-import { isRawContentType, isDefinitivelyMissing, isPdf, isPdfContentType, looksBinary } from '../response-kind.js'
+import { isRawContentType, isDefinitivelyMissing, isPdf, looksBinary } from '../response-kind.js'
 import { extractPdfText } from '../pdf.js'
-import { readBoundedBytes, readCappedText, MAX_PDF_BYTES } from '../pdf-extract.js'
+import { MAX_PDF_BYTES } from '../pdf-extract.js'
+import { readBoundedBytesByCap, readCappedText, MAX_BODY_BYTES } from '../../lib/bounded-read.js'
 import { classifyBlock, describeBlock, isJavaScriptShell, type BlockVerdict } from '../challenge.js'
 import { parseRetryAfter } from '../host-gate.js'
 import { log } from '../../lib/log.js'
@@ -137,6 +138,14 @@ async function readOriginHtml(
   return { terminal: null, block: null }
 }
 
+// The step-1 body cap: a PDF needs the whole document for poppler (MAX_PDF_BYTES), every
+// non-PDF body is bounded at MAX_BODY_BYTES. A PDF served under a wrong or absent Content-Type
+// is recognised by the `%PDF-` magic in the bytes handed here, which is why the cap can be
+// resolved from the first chunk as well as from the whole body.
+function bodyCapFor(contentType: string | null, bytes: Uint8Array): number {
+  return isPdf(contentType, bytes) ? MAX_PDF_BYTES : MAX_BODY_BYTES
+}
+
 // The body pipeline of step 1, once a 2xx response is in hand: read it once as bytes, then
 // dispatch to whichever of pdf/raw/html actually applies. Split out of `runOrigin` so the
 // top-level function reads as "status check, then body", not both interleaved.
@@ -152,22 +161,30 @@ async function readOriginBody(
   // and PDF detection needs the raw bytes (the `%PDF-` magic) before any text decoding. This is
   // what closes the bug this whole change fixes: the VPS fetched arxiv.org/pdf/1706.03762,
   // `res.text()` decoded 1,984,323 bytes of PDF binary as UTF-8 "text", and
-  // Readability/normalizeText handed that back as a `retrieved` success. Bounded by
-  // MAX_PDF_BYTES so a pathological body is never downloaded in full before a decision can be
-  // made — a truncated read is treated as a miss, same as any other step-1 failure, and falls
-  // through to rendering/Tavily.
+  // Readability/normalizeText handed that back as a `retrieved` success. A PDF needs the whole
+  // document for poppler, so it is read at MAX_PDF_BYTES; every non-PDF body is bounded at
+  // MAX_BODY_BYTES. The cap is chosen from the DECLARED Content-Type up front, but a PDF served
+  // under a wrong or absent Content-Type only announces itself in the `%PDF-` magic at the
+  // start of the body, so the cap is re-decided when the first chunk arrives — a mislabeled PDF
+  // still reaches the 40 MB cap. A truncated read is treated as a miss, same as any other
+  // step-1 failure, and falls through to rendering/Tavily.
   const contentType = res.headers.get('content-type')
-  const { bytes, truncated } = await readBoundedBytes(res.body, MAX_PDF_BYTES)
+  const { bytes, truncated } = await readBoundedBytesByCap(res.body, (firstChunk) => bodyCapFor(contentType, firstChunk))
+  const capBytes = bodyCapFor(contentType, bytes)
+  const isPdfBody = isPdf(contentType, bytes)
 
   if (truncated) {
     // An oversized PDF still IS a PDF — the renderer (step 2) has nothing to add to a
     // document with no DOM, so skip it here exactly like the identified-PDF branch below,
-    // even though pdftotext never runs against these truncated bytes.
-    if (isPdfContentType(contentType)) ctx.markPdfBody()
-    attempt(ctx.attempts, label, t1, { ok: false, error: `body exceeds ${MAX_PDF_BYTES} byte cap` })
+    // even though pdftotext never runs against these truncated bytes. A truncated non-PDF
+    // body (an HTML page, a raw JSON/CSV dump) has no complete document to hand any reader,
+    // so it is a miss like any other — never a partial answer passed to a parser or a
+    // citation.
+    if (isPdfBody) ctx.markPdfBody()
+    attempt(ctx.attempts, label, t1, { ok: false, error: `body exceeds ${capBytes} byte cap` })
     return { terminal: null, block: null }
   }
-  if (isPdf(contentType, bytes)) {
+  if (isPdfBody) {
     ctx.markPdfBody()
     const pdf = await extractPdfText(bytes, { jobId: ctx.jobId })
     if (pdf.ok) {

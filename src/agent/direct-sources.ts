@@ -3,6 +3,7 @@ import type { Tool } from 'ai'
 import { z } from 'zod'
 import { env } from '../env.js'
 import { log } from '../lib/log.js'
+import { readBoundedText, MAX_BODY_BYTES } from '../lib/bounded-read.js'
 import { capText, TEXT_CAP } from './extract.js'
 import {
   badDockerName,
@@ -100,7 +101,14 @@ async function getJson<T>(url: string, headers: Record<string, string>): Promise
       }
       return { ok: false, error: `HTTP ${res.status} ${res.statusText}` }
     }
-    return { ok: true, data: (await res.json()) as T }
+    // Bounded like every other network body — a registry answer is a small JSON document (the
+    // largest measured is a full PyPI JSON at ~3.7 MB), so a cut body is a failed lookup, not
+    // a partial answer to parse.
+    const { text, truncated } = await readBoundedText(res, MAX_BODY_BYTES, (info) =>
+      log('tool.fetchJson', { url, via: 'oversized', ...info }),
+    )
+    if (truncated) return { ok: false, error: `response exceeds ${MAX_BODY_BYTES} byte cap` }
+    return { ok: true, data: JSON.parse(text) as T }
   } catch (err) {
     return { ok: false, error: String(err) }
   }
@@ -430,6 +438,20 @@ interface GhRelease {
   prerelease?: boolean
 }
 
+// Reads a fetched repo file bounded (bounded-read.ts). A body cut at the cap is not verbatim,
+// so it is a failed read, never a partial answer to quote — thrown so the tool's own catch
+// reports it on exactly the same path as a dropped connection.
+async function readGithubFileBody(
+  res: Response,
+  fields: { jobId: string; owner: string; repo: string; path: string; ref: string },
+): Promise<string> {
+  const { text, truncated } = await readBoundedText(res, MAX_BODY_BYTES, (info) =>
+    log('tool.githubFile', { ...fields, via: 'oversized', ...info }),
+  )
+  if (truncated) throw new Error(`file exceeds ${MAX_BODY_BYTES} byte cap`)
+  return text
+}
+
 function buildGithubFileTool(ledger: RetrievalLedger, jobId: string): AnyTool {
   return tool({
     description:
@@ -477,7 +499,10 @@ function buildGithubFileTool(ledger: RetrievalLedger, jobId: string): AnyTool {
           return { error: `githubFile failed: ${reason}`, url: blobUrl }
         }
 
-        const text = await res.text()
+        // Bounded like every other network body — a cut file is not verbatim, so it is a
+        // failed read, not a partial answer to quote. (capText already caps what a worker
+        // receives at TEXT_CAP; this bounds the download itself.)
+        const text = await readGithubFileBody(res, { jobId, owner, repo, path, ref: effectiveRef })
         ledger.recordRetrieved(blobUrl)
         ledger.recordRetrieved(rawUrl)
         log('tool.githubFile', { jobId, owner, repo, path, ref: effectiveRef, ok: true, chars: text.length })
