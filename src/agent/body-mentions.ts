@@ -184,14 +184,23 @@ function hasCreatedEscape(parts: ReadonlyArray<{ text: string; fromDecode: boole
 //   - `%` `&` `=` `+` `$` continue a path or query
 //   - `@` makes it an email address (`nunu.gg@example.com`)
 //   - `:` only when a port follows (`nunu.gg:8443`) — a colon is otherwise prose punctuation
-//   - `.` only when a word OR digit follows (`patch-notes.html`, `patch-notes.2026`), so a
-//     sentence-final period matches but a longer filename does not
+//   - `.` `!` `*` `_` `~` `'` only when a word OR digit follows. Each of these is also a valid,
+//     unencoded RFC 3986 path/query character (`.` `_` `~` are unreserved, `!` `*` `'` are
+//     sub-delims), so `patch-notes_v2` and `patch-notes.html` genuinely continue the URL and
+//     must not match a blocked `patch-notes` — the false-positive review finding (a blocked
+//     `example.com/api` matched inside the distinct `example.com/api_v2`). But prose and
+//     markdown glue the SAME characters onto a URL with nothing word-like after them
+//     (`_https://nunu.gg/x_ here`, `**https://nunu.gg/x** here`, a sentence-final period), and
+//     those must still count as a reference. Following-letter/digit is what tells the two apart,
+//     the same rule already used for the period.
 // `?` and `#` are here because a query or fragment makes it a DIFFERENT document — the same
 // call `normalizeUrl` makes for citations, where `?v=2` is deliberately not the same page.
-// Deliberately NOT excluded: `,` `;` `!` `*` `_` `~` `(` `[` and quotes. Prose and markdown
-// glue those straight onto a URL (`nunu.gg/x,and`, `**nunu.gg/x**`, `nunu.gg/x[1]`,
-// `nunu.gg/x(archived)`), and treating them as continuations loses real mentions.
-const RIGHT = `(?![\\p{L}\\p{N}\\p{M}\\-/%&=+$@?#])(?!:\\d)(?!\\.(?:\\p{L}|\\d))`
+// Deliberately NOT excluded: `,` `;` `(` `[` `)` `]` `>` and quotes. Those are reserved/gen-delim
+// characters too, but in practice prose and markdown glue them straight onto a URL
+// (`nunu.gg/x,and`, `nunu.gg/x[1]`, `nunu.gg/x(archived)`, `<nunu.gg/x>`) far more often than a
+// real URL uses them unencoded, so treating them as always-terminating loses far fewer real
+// mentions than it lets through.
+const RIGHT = `(?![\\p{L}\\p{N}\\p{M}\\-/%&=+$@?#])(?!:\\d)(?![.!*_~'](?:\\p{L}|\\d))`
 
 // The bounded forms of one blocked URL as it may appear in prose: the exact URL, scheme-less,
 // `www.`-less, and as a bare host. `normalizeUrl` supplies the canonical host+path+query, so
@@ -284,11 +293,12 @@ function patternFor(url: string): RegExp | null {
   const qAt = normRest.indexOf('?')
   const restPath = qAt === -1 ? normRest : normRest.slice(0, qAt)
   const restQuery = qAt === -1 ? '' : normRest.slice(qAt)
-  const pathPattern = normRest
-    ? restQuery
+  let pathPattern = '/?'
+  if (normRest) {
+    pathPattern = restQuery
       ? `(?:${alternatives(restPath)})(?:/?)(?:${alternatives(restQuery)})/?`
       : `(?:${alternatives(restPath)})/?`
-    : '/?'
+  }
   const schemePattern = `(?:${ciClass('https')}://|${ciClass('http')}://)?`
   const hashPattern = normHash ? `(?:${alternatives(normHash)})` : ''
   const body = `${LEFT}${schemePattern}(?:${ciClass('www.')})?${hostPattern}${pathPattern}${hashPattern}${RIGHT}`
@@ -339,8 +349,20 @@ function dedupKey(url: string): string {
   // `urlParts` once, not `normalizeUrl` + `urlParts` — `normalizeUrl` is just
   // `${host}${rest}`, so calling both parsed the same string twice and contradicted this
   // module's own "one parse rule" comment.
-  const p = urlParts(url)
-  return p ? `${p.host}${p.rest}${p.hash}` : url
+  //
+  // The url is run through the same `normalizeForMatch` (NFC + strip Cf) that `referencesBody`
+  // applies to the body — BEFORE parsing, not after. `urlParts` percent-encodes every non-ASCII
+  // byte in `rest`/`hash` via `new URL()`, so normalizing the ALREADY-percent-encoded ASCII
+  // output is a no-op: a composed `café` and a decomposed `cafe` + U+0301 land in DIFFERENT
+  // percent-encoded bytes (`%C3%A9` vs `e%CC%81`) no matter what runs on them afterward.
+  // Normalizing first means both spellings compose (or drop their invisible character)
+  // identically before `new URL()` ever sees them, so they percent-encode to the same bytes and
+  // collapse to one key — two `unverified` entries for the same page that differ only by an
+  // invisible format character or a decomposed accent must not emit two "Unverified in prose"
+  // notes for what a reader sees as one identical URL.
+  const normalized = normalizeForMatch(url)
+  const p = urlParts(normalized)
+  return p ? `${p.host}${p.rest}${p.hash}` : normalized
 }
 export function scrubBody(
   body: string,
