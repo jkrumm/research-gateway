@@ -10,13 +10,33 @@ const MAX_AUTHORS = 5
 // digits after the `10.`), not something specific to any one registry.
 const DOI_RE = /^10\.\d{4,9}\/\S+$/i
 
+// A model routinely hands this a DOI copied out of prose — trailing sentence punctuation
+// (`.,;:)]}`) or a `?query`/`#fragment` a link-shortened citation picked up is not part of the
+// DOI itself and must be stripped BEFORE `DOI_RE` runs, or the whole string fails to match and
+// a real DOI is reported as "not a DOI".
+function stripDoiTrailer(s: string): string {
+  return s.replace(/[?#].*$/, '').replace(/[.,;:)\]}]+$/, '')
+}
+
 /** Strips a `doi:` prefix or a `https://doi.org/`/`https://dx.doi.org/` wrapper and validates what remains. Returns null for anything that is not a DOI at all. */
 export function normalizeDoi(input: string): string | null {
-  const stripped = input
-    .trim()
-    .replace(/^doi:\s*/i, '')
-    .replace(/^https?:\/\/(dx\.)?doi\.org\//i, '')
+  const stripped = stripDoiTrailer(
+    input
+      .trim()
+      .replace(/^doi:\s*/i, '')
+      .replace(/^https?:\/\/(dx\.)?doi\.org\//i, ''),
+  )
   return DOI_RE.test(stripped) ? stripped : null
+}
+
+// Shared by every mapper below (OpenAlex/PubMed/Unpaywall/Crossref/CORE/Semantic Scholar):
+// extract a name from each raw author record, drop the ones with none, cap at MAX_AUTHORS.
+// Six hand-copied `.map(...).filter(...).slice(...)` chains collapsed into one.
+function normalizeAuthors<T>(raw: T[] | undefined, getName: (item: T) => string | null | undefined): string[] {
+  return (raw ?? [])
+    .map(getName)
+    .filter((n): n is string => Boolean(n))
+    .slice(0, MAX_AUTHORS)
 }
 
 // ── OpenAlex ─────────────────────────────────────────────────────────────────
@@ -61,10 +81,7 @@ export function mapOpenAlexWork(work: OpenAlexWork): AcademicResult {
     venue: work.primary_location?.source?.display_name ?? null,
     openAccessUrl: work.open_access?.oa_url ?? null,
     landingPageUrl: work.primary_location?.landing_page_url ?? null,
-    authors: (work.authorships ?? [])
-      .map((a) => a.author?.display_name)
-      .filter((n): n is string => Boolean(n))
-      .slice(0, MAX_AUTHORS),
+    authors: normalizeAuthors(work.authorships, (a) => a.author?.display_name),
   }
 }
 
@@ -111,10 +128,7 @@ export function mapPubmedRecord(uid: string, record: PubmedSummaryRecord): Pubme
     // fallback for the rare record missing the former.
     journal: record.fulljournalname ?? record.source ?? null,
     pubdate: record.pubdate ?? null,
-    authors: (record.authors ?? [])
-      .map((a) => a.name)
-      .filter((n): n is string => Boolean(n))
-      .slice(0, MAX_AUTHORS),
+    authors: normalizeAuthors(record.authors, (a) => a.name),
     doi: record.articleids?.find((a) => a.idtype === 'doi')?.value ?? null,
     url: `https://pubmed.ncbi.nlm.nih.gov/${uid}/`,
   }
@@ -208,8 +222,10 @@ export function parseArxivFeed(xml: string): ArxivEntry[] {
 
 // Modern `YYMM.NNNNN[vN]` (2007-present) or old-style `archive-name[.SUBCLASS]/YYMMNNN[vN]`
 // (pre-2007, e.g. `physics/0601001`) — the same two shapes site-adapters.ts's arXiv adapter
-// rewrites.
-const ARXIV_ID_RE = /^(?:\d{4}\.\d{4,5}|[a-z-]+(?:\.[A-Za-z]{2})?\/\d{7})(?:v\d+)?$/i
+// rewrites. The old-style subclass is not always two bare letters — `cond-mat.stat-mech` is a
+// real, hyphenated, multi-letter subclass — so the subclass group allows letters and hyphens
+// rather than a fixed `[A-Za-z]{2}`.
+const ARXIV_ID_RE = /^(?:\d{4}\.\d{4,5}|[a-z-]+(?:\.[A-Za-z-]+)?\/\d{7})(?:v\d+)?$/i
 
 /** True when `query` IS an arXiv id rather than free text — routes to `id_list=` instead of a `search_query=`. */
 export function isArxivId(query: string): boolean {
@@ -217,13 +233,18 @@ export function isArxivId(query: string): boolean {
 }
 
 // A bare multi-word `all:` query is an implicit OR in arXiv's search grammar (MEASURED
-// 2026-09-23) — explicit `AND` is what "find this specific paper by title words" needs.
+// 2026-09-23) — explicit `AND` is what "find this specific paper by title words" needs. Each
+// term is also individually quoted: an unquoted term IS arXiv query grammar (`AND`/`OR`/`ANDNOT`,
+// parentheses, field prefixes), so worker/model-supplied text containing one of those tokens —
+// "attention OR transformers", literally — would otherwise inject a different query than the
+// AND-of-terms this function promises. Quoting every term, including one that already reads
+// like an operator, makes it a literal phrase instead.
 export function buildArxivSearchQuery(query: string): string {
   return query
     .trim()
     .split(/\s+/)
     .filter(Boolean)
-    .map((term) => `all:${term}`)
+    .map((term) => `all:"${term.replace(/"/g, '')}"`)
     .join(' AND ')
 }
 
@@ -289,10 +310,7 @@ export function mapUnpaywallResponse(data: UnpaywallResponse): UnpaywallResult {
     year: data.year ?? null,
     journalName: data.journal_name ?? null,
     isOa: data.is_oa ?? false,
-    authors: (data.z_authors ?? [])
-      .map((a) => a.raw_author_name)
-      .filter((n): n is string => Boolean(n))
-      .slice(0, MAX_AUTHORS),
+    authors: normalizeAuthors(data.z_authors, (a) => a.raw_author_name),
     bestOaLocation: data.best_oa_location ? mapUnpaywallLocation(data.best_oa_location) : null,
     oaLocations: (data.oa_locations ?? []).slice(0, 3).map(mapUnpaywallLocation),
   }
@@ -344,18 +362,21 @@ function crossrefAuthorName(a: CrossrefAuthorRaw): string | null {
   return parts.length > 0 ? parts.join(' ') : null
 }
 
+// `.pdf` on the path, not a bare `endsWith('.pdf')` on the whole URL — a link like
+// `foo.pdf?download=1` or `foo.pdf#page=3` is still a PDF; matched against the query/fragment
+// chars directly rather than parsing the URL, since a malformed or relative link must still be
+// checked rather than thrown away.
+const PDF_PATH_RE = /\.pdf($|[?#])/i
+
 export function mapCrossrefWork(work: CrossrefWorkRaw): CrossrefWork {
   const links = work.link ?? []
   const fullTextLinks = links.map((l) => l.URL).filter((u): u is string => Boolean(u))
   const typedPdf = links.find((l) => l['content-type'] === 'application/pdf')?.URL
-  const guessedPdf = fullTextLinks.find((u) => u.toLowerCase().endsWith('.pdf'))
+  const guessedPdf = fullTextLinks.find((u) => PDF_PATH_RE.test(u))
   return {
     doi: work.DOI ?? null,
     title: work.title?.[0] ?? null,
-    authors: (work.author ?? [])
-      .map(crossrefAuthorName)
-      .filter((n): n is string => Boolean(n))
-      .slice(0, MAX_AUTHORS),
+    authors: normalizeAuthors(work.author, crossrefAuthorName),
     year: work.issued?.['date-parts']?.[0]?.[0] ?? null,
     containerTitle: work['container-title']?.[0] ?? null,
     url: work.URL ?? null,
@@ -400,10 +421,7 @@ export function mapCoreWork(work: CoreWorkRaw): CoreResult {
     doi: work.doi ?? null,
     title: work.title ?? null,
     year: work.yearPublished ?? null,
-    authors: (work.authors ?? [])
-      .map((a) => a.name)
-      .filter((n): n is string => Boolean(n))
-      .slice(0, MAX_AUTHORS),
+    authors: normalizeAuthors(work.authors, (a) => a.name),
     downloadUrl: work.downloadUrl ?? null,
     sourceFulltextUrls: work.sourceFulltextUrls ?? [],
     publisher: work.publisher ?? null,
@@ -445,10 +463,7 @@ export function mapSemanticScholarPaper(paper: S2PaperRaw): SemanticScholarResul
     paperId: paper.paperId ?? null,
     title: paper.title ?? null,
     year: paper.year ?? null,
-    authors: (paper.authors ?? [])
-      .map((a) => a.name)
-      .filter((n): n is string => Boolean(n))
-      .slice(0, MAX_AUTHORS),
+    authors: normalizeAuthors(paper.authors, (a) => a.name),
     venue: paper.venue ?? null,
     doi: paper.externalIds?.DOI ?? null,
     openAccessPdfUrl: paper.openAccessPdf?.url ?? null,
