@@ -189,26 +189,12 @@ describe('resolveSite', () => {
       expect(site.fallbackUrl).toBeUndefined()
     })
 
-    it('extracts prose, substitutes math alttext, and renders a table as pipe-joined rows', () => {
-      const site = resolveSite('https://arxiv.org/html/2309.04452')
-      const document = doc(`<article class="ltx_document">
-        <p class="ltx_p">We assume <math alttext="Y\\mid X\\sim\\mathcal{F}_{\\bm{\\theta}}"><mrow>ignored mathml</mrow></math> throughout.</p>
-        <table class="ltx_tabular">
-          <tr><td>Model</td><td>CRPS</td></tr>
-          <tr><td>EMOS</td><td>0.42</td></tr>
-        </table>
-      </article>`)
-      const out = site.extract!(document)
-      expect(out).toContain('$Y\\mid X\\sim\\mathcal{F}_{\\bm{\\theta}}$')
-      expect(out).toContain('Model | CRPS')
-      expect(out).toContain('EMOS | 0.42')
-    })
-
-    it('returns null on a page that is not LaTeXML, falling through to Readability', () => {
-      const site = resolveSite('https://arxiv.org/html/9999.99999')
-      const document = doc('<div class="not-latexml"><p>a 404 page, or something else entirely</p></div>')
-      expect(site.extract!(document)).toBeNull()
-    })
+    // The LaTeXML extraction itself (math/table handling) is unit-tested directly against
+    // `extractArxivHtml` in extract-arxiv.test.ts — same convention as the Reddit/wrchina
+    // adapters, whose extractors are tested in their own module rather than through
+    // `resolveSite`. The routing tests above (and 'keeps the LaTeXML extractor attached'
+    // earlier in this describe block) are what belongs here: that the RIGHT extractor gets
+    // wired up, not what it does with a document once it runs.
   })
 })
 
