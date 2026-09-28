@@ -182,8 +182,11 @@ function extractArxivHtml(document: LatexmlDocument): string | null {
 // `pdftotext` can reconstruct from PDF glyphs (see `extractArxivHtml` below). Not every paper
 // has a LaTeXML build — arXiv started generating it only for papers submitted from
 // ~2018 onward, and it can 404 even for some newer ones — so `fallbackUrl` carries the PDF
-// address, and the fetch chain (fetch-chain.ts) retries there once when the HTML rewrite comes
-// back 404/410, landing on this module's PDF branch (agent/pdf.ts) instead.
+// address. The fetch chain (`fetch-chain/origin.ts`'s `runOrigin`) DOES consume this: a
+// 404/410 against `fetchUrl` retries once against `fallbackUrl` through the same pipeline
+// (same host gate, same fetcher, PDF/raw/html dispatch unchanged) before the chain records
+// the resource missing — generically, keyed only on `SiteAdapter.plan`'s return shape, not on
+// this being arXiv.
 //
 // id shapes handled: modern (`2309.04452`, with or without a `v<n>` version suffix) and the
 // pre-2007 `archive/YYMMNNN` form (e.g. `physics/0601001`) — both are just "the rest of the
@@ -252,7 +255,9 @@ export interface ResolvedSite {
   extract: ((document: MinimalDocument) => string | null) | null
   /** True when the fetch chain should skip straight to Tavily Extract (see youtubeAdapter). */
   skipToExtract: boolean
-  /** A second URL to try if `fetchUrl` comes back 404/410 — currently only arXiv's PDF address behind its HTML rewrite. Absent for every other adapter and for unrewritten URLs. */
+  /** A second URL to try if `fetchUrl` comes back 404/410 — currently only arXiv's PDF address
+   * behind its HTML rewrite. Absent for every other adapter and for unrewritten URLs. Consumed
+   * generically by `fetch-chain/origin.ts`'s `runOrigin` — see arxivAdapter's header comment. */
   fallbackUrl?: string
 }
 

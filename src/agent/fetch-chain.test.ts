@@ -1006,3 +1006,85 @@ describe('real pdftotext extraction (fixtures)', () => {
     expect(result.via).toBeNull()
   })
 })
+
+// ── arXiv HTML→PDF fallback (origin.ts consuming site.fallbackUrl) ────────────────────────
+// The real `arxiv.org` hostname is used deliberately, not a TEST-NET literal: `resolveSite`
+// is keyed on the actual hostname, and only a genuine arXiv URL exercises `arxivAdapter.plan`'s
+// real `fallbackUrl` — the thing this fallback-wiring is actually about. That pulls in one real
+// DNS lookup per test (`assertPublicHttpUrl`, resolving to arXiv's own stable Fastly IPs, never
+// a private range) — the only place this file touches the real network; the page fetch itself
+// stays stubbed via `stubFetch` like every other test here.
+describe('arXiv HTML→PDF fallback (origin.ts consuming site.fallbackUrl)', () => {
+  const CITED_URL = 'https://arxiv.org/abs/2309.04452'
+  const HTML_URL = 'https://arxiv.org/html/2309.04452'
+  const PDF_URL = 'https://arxiv.org/pdf/2309.04452'
+  const FIXTURES = `${import.meta.dir}/__fixtures__`
+  const readFixture = (name: string) => Bun.file(`${FIXTURES}/${name}`).arrayBuffer().then((b) => new Uint8Array(b))
+
+  it('falls back to the PDF fixture when the HTML build 404s, without a false missing record', async () => {
+    const pdfBytes = await readFixture('paper.pdf')
+    const requested: string[] = []
+    stubFetch((u) => {
+      requested.push(u)
+      if (u === HTML_URL) return new Response('not found', { status: 404 })
+      if (u === PDF_URL) return new Response(pdfBytes, { status: 200, headers: { 'content-type': 'application/pdf' } })
+      return new Response('nope', { status: 404 })
+    })
+    const ledger = createLedger()
+
+    const result = await runFetchChain(CITED_URL, {
+      ledger,
+      hostGate: createHostGate(),
+      tavilyExtract: stubTavilyFail(),
+      impersonatedFetch: stubImpersonateUnavailable(),
+    })
+
+    expect(result.via).toBe('pdf')
+    expect(result.text).toContain('fixture paper about wind speed')
+    expect(requested).toContain(HTML_URL)
+    expect(requested).toContain(PDF_URL)
+    // The cited /abs/ url and the PDF address that genuinely answered are both retrieved —
+    // the html address that 404'd is NOT, and the ledger never records a missing entry at all.
+    expect(ledger.tierOf(CITED_URL)).toBe('retrieved')
+    expect(ledger.tierOf(PDF_URL)).toBe('retrieved')
+    expect(ledger.tierOf(HTML_URL)).not.toBe('retrieved')
+    expect(ledger.tierOf(CITED_URL)).not.toBe('missing')
+    expect(ledger.tierOf(HTML_URL)).not.toBe('missing')
+  })
+
+  it('records missing against the fallback url when both addresses 404, and the chain fails', async () => {
+    stubFetch(() => new Response('not found', { status: 404 }))
+    const ledger = createLedger()
+
+    const result = await runFetchChain(CITED_URL, {
+      ledger,
+      hostGate: createHostGate(),
+      tavilyExtract: stubTavilyFail(),
+      impersonatedFetch: stubImpersonateUnavailable(),
+    })
+
+    expect(result.via).toBeNull()
+    expect(result.text).toBeNull()
+    expect(ledger.tierOf(PDF_URL)).toBe('missing')
+    expect(ledger.tierOf(CITED_URL)).not.toBe('retrieved')
+  })
+
+  it('never requests the fallback when the HTML build answers 200', async () => {
+    const requested: string[] = []
+    stubFetch((u) => {
+      requested.push(u)
+      return new Response(htmlPage(), { status: 200, headers: { 'content-type': 'text/html' } })
+    })
+
+    const result = await runFetchChain(CITED_URL, {
+      ledger: createLedger(),
+      hostGate: createHostGate(),
+      tavilyExtract: stubTavilyFail(),
+      impersonatedFetch: stubImpersonateUnavailable(),
+    })
+
+    expect(result.via).toBe('readability')
+    expect(requested).toContain(HTML_URL)
+    expect(requested).not.toContain(PDF_URL)
+  })
+})
