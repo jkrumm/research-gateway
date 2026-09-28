@@ -130,7 +130,8 @@ bun test           # pure-function tests only — needs no secrets
 
 Anything importing `env.ts` is untested by design — factor pure logic out instead
   (`ledger`, `extract`, `archive`, `site-adapters`, `response-kind`, `youtube-captions`,
-  `otel-format`, `brain`, `karakeep` are the pattern). Do not mock `env`. `scripts/smoke.ts` runs one
+  `otel-format`, `brain`, `karakeep`, `body-mentions`, `markdown`, `report-text` are the
+  pattern). Do not mock `env`. `scripts/smoke.ts` runs one
 `runResearch()` end to end without the HTTP server.
 
 ## File map
@@ -140,7 +141,9 @@ Anything importing `env.ts` is untested by design — factor pure logic out inst
   and exit-code mapping, only fetch (plus the Keychain read) is I/O — see `bin/research.test.ts`
 - `src/agent/{plan,worker,synthesize,run}.ts` — the fan-out: lead plans → workers dig →
   lead synthesizes
-- `src/agent/ledger.ts` + `ground.ts` — the grounding invariant above
+- `src/agent/ledger.ts` + `ground.ts` — the grounding invariant above; `body-mentions.ts` extends
+  it to the report PROSE (a blocked source named in the body, not just cited); `markdown.ts` +
+  `report-text.ts` render the model-controlled fields that invariant produces
 - `src/agent/tools.ts` — the ten tools (source-of-truth lookups + `searchWeb`/`fetchPage`);
   adding a source to an existing tool is cheap, a new tool definition is not (README §
   Source-of-truth lookups)

@@ -41,7 +41,14 @@ export const SubmittedReport = z.object({
     .describe('Each key claim tied to a source URL'),
   sources: z.array(z.string()).describe('Deduplicated list of all source URLs consulted'),
   unverified: z
-    .array(z.object({ topic: z.string(), url: z.string().nullable(), reason: z.string() }))
+    .array(
+      z.object({
+        topic: z.string(),
+        url: z.string().max(2048).nullable(),
+        reason: z.string().max(1000),
+      }),
+    )
+    .max(200)
     .default([])
     .describe(
       'Claims or topics the report could NOT verify against a source, aggregated from the digests\' blockedSources. A transparency channel to the caller — distinct from citations, which are claims that WERE verified.',

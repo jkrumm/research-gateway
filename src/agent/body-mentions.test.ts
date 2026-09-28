@@ -63,6 +63,26 @@ const bodyCases: Array<{ body: string; want: boolean; why: string }> = [
   { body: 'See Http://nunu.gg/patch-notes here.', want: true, why: 'a mixed-case scheme' },
 ]
 
+// Review finding: the RIGHT boundary allowed characters that are valid, unencoded URL
+// path/query continuations (`_` `~` `!` `*` `'`), so a blocked `.../api` matched inside the
+// DISTINCT `.../api_v2` — a false inline-distrust note on a page that was never named.
+const boundaryCases: Array<{ body: string; want: boolean; why: string }> = [
+  { body: 'See https://example.com/api_v2 for the new version.', want: false, why: 'an underscore continuing the path' },
+  { body: 'See https://example.com/api~x here.', want: false, why: 'a tilde continuing the path' },
+  { body: 'See https://example.com/api:8080x here.', want: false, why: 'a colon-digit continuing the host as a bogus port' },
+  { body: 'see https://example.com/api.', want: true, why: 'a sentence-final period still matches' },
+  { body: '(https://example.com/api)', want: true, why: 'a closing paren still matches' },
+  { body: '<https://example.com/api>', want: true, why: 'an autolink angle bracket still matches' },
+]
+
+describe('scrubBody — RIGHT boundary vs. real URL-continuation characters', () => {
+  for (const { body, want, why } of boundaryCases) {
+    it(`${want ? 'flags' : 'leaves alone'}: ${why}`, () => {
+      expect(flags(body, 'https://example.com/api')).toBe(want)
+    })
+  }
+})
+
 describe('scrubBody — regex boundaries', () => {
   for (const { body, want, why } of bodyCases) {
     it(`${want ? 'flags' : 'leaves alone'}: ${why}`, () => {
@@ -96,5 +116,28 @@ describe('scrubBody — regex boundaries', () => {
   it('sees through a zero-width format character in a blocked URL path', () => {
     // A U+200B zero-width space inside the blocked path renders identically to no character.
     expect(flags('See https://nunu.gg/path here.', 'https://nunu.gg/pa\u200bth')).toBe(true)
+  })
+
+  // Review finding: `dedupKey` built its key from the raw `host`/`rest`/`hash`, not the
+  // NFC + strip-Cf normalized form `referencesBody` matches against \u2014 so two `unverified`
+  // entries for the same page that differ only by an invisible format character or a
+  // decomposed accent produced two dedup keys, and thus two "Unverified in prose" notes for
+  // what a reader sees as one identical URL.
+  it('dedups two unverified entries for the same page spelled with an invisible character and its composed form', () => {
+    const entries: ReadonlyArray<UnverifiedEntry> = [
+      { topic: 'a', url: 'https://nunu.gg/pa\u200bth', reason: 'rendered page empty' },
+      { topic: 'b', url: 'https://nunu.gg/path', reason: 'rate limited' },
+    ]
+    const { annotated } = scrubBody('See https://nunu.gg/path here.', entries)
+    expect(annotated).toBe(1)
+  })
+
+  it('dedups two unverified entries for the same page spelled in composed vs. decomposed Unicode', () => {
+    const entries: ReadonlyArray<UnverifiedEntry> = [
+      { topic: 'a', url: 'https://nunu.gg/cafe\u0301', reason: 'rendered page empty' },
+      { topic: 'b', url: 'https://nunu.gg/caf\u00e9', reason: 'rate limited' },
+    ]
+    const { annotated } = scrubBody('See https://nunu.gg/caf\u00e9 here.', entries)
+    expect(annotated).toBe(1)
   })
 })
