@@ -197,6 +197,16 @@ describe('parseArxivFeed', () => {
     const xml = `<feed><entry><id>http://arxiv.org/abs/1</id><title>A &amp; B &lt;test&gt;</title></entry></feed>`
     expect(parseArxivFeed(xml)[0]!.title).toBe('A & B <test>')
   })
+
+  it('drops an entry with no <id>, rather than emitting a half-populated record', () => {
+    const xml = `<feed>
+      <entry><title>Missing id — must be dropped</title></entry>
+      <entry><id>http://arxiv.org/abs/2</id><title>Has an id — must be kept</title></entry>
+    </feed>`
+    const entries = parseArxivFeed(xml)
+    expect(entries).toHaveLength(1)
+    expect(entries[0]!.id).toBe('http://arxiv.org/abs/2')
+  })
 })
 
 describe('isArxivId / buildArxivSearchQuery', () => {
@@ -210,18 +220,39 @@ describe('isArxivId / buildArxivSearchQuery', () => {
     expect(isArxivId('physics/0601001v1')).toBe(true)
   })
 
+  // The old-style subclass is not always a bare two-letter code — `cond-mat.stat-mech` is a
+  // real, hyphenated, multi-letter arXiv subclass.
+  it('recognises a hyphenated, multi-letter old-style subclass', () => {
+    expect(isArxivId('cond-mat.stat-mech/0601001')).toBe(true)
+    expect(isArxivId('cond-mat.stat-mech/0601001v2')).toBe(true)
+  })
+
   it('rejects free-text queries', () => {
     expect(isArxivId('EMOS quantile regression forests wind speed')).toBe(false)
     expect(isArxivId('retrieval augmented generation')).toBe(false)
   })
 
-  it('joins multi-word queries with explicit AND, not a bare space', () => {
+  it('joins multi-word queries with explicit AND, not a bare space, quoting each term', () => {
     // MEASURED: a bare `all:` multi-term query is an implicit OR in arXiv's grammar.
-    expect(buildArxivSearchQuery('quantile regression forests')).toBe('all:quantile AND all:regression AND all:forests')
+    expect(buildArxivSearchQuery('quantile regression forests')).toBe('all:"quantile" AND all:"regression" AND all:"forests"')
+  })
+
+  it('quotes a phrase-like multi-word query term by term', () => {
+    expect(buildArxivSearchQuery('retrieval augmented generation')).toBe('all:"retrieval" AND all:"augmented" AND all:"generation"')
+  })
+
+  // The injection case: an unquoted `OR` is arXiv's own boolean operator. Quoting it makes it
+  // a literal search term instead of letting worker/model text rewrite the query's grammar.
+  it('quotes a bare OR term instead of letting it act as a boolean operator', () => {
+    expect(buildArxivSearchQuery('transformers OR attention')).toBe('all:"transformers" AND all:"OR" AND all:"attention"')
   })
 
   it('handles a single-word query with no AND at all', () => {
-    expect(buildArxivSearchQuery('EMOS')).toBe('all:EMOS')
+    expect(buildArxivSearchQuery('EMOS')).toBe('all:"EMOS"')
+  })
+
+  it('strips embedded double-quotes from a term rather than letting them escape the wrapping quotes', () => {
+    expect(buildArxivSearchQuery('foo"bar')).toBe('all:"foobar"')
   })
 })
 
@@ -293,6 +324,14 @@ describe('mapCrossrefWork', () => {
     expect(mapped.openAccessUrl).toBe('https://x.test/fulltext')
   })
 
+  it('recognises a guessed .pdf link carrying a query string or fragment', () => {
+    const mapped = mapCrossrefWork({
+      DOI: '10.1/z',
+      link: [{ URL: 'https://x.test/fulltext.pdf?download=1', 'content-type': 'unspecified' }],
+    })
+    expect(mapped.openAccessUrl).toBe('https://x.test/fulltext.pdf?download=1')
+  })
+
   it('falls back to author given+family when name is absent, and null when no link is a pdf', () => {
     const mapped = mapCrossrefWork({
       DOI: '10.1/y',
@@ -344,6 +383,22 @@ describe('normalizeDoi', () => {
   it('rejects anything that is not a DOI', () => {
     expect(normalizeDoi('EMOS quantile regression forests')).toBeNull()
     expect(normalizeDoi('2309.04452')).toBeNull()
+  })
+
+  // A model routinely copies a DOI out of prose, carrying trailing sentence punctuation or a
+  // link-tracking suffix along with it — none of that is part of the DOI itself.
+  it('strips trailing sentence punctuation before validating', () => {
+    expect(normalizeDoi('10.5194/npg-30-503-2023.')).toBe('10.5194/npg-30-503-2023')
+    expect(normalizeDoi('10.5194/npg-30-503-2023)')).toBe('10.5194/npg-30-503-2023')
+    expect(normalizeDoi('10.5194/npg-30-503-2023,')).toBe('10.5194/npg-30-503-2023')
+    expect(normalizeDoi('10.5194/npg-30-503-2023;')).toBe('10.5194/npg-30-503-2023')
+    expect(normalizeDoi('10.5194/npg-30-503-2023:')).toBe('10.5194/npg-30-503-2023')
+    expect(normalizeDoi('10.5194/npg-30-503-2023]')).toBe('10.5194/npg-30-503-2023')
+  })
+
+  it('strips a trailing ?query or #fragment picked up from a doi.org link', () => {
+    expect(normalizeDoi('https://doi.org/10.5194/npg-30-503-2023?utm_source=x')).toBe('10.5194/npg-30-503-2023')
+    expect(normalizeDoi('10.5194/npg-30-503-2023#section-2')).toBe('10.5194/npg-30-503-2023')
   })
 })
 
