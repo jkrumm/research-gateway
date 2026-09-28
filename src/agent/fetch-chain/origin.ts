@@ -265,17 +265,24 @@ async function readOriginBody(
 // one place that dials the origin, recognises a definitively-missing resource, and catches
 // whatever any of the above throws.
 //
-// `dialledUrl` defaults to `ctx.fetchUrl` — the address a site adapter's `plan()` rewrote the
-// request to — but a 404/410 against it retries once against `ctx.site.fallbackUrl` when the
-// adapter offered one (site-adapters.ts's `SiteAdapter.plan` return shape), by recursing with
-// `dialledUrl` set to it. Generic on purpose: nothing here knows this is arXiv's HTML-before-PDF
-// case specifically, only that a "definitively missing" answer against the planned address has
-// a second address worth trying before the chain gives up on the resource entirely.
+// `dialledUrl` defaults to `ctx.dialUrl` — the CURRENT dial address, `ctx.fetchUrl` (the
+// address a site adapter's `plan()` rewrote the request to) until `useFallbackUrl()` below has
+// switched it to `ctx.site.fallbackUrl`, and that fallback from then on. Defaulting to
+// `ctx.fetchUrl` instead would be wrong the moment this chain has already fallen through to the
+// fallback address once: `runOriginStage`'s impersonation-rung calls omit this argument, so a
+// 404 on the planned address followed by a block on the fallback would otherwise send the
+// impersonation rung back to re-dial the address that already 404'd, not the one that actually
+// blocked it. A 404/410 against `dialledUrl` retries once against `ctx.site.fallbackUrl` when
+// the adapter offered one (site-adapters.ts's `SiteAdapter.plan` return shape), by recursing
+// with `dialledUrl` set to it. Generic on purpose: nothing here knows this is arXiv's
+// HTML-before-PDF case specifically, only that a "definitively missing" answer against the
+// planned address has a second address worth trying before the chain gives up on the resource
+// entirely.
 async function runOrigin(
   ctx: ChainContext,
   fetcher: Fetcher,
   label: FetchStep,
-  dialledUrl: string = ctx.fetchUrl,
+  dialledUrl: string = ctx.dialUrl,
 ): Promise<{ terminal: FetchChainResult } | { terminal: null; block: BlockOutcome }> {
   const t1 = performance.now()
   // A SEPARATE clock from `t1` above: `t1` is `performance.now()` (monotonic, process-

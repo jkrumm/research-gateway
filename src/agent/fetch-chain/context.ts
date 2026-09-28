@@ -263,7 +263,11 @@ export function createContext(url: string, opts: FetchChainOptions): ChainContex
 
   const fail = (error: string): FetchChainResult => {
     emitAttempts()
-    return { url, fetchUrl, via: null, text: null, error, attempts }
+    // `fetchUrl` on the RESULT is `dialUrl`, not the closure's `fetchUrl` (the site adapter's
+    // originally PLANNED address) — same reasoning as `done` below: on an origin fallback that
+    // still ends in failure, the planned address already 404'd, so naming it here would say
+    // this chain never got as far as the fallback it actually failed against.
+    return { url, fetchUrl: dialUrl, via: null, text: null, error, attempts }
   }
   const done = (via: FetchStep, text: string, dialledUrl: string = dialUrl): FetchChainResult => {
     emitAttempts()
@@ -279,9 +283,10 @@ export function createContext(url: string, opts: FetchChainOptions): ChainContex
     // worker that fetched one form and cited the other has its finding stripped at the
     // worker boundary — the exact silent failure mode HANDOVER.md's rule 4 was written for.
     //
-    // `dialledUrl` defaults to `fetchUrl` (the site adapter's planned address) but origin.ts
-    // passes the fallback address explicitly on a fallback success — recording `fetchUrl`
-    // there would be a FALSE retrieved claim on an address that actually answered 404/410.
+    // `dialledUrl` defaults to `dialUrl` (the current dial address — `fetchUrl` until a
+    // fallback switched it) but origin.ts passes the fallback address explicitly on a fallback
+    // success too — recording `fetchUrl` there would be a FALSE retrieved claim on an address
+    // that actually answered 404/410.
     if (dialledUrl !== url) ledger.recordRetrieved(dialledUrl)
     // `fetchUrl` on the RESULT is `dialledUrl`, not the closure's `fetchUrl` (the site
     // adapter's originally PLANNED address) — on an origin fallback success those two differ,
