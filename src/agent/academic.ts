@@ -24,34 +24,51 @@ function stripDoiTrailer(s: string): string {
   return stripTrailer(s.replace(/[?#].*$/, ''))
 }
 
-// Recurses rather than loops: each round strips trailing `.,;:` unconditionally, then at most
-// one trailing UNBALANCED closer — stopping the moment a round changes nothing, which is also
-// what lets a real DOI ending on a BALANCED closer (the SICI case) survive untouched.
-function stripTrailer(s: string): string {
-  const withoutPunct = s.replace(/[.,;:]+$/, '')
-  const withoutCloser = stripUnbalancedCloser(withoutPunct)
-  return withoutCloser !== null ? stripTrailer(withoutCloser) : withoutPunct
-}
-
 // A trailing `)`/`]`/`}` is DOI content, not sentence punctuation, unless it is UNBALANCED —
 // more of that bracket closed than opened anywhere in the string, the signature of a sentence
-// wrapping the citation in parens. Returns null when there is nothing to strip.
-function stripUnbalancedCloser(s: string): string | null {
-  const last = s.at(-1)
-  if (last === undefined) return null
-  const open = last === ')' ? '(' : last === ']' ? '[' : last === '}' ? '{' : null
-  if (open === null) return null
-  return countChar(s, last) > countChar(s, open) ? s.slice(0, -1) : null
+// wrapping the citation in parens.
+const CLOSER_TO_OPENER: Record<string, string> = { ')': '(', ']': '[', '}': '{' }
+
+// One linear pass, not the old recursive one: a bracket-balance count is computed ONCE over
+// the whole string, then walking in from the end strips trailing `.,;:` unconditionally and at
+// most one bracket type's UNBALANCED closer per position, decrementing that closer's count as
+// it goes rather than rescanning the (shrinking) string each round. The old recursive version
+// rescanned and reallocated a new string every round, which is quadratic — and a DOI followed
+// by thousands of stray `)` (a scraped citation, or an adversarial input) stack-overflowed it
+// outright. This still lets a real DOI ending on a BALANCED closer (the SICI case) survive
+// untouched, exactly like the recursive version did. Exported only for the linear-time /
+// no-stack-overflow regression test — same convention as the other internal helpers below that
+// are exported purely for unit testing against fixtures.
+export function stripTrailer(s: string): string {
+  const counts: Record<string, number> = { '(': 0, ')': 0, '[': 0, ']': 0, '{': 0, '}': 0 }
+  for (const c of s) if (c in counts) counts[c]!++
+
+  let end = s.length
+  while (end > 0) {
+    const ch = s[end - 1]!
+    if (ch === '.' || ch === ',' || ch === ';' || ch === ':') {
+      end--
+      continue
+    }
+    const open = CLOSER_TO_OPENER[ch]
+    if (open !== undefined && counts[ch]! > counts[open]!) {
+      counts[ch]!--
+      end--
+      continue
+    }
+    break
+  }
+  return s.slice(0, end)
 }
 
-function countChar(s: string, ch: string): number {
-  let n = 0
-  for (const c of s) if (c === ch) n++
-  return n
-}
+// Any real DOI is far under this — the cap exists only to reject a pathological input (a
+// scraped citation dragging along thousands of trailing characters) before doing any work on
+// it at all, rather than relying on stripTrailer alone to stay cheap.
+const MAX_DOI_INPUT_LENGTH = 300
 
 /** Strips a `doi:` prefix or a `https://doi.org/`/`https://dx.doi.org/` wrapper and validates what remains. Returns null for anything that is not a DOI at all. */
 export function normalizeDoi(input: string): string | null {
+  if (input.length > MAX_DOI_INPUT_LENGTH) return null
   const stripped = stripDoiTrailer(
     input
       .trim()
