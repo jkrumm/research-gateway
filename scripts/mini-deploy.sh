@@ -53,6 +53,16 @@ log() {
   print "[$(date '+%Y-%m-%dT%H:%M:%S%z')] $*"
 }
 
+# The mini's heartbeat (dotfiles scripts/lib/launchd-restarts.sh) pages on every `runs` bump
+# of a KeepAlive job — and a kickstarted gateway drains and exits 0, which from launchd's side
+# is indistinguishable from a crash loop that bails cleanly. One epoch line here, written right
+# before the restart, marks exactly one bump as deliberate. Best-effort: a failed write costs a
+# false page, never a deploy.
+mark_deliberate_restart() {
+  local dir="$HOME/.local/state/devhost/deliberate-restart"
+  mkdir -p "$dir" 2>/dev/null && date +%s >> "$dir/$1" 2>/dev/null || true
+}
+
 # Atomic write: temp file in the same dir, then `mv` — a reader (this script, next tick) must
 # never observe a partially-written deployed-sha.
 write_deployed_sha() {
@@ -278,10 +288,12 @@ main() {
   prev_restart=$(curl -fsS --max-time 2 "$HEALTH_URL" 2>/dev/null | jq -r '.lastRestartAt // ""' 2>/dev/null)
 
   log "restarting $LABEL_GATEWAY"
+  mark_deliberate_restart "$LABEL_GATEWAY"
   launchctl kickstart -k "gui/$(id -u)/$LABEL_GATEWAY" 2>&1 | while IFS= read -r l; do log "  $l"; done
 
   if [[ "$lightpanda_changed" -eq 1 ]]; then
     log "restarting $LABEL_LIGHTPANDA (lightpanda/ changed)"
+    mark_deliberate_restart "$LABEL_LIGHTPANDA"
     launchctl kickstart -k "gui/$(id -u)/$LABEL_LIGHTPANDA" 2>&1 | while IFS= read -r l; do log "  $l"; done
   fi
 

@@ -84,6 +84,8 @@ launchd-restart: ## Kickstart (restart) the gateway — refuses while jobs are r
 	  n=$$(curl -sf --max-time 3 $(HEALTH_URL) 2>/dev/null | jq -r '(.jobs.running // 0) + (.jobs.queued // 0)' 2>/dev/null || echo 0); \
 	  if [ "$${n:-0}" != "0" ]; then echo "refusing to restart: $$n job(s) running/queued — FORCE=1 make launchd-restart to restart anyway"; exit 1; fi; \
 	fi
+	@# Marks the restart for the mini heartbeat's launchd-restart check (see mini-deploy.sh).
+	@d="$$HOME/.local/state/devhost/deliberate-restart"; mkdir -p "$$d" && date +%s >> "$$d/$(LABEL_GATEWAY)" || true
 	@launchctl kickstart -k "gui/$$(id -u)/$(LABEL_GATEWAY)"
 	@echo "restarted $(LABEL_GATEWAY)"
 
