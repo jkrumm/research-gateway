@@ -6,7 +6,7 @@ import { runYtdlpStage, runTavilyStage } from './fetch-chain/extract.js'
 import type { FetchChainOptions, FetchChainResult } from './fetch-chain/types.js'
 
 export { FETCH_STEPS } from './fetch-chain/types.js'
-export type { FetchStep, FetchAttempt, FetchChainResult, FetchChainOptions, HumanSolveRequest, HumanSolveResult, HumanSolve } from './fetch-chain/types.js'
+export type { FetchAttempt, FetchChainResult, FetchChainOptions, HumanSolveRequest, HumanSolveResult, HumanSolve } from './fetch-chain/types.js'
 export { hostOf } from './fetch-chain/net.js'
 
 // The page-fetch chain, extracted from the `fetchPage` tool so it can be RUN AND MEASURED
