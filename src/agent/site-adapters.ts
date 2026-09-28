@@ -159,6 +159,7 @@ const ADAPTERS: Record<string, SiteAdapter> = {
   'dpreview.com': dpreviewAdapter,
   'www.dpreview.com': dpreviewAdapter,
   'arxiv.org': arxivAdapter,
+  'www.arxiv.org': arxivAdapter,
 }
 
 export interface ResolvedSite {
