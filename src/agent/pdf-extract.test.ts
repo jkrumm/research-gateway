@@ -234,6 +234,36 @@ describe('readIdleCapped', () => {
     watchdog.clear()
   })
 
+  // The bug this guards: a stream yielding zero-length chunks without ever setting `done` used
+  // to call `watchdog.arm()` on every such chunk, resetting the idle timer forever and starving
+  // it of the chance to fire — a wedged-but-still-"reading" child would never be killed. A fake
+  // watchdog with an arm() spy proves no zero-byte chunk arms it, and that the watchdog (driven
+  // here by a manual abort, same pattern as the mid-read idle test above) still reaches the
+  // pending read and reports `outcome: 'idle'`.
+  it('does not arm the idle watchdog on zero-length chunks, so an unfed watchdog can still fire idle', async () => {
+    const controller = new AbortController()
+    let armCount = 0
+    const watchdog = { signal: controller.signal, arm: () => { armCount++ }, clear: () => {} }
+    let pullCount = 0
+    const stream = new ReadableStream<Uint8Array>({
+      pull(ctrl) {
+        pullCount++
+        if (pullCount > 3) {
+          // Simulates a stalled subprocess after the empty chunks: this read never settles on
+          // its own — only the abort below unblocks it.
+          return new Promise<void>(() => {})
+        }
+        ctrl.enqueue(new Uint8Array(0))
+      },
+    })
+    const resultPromise = readIdleCapped(stream, 1_000, watchdog)
+    await new Promise((resolve) => setTimeout(resolve, 5))
+    expect(armCount).toBe(0)
+    controller.abort(new Error('idle'))
+    const result = await resultPromise
+    expect(result).toEqual({ text: '', truncated: false, outcome: 'idle' })
+  })
+
   it('returns an empty, non-truncated result for a null stream', async () => {
     const watchdog = createIdleWatchdog(10_000)
     const result = await readIdleCapped(null, 1_000, watchdog)

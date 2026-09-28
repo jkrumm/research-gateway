@@ -204,7 +204,12 @@ export async function readIdleCapped(
   try {
     for (;;) {
       const { done, value } = await withIdle(reader.read(), abortSignal)
-      if (done || !value) break
+      if (done) break
+      // A zero-length chunk (or a `done: false` read with no value at all — not a documented
+      // shape, but not worth trusting either) is not progress: arming here would let a stream
+      // that yields empty chunks forever, without ever setting `done`, re-arm the idle watchdog
+      // on every iteration and starve it of the chance to ever fire.
+      if (!value || value.byteLength === 0) continue
       watchdog.arm()
       const room = capBytes - total
       if (value.byteLength <= room) {
