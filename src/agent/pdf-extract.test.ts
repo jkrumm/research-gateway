@@ -78,6 +78,41 @@ describe('mapPdftotextResult', () => {
     if (result.ok) throw new Error('unreachable')
     expect(result.error).toContain('scanned/image PDF')
   })
+
+  // A stderr-only cap crossing still kills the child (pdf.ts's killIfCapped runs on both
+  // streams) — that must not be read back as a clean success just because stdout's own read
+  // happened to report 'complete': a SIGKILL closes stdout's pipe too, so 'complete' there only
+  // means the pipe closed, not that pdftotext had finished writing.
+  it('fails with a distinct message when only stderr crosses its cap and the child was actually killed', () => {
+    const result = mapPdftotextResult({
+      signalCode: 'SIGKILL',
+      code: 0,
+      stdout: longText,
+      stderr: 'warning: '.repeat(1000),
+      idleMs: 60_000,
+      stderrOverflow: true,
+    })
+    expect(result.ok).toBe(false)
+    if (result.ok) throw new Error('unreachable')
+    expect(result.error).toBe('pdftotext stderr overflow')
+  })
+
+  // The exception: the process had already exited on its own (pdf.ts's killChild() was a no-op
+  // on an already-dead process, so signalCode stays null) before stderr's cap ever mattered —
+  // stdout genuinely completed, so this must be judged on its own merits, not failed.
+  it('does not fail on a stderr overflow when the process had already exited on its own (stdout completed)', () => {
+    const result = mapPdftotextResult({
+      signalCode: null,
+      code: 0,
+      stdout: longText,
+      stderr: 'warning: '.repeat(1000),
+      idleMs: 60_000,
+      stderrOverflow: true,
+    })
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error('unreachable')
+    expect(result.truncated).toBe(false)
+  })
 })
 
 describe('pdfTruncationNotice', () => {
