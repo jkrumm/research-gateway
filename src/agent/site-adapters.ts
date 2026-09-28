@@ -53,8 +53,9 @@
 import { extractRedditThread, extractRedlibThread, type MinimalDocument } from './extract-reddit.js'
 import { canonicalYoutubeWatchUrl } from './youtube.js'
 import { annotateWrchina } from './extract-wrchina.js'
+import { extractArxivHtml } from './extract-arxiv.js'
 
-export interface SiteAdapter {
+interface SiteAdapter {
   /** Rewrite the address actually dialled. The caller keeps the original for the ledger. */
   rewriteHost?: string
   /** Read the fetched document. Returns null to fall through to Readability. */
@@ -87,99 +88,30 @@ const dpreviewAdapter: SiteAdapter = {
   },
 }
 
-// ── arXiv LaTeXML extraction ─────────────────────────────────────────────────
-// LaTeXML's HTML build represents an equation as `<math alttext="...">` — MEASURED to carry
-// the exact LaTeX source (`Y\mid X\sim\mathcal{F}_{\bm{\theta}}`), strictly better than any
-// glyph reconstruction `pdftotext` could do on the same formula in the PDF — and a table as
-// `<table class="ltx_tabular">`. This walks the article body substituting `$<alttext>$` for
-// each formula and rendering table rows as ` | `-joined cells, one row per line, so a worker
-// reads the paper's actual equations and tables rather than losing them to prose extraction.
-// Returns null when the page is not a LaTeXML document (a 404, or any other page this module
-// was never meant to touch), so Readability takes over exactly as if there were no adapter.
-//
-// A richer structural view than extract-reddit.ts's MinimalDocument — reconstructing reading
-// order needs node identity (text vs element), attributes and child order, which a flat
-// querySelectorAll cannot give it. Still dependency-free: linkedom's real DOM implements
-// every member used here, so this stays a type-only contract, not an import; the mismatch
-// with `SiteAdapter.extract`'s declared (narrower) parameter type is bridged with one cast at
-// the adapter definition below, the same way parse-worker.ts casts its call site.
-interface LatexmlNode {
-  nodeType: number
-  nodeValue: string | null
-  tagName?: string
-  childNodes: ArrayLike<LatexmlNode>
-  getAttribute?(name: string): string | null
-  querySelectorAll?(selectors: string): ArrayLike<LatexmlNode>
-}
-interface LatexmlDocument {
-  querySelector(selectors: string): LatexmlNode | null
+// One video URL can skip straight to Tavily Extract, bypassing the plain-fetch and
+// lightpanda steps entirely — see the header comment for why (a success-shaped failure at
+// ~1,731 chars of player chrome, not a thin-content miss those steps would otherwise catch).
+const youtubeAdapter: SiteAdapter = {
+  plan: (parsed) => {
+    const canonical = canonicalYoutubeWatchUrl(parsed.toString())
+    return canonical ? { fetchUrl: canonical, skipToExtract: true } : null
+  },
 }
 
-const TEXT_NODE = 3
-const ELEMENT_NODE = 1
-// Tags whose content gets a line break after it, so paragraphs/headings/list items don't run
-// together into one unbroken line once every element boundary is otherwise invisible.
-const BLOCK_TAGS = new Set(['p', 'div', 'section', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'li', 'article'])
-
-/** Plain text of a subtree, substituting `$<alttext>$` for any formula inside it — used for table cells, which may themselves contain inline math. */
-function textWithMath(node: LatexmlNode): string {
-  if (node.nodeType === TEXT_NODE) return node.nodeValue ?? ''
-  if (node.nodeType !== ELEMENT_NODE) return ''
-  if (node.tagName?.toLowerCase() === 'math') {
-    const alttext = node.getAttribute?.('alttext')
-    if (alttext) return `$${alttext}$`
-  }
-  return Array.from(node.childNodes)
-    .map((c) => textWithMath(c))
-    .join('')
-}
-
-function tableRowsAsText(table: LatexmlNode): string {
-  const rows = Array.from(table.querySelectorAll?.('tr') ?? [])
-  const lines: string[] = []
-  for (const row of rows) {
-    const cells = Array.from(row.querySelectorAll?.('td, th') ?? [])
-    const cellText = cells.map((c) => textWithMath(c).trim()).filter(Boolean)
-    if (cellText.length > 0) lines.push(cellText.join(' | '))
-  }
-  return lines.join('\n')
-}
-
-function walkLatexml(node: LatexmlNode, out: string[]): void {
-  if (node.nodeType === TEXT_NODE) {
-    if (node.nodeValue) out.push(node.nodeValue)
-    return
-  }
-  if (node.nodeType !== ELEMENT_NODE) return
-  const tag = node.tagName?.toLowerCase()
-  if (tag === 'math') {
-    const alttext = node.getAttribute?.('alttext')
-    out.push(alttext ? `$${alttext}$` : textWithMath(node))
-    return
-  }
-  const classAttr = node.getAttribute?.('class') ?? ''
-  if (tag === 'table' && /\bltx_tabular\b/.test(classAttr)) {
-    out.push(`\n${tableRowsAsText(node)}\n`)
-    return
-  }
-  for (const child of Array.from(node.childNodes)) walkLatexml(child, out)
-  if (tag && BLOCK_TAGS.has(tag)) out.push('\n')
-}
-
-function extractArxivHtml(document: LatexmlDocument): string | null {
-  const article = document.querySelector('article.ltx_document') ?? document.querySelector('.ltx_document')
-  if (!article) return null // not a LaTeXML page (a 404, or something else entirely)
-  const out: string[] = []
-  walkLatexml(article, out)
-  const text = out.join('')
-  return text.trim().length > 0 ? text : null
+// wrchina.gg reads fine through Readability; its failure is SEMANTIC — two percentage tables
+// (set win/use rate, top-player presence) flatten into bare numbers a worker mixed up (the
+// 2026-09-26 Pyke report). The reader labels them in place and returns null, so Readability
+// runs on the annotated document (parse-worker.ts) — `extract` may mutate before declining.
+// The cast: MinimalDocument is the read-only view; annotation also needs attributes/siblings.
+const wrchinaAdapter: SiteAdapter = {
+  extract: (document) => annotateWrchina(document as unknown as Parameters<typeof annotateWrchina>[0]),
 }
 
 // arXiv: HTML before PDF, PDF as the fallback. `academicSearch`'s OpenAlex/arXiv results
 // mostly carry `arxiv.org/pdf/<id>` as the open-access URL, and a model routinely cites the
 // `/abs/<id>` landing page too — both are rewritten to `arxiv.org/html/<id>` (LaTeXML), the
 // version that keeps equations as exact LaTeX and tables as real markup rather than whatever
-// `pdftotext` can reconstruct from PDF glyphs (see `extractArxivHtml` below). Not every paper
+// `pdftotext` can reconstruct from PDF glyphs (see extract-arxiv.ts's `extractArxivHtml`). Not every paper
 // has a LaTeXML build — arXiv started generating it only for papers submitted from
 // ~2018 onward, and it can 404 even for some newer ones — so `fallbackUrl` carries the PDF
 // address. The fetch chain (`fetch-chain/origin.ts`'s `runOrigin`) DOES consume this: a
@@ -200,29 +132,10 @@ const arxivAdapter: SiteAdapter = {
     const id = match[1]
     return { fetchUrl: `https://arxiv.org/html/${id}`, skipToExtract: false, fallbackUrl: `https://arxiv.org/pdf/${id}` }
   },
-  // Cast: extractArxivHtml's parameter is the richer LatexmlNode/LatexmlDocument view above,
-  // not extract-reddit.ts's flat MinimalDocument — linkedom's real document satisfies both at
-  // runtime, so this is a type-shape bridge, not an unsafe call.
+  // Cast: extractArxivHtml's parameter is extract-arxiv.ts's richer LatexmlNode/LatexmlDocument
+  // view, not extract-reddit.ts's flat MinimalDocument — linkedom's real document satisfies
+  // both at runtime, so this is a type-shape bridge, not an unsafe call.
   extract: extractArxivHtml as unknown as (document: MinimalDocument) => string | null,
-}
-
-// One video URL can skip straight to Tavily Extract, bypassing the plain-fetch and
-// lightpanda steps entirely — see the header comment for why (a success-shaped failure at
-// ~1,731 chars of player chrome, not a thin-content miss those steps would otherwise catch).
-const youtubeAdapter: SiteAdapter = {
-  plan: (parsed) => {
-    const canonical = canonicalYoutubeWatchUrl(parsed.toString())
-    return canonical ? { fetchUrl: canonical, skipToExtract: true } : null
-  },
-}
-
-// wrchina.gg reads fine through Readability; its failure is SEMANTIC — two percentage tables
-// (set win/use rate, top-player presence) flatten into bare numbers a worker mixed up (the
-// 2026-09-26 Pyke report). The reader labels them in place and returns null, so Readability
-// runs on the annotated document (parse-worker.ts) — `extract` may mutate before declining.
-// The cast: MinimalDocument is the read-only view; annotation also needs attributes/siblings.
-const wrchinaAdapter: SiteAdapter = {
-  extract: (document) => annotateWrchina(document as unknown as Parameters<typeof annotateWrchina>[0]),
 }
 
 // Keyed by lowercase host of the ORIGINAL url.
