@@ -14,7 +14,10 @@ export function createRateGate(minIntervalMs: number): <T>(fn: () => Promise<T>)
     throw new Error(`createRateGate: minIntervalMs must be a finite number >= 0, got ${minIntervalMs}`)
   }
   let chain: Promise<void> = Promise.resolve()
-  let lastRunAt = 0
+  // -Infinity, not 0 — `performance.now()` is process-relative, so 0 means "at process start"
+  // and would delay the very first call within minIntervalMs of boot (every deploy). There has
+  // been no previous call yet, so nothing should be waited on.
+  let lastRunAt = -Infinity
   return function gated<T>(fn: () => Promise<T>): Promise<T> {
     const runAfter = chain.then(async () => {
       // The interval is counted from the previous request's START, not the previous
