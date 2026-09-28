@@ -46,11 +46,11 @@ export function createSemaphore(limit: number, queueTimeoutMs?: number): Semapho
   }
 
   const acquire = (signal?: AbortSignal): Promise<boolean> => {
+    if (signal?.aborted) return Promise.resolve(false)
     if (active < limit) {
       active++
       return Promise.resolve(true)
     }
-    if (signal?.aborted) return Promise.resolve(false)
     return new Promise((resolve) => {
       // `settled` guards the races a queued waiter can lose in the same tick: granted a slot
       // and timed out, or granted a slot and its signal aborted. Granting twice would let
