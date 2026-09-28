@@ -49,6 +49,16 @@ describe('createRateGate', () => {
     expect(starts[2]! - starts[1]!).toBeGreaterThanOrEqual(45)
   })
 
+  it('rejects a non-finite or negative minIntervalMs rather than silently misbehaving', () => {
+    expect(() => createRateGate(-1)).toThrow()
+    expect(() => createRateGate(NaN)).toThrow()
+    expect(() => createRateGate(Infinity)).toThrow()
+  })
+
+  it('still allows 0 — no minimum interval at all', () => {
+    expect(() => createRateGate(0)).not.toThrow()
+  })
+
   it('serializes many concurrent calls in arrival order with no overlap', async () => {
     const gate = createRateGate(5)
     let active = 0
