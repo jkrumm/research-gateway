@@ -931,3 +931,78 @@ describe('bounded body reads', () => {
     expect(result.via).toBeNull()
   })
 })
+
+// Runs the real pdftotext binary end to end through the fetch chain's PDF branch — the one
+// place `pdf.ts`'s process-wide semaphore (pdf-semaphore.ts) and idle watchdog (replacing the
+// old flat 60s kill) actually run, since pdf.ts itself stays untested-by-design like ytdlp.ts
+// (both import env.ts for their binary path — see AGENTS.md's Local dev section). The pure
+// mapping (`mapPdftotextResult`, `truncated`, `pdfTruncationNotice`) is unit-tested directly in
+// pdf-extract.test.ts; this covers the real subprocess wiring around it.
+describe('real pdftotext extraction (fixtures)', () => {
+  const FIXTURES = `${import.meta.dir}/__fixtures__`
+  const readFixture = (name: string) => Bun.file(`${FIXTURES}/${name}`).arrayBuffer().then((b) => new Uint8Array(b))
+
+  it('extracts real text from a PDF that clears the MIN_PDF_TEXT_CHARS floor', async () => {
+    const bytes = await readFixture('paper.pdf')
+    stubFetch((u) => (u === PAGE ? new Response(bytes, { headers: { 'content-type': 'application/pdf' } }) : new Response('nope', { status: 404 })))
+
+    const result = await runFetchChain(PAGE, {
+      ledger: createLedger(),
+      hostGate: createHostGate(),
+      tavilyExtract: stubTavilyFail(),
+      impersonatedFetch: stubImpersonateUnavailable(),
+    })
+
+    expect(result.via).toBe('pdf')
+    expect(result.text).toContain('fixture paper about wind speed')
+  })
+
+  it('falls through a near-empty (scanned-looking) PDF as a miss, not a success', async () => {
+    const bytes = await readFixture('thin.pdf')
+    stubFetch((u) => (u === PAGE ? new Response(bytes, { headers: { 'content-type': 'application/pdf' } }) : new Response('nope', { status: 404 })))
+
+    const result = await runFetchChain(PAGE, {
+      ledger: createLedger(),
+      hostGate: createHostGate(),
+      tavilyExtract: stubTavilyFail(),
+      impersonatedFetch: stubImpersonateUnavailable(),
+    })
+
+    const pdfAttempt = result.attempts.find((a) => a.step === 'pdf')
+    expect(pdfAttempt?.ok).toBe(false)
+    expect(pdfAttempt?.error).toMatch(/thin|scanned/)
+  })
+
+  it('falls through a clean but short PDF (exit 0, under the floor) as a miss, not a success', async () => {
+    const bytes = await readFixture('valid.pdf')
+    stubFetch((u) => (u === PAGE ? new Response(bytes, { headers: { 'content-type': 'application/pdf' } }) : new Response('nope', { status: 404 })))
+
+    const result = await runFetchChain(PAGE, {
+      ledger: createLedger(),
+      hostGate: createHostGate(),
+      tavilyExtract: stubTavilyFail(),
+      impersonatedFetch: stubImpersonateUnavailable(),
+    })
+
+    const pdfAttempt = result.attempts.find((a) => a.step === 'pdf')
+    expect(pdfAttempt?.ok).toBe(false)
+    expect(pdfAttempt?.error).toMatch(/thin|scanned/)
+    expect(result.via).toBeNull()
+  })
+
+  it('falls through a corrupt PDF exactly like any other pdftotext failure', async () => {
+    const bytes = await readFixture('truncated.pdf')
+    stubFetch((u) => (u === PAGE ? new Response(bytes, { headers: { 'content-type': 'application/pdf' } }) : new Response('nope', { status: 404 })))
+
+    const result = await runFetchChain(PAGE, {
+      ledger: createLedger(),
+      hostGate: createHostGate(),
+      tavilyExtract: stubTavilyFail(),
+      impersonatedFetch: stubImpersonateUnavailable(),
+    })
+
+    const pdfAttempt = result.attempts.find((a) => a.step === 'pdf')
+    expect(pdfAttempt?.ok).toBe(false)
+    expect(result.via).toBeNull()
+  })
+})

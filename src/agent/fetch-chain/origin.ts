@@ -2,7 +2,7 @@ import { normalizeText } from '../extract.js'
 import { extractText } from '../html-parse.js'
 import { isRawContentType, isDefinitivelyMissing, isPdf, looksBinary } from '../response-kind.js'
 import { extractPdfText } from '../pdf.js'
-import { MAX_PDF_BYTES } from '../pdf-extract.js'
+import { MAX_PDF_BYTES, pdfTruncationNotice } from '../pdf-extract.js'
 import { readBoundedBytesByCap, readCappedText, MAX_BODY_BYTES } from '../../lib/bounded-read.js'
 import { classifyBlock, describeBlock, isJavaScriptShell, type BlockVerdict } from '../challenge.js'
 import { parseRetryAfter } from '../host-gate.js'
@@ -197,10 +197,15 @@ async function readOriginBody(
     ctx.markPdfBody()
     const pdf = await extractPdfText(bytes, { jobId: ctx.jobId })
     if (pdf.ok) {
-      attempt(ctx.attempts, 'pdf', t1, { ok: true, chars: pdf.text.length })
+      // `pdf.truncated` means pdftotext's OWN output was cut at its byte cap while still
+      // writing — a real, complete-so-far extraction, not a failure, but the worker reading
+      // this text MUST know it is incomplete rather than treat it as the whole paper. Appended
+      // honestly rather than silently dropped (previously discarded at this exact call site).
+      const text = pdf.truncated ? `${pdf.text}${pdfTruncationNotice()}` : pdf.text
+      attempt(ctx.attempts, 'pdf', t1, { ok: true, chars: text.length })
       ctx.hostGate.noteOk(ctx.host, { startedAt: attemptStartedAt })
-      log('tool.fetchPage', { jobId: ctx.jobId, url: ctx.url, via: 'pdf', chars: pdf.text.length })
-      return { terminal: ctx.done('pdf', pdf.text) }
+      log('tool.fetchPage', { jobId: ctx.jobId, url: ctx.url, via: 'pdf', chars: text.length, truncated: pdf.truncated })
+      return { terminal: ctx.done('pdf', text) }
     }
     // pdftotext missing, failed, or below the text floor (a scanned PDF with no text layer)
     // — falls through to Tavily Extract, which OCRs PDFs server-side. Never a reason to pass
