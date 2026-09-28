@@ -5,6 +5,7 @@ import { fetchTavilyUsage } from '../lib/tavily-account.js'
 import { restartStats, isDraining, jobCounts } from '../lib/job-store.js'
 import { memorySnapshot } from '../lib/memory-watch.js'
 import { loopSnapshot } from '../lib/loop-watch.js'
+import { pdfExtractionSemaphore } from '../agent/pdf-semaphore.js'
 
 async function readYtdlpVersion(): Promise<string> {
   const proc = Bun.spawn([env.YTDLP_PATH, '--version'], {
@@ -48,12 +49,16 @@ export const healthRoute = new Elysia()
   .get(
     '/health',
     () => {
+      // Called once and reused — two separate `loopSnapshot()` calls could observe different
+      // samples if a new one lands between them (the watchdog interval isn't gated on this
+      // request), and `lastMs`/`peakMs` are meant to describe the same moment.
       const loop = loopSnapshot()
       return {
         status: 'ok' as const,
         ...restartStats(),
         draining: isDraining(),
         jobs: jobCounts(),
+        pdf: { active: pdfExtractionSemaphore.active, queued: pdfExtractionSemaphore.queued },
         memory: memorySnapshot(env.MEMORY_LIMIT_MB),
         degraded: env.RESEARCH_GATEWAY_DEGRADED,
         eventLoopLagMs: loop.lastMs,
@@ -80,6 +85,10 @@ export const healthRoute = new Elysia()
         jobs: z.object({
           running: z.number().describe('Jobs currently holding a concurrency slot'),
           queued: z.number().describe('Jobs waiting for a concurrency slot'),
+        }),
+        pdf: z.object({
+          active: z.number().describe('pdftotext subprocesses currently running (pdf-semaphore.ts, cap 2)'),
+          queued: z.number().describe('PDF extractions waiting for a subprocess slot'),
         }),
         memory: z
           .object({
@@ -114,7 +123,7 @@ export const healthRoute = new Elysia()
         tags: ['System'],
         summary: 'Liveness probe',
         description:
-          'Returns `{ status: "ok" }` if the service process is up, plus `lastRestartAt` and the `resumed` / `failedAfterRestarts` job counts of this process lifetime — a job adopted from a lost lease shows as `resumed` > 0 until the next deploy. `draining`, `jobs`, `memory`, `degraded`, `eventLoopLagMs` and `eventLoopLagPeakMs` are monitor-facing visibility into load, shutdown, overlay and event-loop state, added alongside the restart fields. Only `status` gates anything (Docker healthcheck, rollhook) — a draining container still serves polls correctly, and a non-empty `degraded` still reports "ok", so none of the new fields degrade it. No auth required.',
+          'Returns `{ status: "ok" }` if the service process is up, plus `lastRestartAt` and the `resumed` / `failedAfterRestarts` job counts of this process lifetime — a job adopted from a lost lease shows as `resumed` > 0 until the next deploy. `draining`, `jobs`, `pdf`, `memory`, `degraded`, `eventLoopLagMs` and `eventLoopLagPeakMs` are monitor-facing visibility into load, shutdown, overlay and event-loop state, added alongside the restart fields. Only `status` gates anything (Docker healthcheck, rollhook) — a draining container still serves polls correctly, and a non-empty `degraded` still reports "ok", so none of the new fields degrade it. No auth required.',
       },
     },
   )
