@@ -11,8 +11,13 @@ import type { FetchChainResult } from './types.js'
 // terminally failed. See fetch-chain.ts's header comment for the measured evidence and the
 // two deliberate exclusions.
 export async function runWaybackStage(ctx: ChainContext, originalReason: string): Promise<FetchChainResult> {
-  // No parse/protocol re-check here: `assertPublicHttpUrl(fetchUrl)` at the top of the chain
-  // already threw on anything that is not a parseable, public http(s) URL.
+  // No SEPARATE parse/protocol re-check needed here before dialling: this stage reads
+  // `ctx.dialUrl`, which may already be `ctx.site.fallbackUrl` rather than the address the
+  // top-of-chain `assertPublicHttpUrl(fetchUrl)` pre-flight validated (origin.ts's
+  // `useFallbackUrl()`) — but `safeFetch` below re-validates its OWN start URL, not only
+  // redirect targets (net.ts's `safeFetch`: `assertPublicUrl(current)` runs on `hop === 0`
+  // too), so `waybackLookupUrl(ctx.dialUrl)` is checked regardless of which address `dialUrl`
+  // currently is.
   if (ctx.site.skipToExtract || isArchiveUrl(ctx.dialUrl)) return ctx.fail(originalReason)
 
   const tW = performance.now()
