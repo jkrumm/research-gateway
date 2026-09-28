@@ -6,6 +6,7 @@ import { log } from '../lib/log.js'
 import { readBoundedText, MAX_BODY_BYTES } from '../lib/bounded-read.js'
 import { capText, TEXT_CAP } from './extract.js'
 import { createRateGate } from './rate-gate.js'
+import { fetchArxivFeed, type ArxivFeedResult } from './arxiv-feed.js'
 import {
   badDockerName,
   badPackageName,
@@ -835,23 +836,6 @@ async function lookupPubmed(query: string, limit: number, ledger: RetrievalLedge
 const arxivGate = createRateGate(3_000)
 const semanticScholarGate = createRateGate(1_000)
 
-// The gated operation itself — fetch AND read the body, not just fetch. export.arxiv.org's
-// policy is ONE connection at a time, so the gate must hold the queue until the response body
-// has actually been consumed, not merely until `fetch()`'s promise settles (which happens on
-// receipt of headers, long before the body is drained). Releasing early there let a second
-// worker's request open a concurrent connection while this one's body was still streaming.
-async function fetchArxivFeed(url: string): Promise<{ ok: true; text: string } | { ok: false; error: string }> {
-  const res = await fetch(url, { headers: { 'user-agent': UA }, signal: AbortSignal.timeout(TIMEOUT_MS) })
-  if (!res.ok) return { ok: false, error: `HTTP ${res.status} ${res.statusText}` }
-  // Bounded like every other network body in this file — an unbounded `res.text()` was the
-  // only such read left here.
-  const { text, truncated } = await readBoundedText(res, MAX_BODY_BYTES, (info) =>
-    log('tool.academicSearch', { source: 'arxiv', url, via: 'oversized', ...info }),
-  )
-  if (truncated) return { ok: false, error: `response exceeds ${MAX_BODY_BYTES} byte cap` }
-  return { ok: true, text }
-}
-
 async function lookupArxiv(query: string, limit: number, ledger: RetrievalLedger): Promise<unknown> {
   const q = query.trim()
   const params = new URLSearchParams()
@@ -867,9 +851,11 @@ async function lookupArxiv(query: string, limit: number, ledger: RetrievalLedger
   params.set('max_results', String(Math.min(Math.max(limit, 1), 10)))
   const url = `https://export.arxiv.org/api/query?${params.toString()}`
 
-  let feed: { ok: true; text: string } | { ok: false; error: string }
+  let feed: ArxivFeedResult
   try {
-    feed = await arxivGate(() => fetchArxivFeed(url))
+    feed = await arxivGate(() =>
+      fetchArxivFeed(url, (info) => log('tool.academicSearch', { source: 'arxiv', url, via: 'oversized', ...info })),
+    )
   } catch (err) {
     const reason = String(err)
     ledger.recordFailed(url, reason)
