@@ -25,15 +25,21 @@ export type AdmissionRefusal = {
 // slot a finishing job just freed replaces exactly the memory that job released, and the
 // container walks into the same OOM kill with a 503 on the door.
 //
+// `held` is a SOFTER, earlier version of the same idea (memory-watch.ts's 70% threshold,
+// below the 85% `memoryPressure` shed): a queued job simply waits for a free slot rather than
+// being refused outright — `admit()` (below) does NOT check it, on purpose, per the brief's
+// "queued jobs wait, they are never rejected for this".
+//
 // `draining` is not a parameter here for the same reason it does not need to be: the shutdown
 // path rejects every queued waiter outright, so there is nothing left to dispatch.
 export function canDispatch(state: {
   memoryPressure: boolean
+  held: boolean
   running: number
   queued: number
   maxConcurrency: number
 }): boolean {
-  if (state.memoryPressure) return false
+  if (state.memoryPressure || state.held) return false
   return state.running < state.maxConcurrency && state.queued > 0
 }
 
