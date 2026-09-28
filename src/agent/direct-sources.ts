@@ -1053,17 +1053,20 @@ const ACADEMIC_LOOKUPS: Record<string, (query: string, limit: number, ledger: Re
 // Named rather than inlined into the description template below — each was a ternary
 // re-evaluating the same `OPTIONAL_ACADEMIC_SOURCES.some(...)` lookup at the exact call site
 // that consumes it.
-const UNPAYWALL_DESCRIPTION_SUFFIX = OPTIONAL_ACADEMIC_SOURCES.some((s) => s.name === 'unpaywall' && s.enabled)
-  ? ', `unpaywall` (best open-access location for ONE DOI — pass the DOI as `query`)'
-  : ''
+const UNPAYWALL_ENABLED = OPTIONAL_ACADEMIC_SOURCES.some((s) => s.name === 'unpaywall' && s.enabled)
+const UNPAYWALL_DESCRIPTION_SUFFIX = UNPAYWALL_ENABLED ? ', `unpaywall` (best open-access location for ONE DOI — pass the DOI as `query`)' : ''
 const SEMANTIC_SCHOLAR_DESCRIPTION_SUFFIX = OPTIONAL_ACADEMIC_SOURCES.some((s) => s.name === 'semanticscholar' && s.enabled)
   ? ', `semanticscholar`'
   : ''
+// Same reasoning as the suffix above: a hint naming `unpaywall` is only true advice when this
+// process actually offers that source — a worker told to resolve a DOI through a source that
+// isn't even in the `source` enum would just fail the call and retry blind.
+const DOI_RESOLUTION_HINT = UNPAYWALL_ENABLED ? 'resolve it through `unpaywall` (or `openalex`) BEFORE fetching a publisher page' : 'resolve it through `openalex` BEFORE fetching a publisher page'
 
 function buildAcademicSearchTool(ledger: RetrievalLedger, jobId: string): AnyTool {
   return tool({
     description:
-      `Search academic/scientific literature for authoritative bibliographic metadata and open-access full text. Sources: \`openalex\` (broad multi-disciplinary coverage), \`pubmed\` (biomedical/life-science), \`arxiv\` (preprints — pass an arXiv id directly for an exact lookup), \`crossref\` (DOI registration metadata), \`core\` (aggregated OA fulltext index)${UNPAYWALL_DESCRIPTION_SUFFIX}${SEMANTIC_SCHOLAR_DESCRIPTION_SUFFIX}. For a DOI, resolve it through \`unpaywall\` (or \`openalex\`) BEFORE fetching a publisher page — then \`fetchPage\` the open-access URL to READ the paper, which is what earns a high-confidence citation; metadata alone stays medium. Prefer this over searchWeb for "who wrote / what year / how many citations / is there a paper on X" questions.`,
+      `Search academic/scientific literature for authoritative bibliographic metadata and open-access full text. Sources: \`openalex\` (broad multi-disciplinary coverage), \`pubmed\` (biomedical/life-science), \`arxiv\` (preprints — pass an arXiv id directly for an exact lookup), \`crossref\` (DOI registration metadata), \`core\` (aggregated OA fulltext index)${UNPAYWALL_DESCRIPTION_SUFFIX}${SEMANTIC_SCHOLAR_DESCRIPTION_SUFFIX}. For a DOI, ${DOI_RESOLUTION_HINT} — then \`fetchPage\` the open-access URL to READ the paper, which is what earns a high-confidence citation; metadata alone stays medium. Prefer this over searchWeb for "who wrote / what year / how many citations / is there a paper on X" questions.`,
     inputSchema: z.object({
       source: z.enum(ACADEMIC_SOURCES).describe('Which index to query'),
       query: z.string().describe('Search terms, an arXiv id, or (for `unpaywall`) a DOI'),
