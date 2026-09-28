@@ -11,6 +11,7 @@ import {
   mapCoreWork,
   mapSemanticScholarPaper,
   normalizeDoi,
+  stripTrailer,
 } from './academic.js'
 
 const FIXTURES = `${import.meta.dir}/__fixtures__/academic`
@@ -418,6 +419,25 @@ describe('normalizeDoi', () => {
     const sici = '10.1002/(SICI)1097-4636(199706)35:4<477::AID-JBM9>3.0.CO;2-A'
     expect(normalizeDoi(`${sici})`)).toBe(sici)
     expect(normalizeDoi(`${sici}).`)).toBe(sici)
+  })
+
+  it('rejects a pathologically long input before doing any stripping work', () => {
+    expect(normalizeDoi(`10.1234/x${')'.repeat(50_000)}`)).toBeNull()
+  })
+
+  it('stripTrailer handles a 50k unbalanced-closer suffix in bounded time without throwing (was: recursive, quadratic, stack-overflowed)', () => {
+    const input = `10.1234/x${')'.repeat(50_000)}`
+    const start = performance.now()
+    const result = stripTrailer(input)
+    const elapsedMs = performance.now() - start
+    expect(result).toBe('10.1234/x')
+    expect(elapsedMs).toBeLessThan(1_000)
+  })
+
+  it('stripTrailer keeps balanced parens and only strips the unbalanced tail, linear pass', () => {
+    const sici = '10.1002/(SICI)1097-4636(199706)35:4<477::AID-JBM9>3.0.CO;2-A'
+    expect(stripTrailer(sici)).toBe(sici)
+    expect(stripTrailer(`${sici})`)).toBe(sici)
   })
 })
 
