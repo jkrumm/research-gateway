@@ -25,6 +25,20 @@ describe('mapPdftotextResult', () => {
   // signal on the very same exit that produced a genuine, complete-up-to-the-cap partial text.
   // Truncation must win over `signalCode` — this must stay `ok:true, truncated:true`, never the
   // idle-kill failure branch.
+  it('reports a capped extraction that normalises below the text floor as a thin miss, not a truncated success', () => {
+    const result = mapPdftotextResult({
+      signalCode: 'SIGKILL',
+      code: 0,
+      stdout: ' \n\t '.repeat(200_000) + 'x',
+      stderr: '',
+      idleMs: 60_000,
+      stdoutTruncated: true,
+    })
+    expect(result.ok).toBe(false)
+    if (result.ok) throw new Error('unreachable')
+    expect(result.error).toMatch(/^thin \(\d+ chars\) after the output cap/)
+  })
+
   it('reports ok:true truncated:true even when the cap-crossing kill left a signalCode', () => {
     const result = mapPdftotextResult({
       signalCode: 'SIGKILL',
