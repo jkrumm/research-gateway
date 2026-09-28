@@ -270,32 +270,6 @@ const Env = z.object({
   // poppler's pdftotext binary — 'pdftotext' resolves via PATH (Homebrew's `poppler` on the
   // mini, on the launcher's PATH — see deploy/MINI.md). See agent/pdf.ts.
   PDFTOTEXT_PATH: z.string().default('pdftotext'),
-  // Optional. Enables the `unpaywall` academicSearch source (a DOI -> best open-access
-  // location lookup) — unpaywall requires a real contact address in every request and
-  // BLOCKLISTS `@example.com` outright (measured: `@example.com` -> 422 same as no email).
-  // Empty-as-unset, same pattern as GITHUB_TOKEN above: an unseeded `op://` ref in local dev
-  // must not send a broken address, it must take the source out of the enum entirely.
-  ACADEMIC_CONTACT_EMAIL: z
-    .string()
-    .trim()
-    .optional()
-    .transform((v) => (v ? v : undefined)),
-  // Optional. Raises CORE's search-API rate limit above the keyless 100 tokens/day, 10/min —
-  // the tool works without it. See agent/direct-sources.ts's `core` source.
-  CORE_API_KEY: z
-    .string()
-    .trim()
-    .optional()
-    .transform((v) => (v ? v : undefined)),
-  // Optional, and load-bearing for whether `semanticscholar` even appears in academicSearch's
-  // source enum at all: MEASURED, unauthenticated api.semanticscholar.org/graph/v1/paper/search
-  // returns HTTP 429 on the very first call from this gateway's egress. Without a key the
-  // source is not offered, rather than offered and failing every time it is used.
-  S2_API_KEY: z
-    .string()
-    .trim()
-    .optional()
-    .transform((v) => (v ? v : undefined)),
   // 'development' matches argo's NODE_ENV default (Env.ts) — only prod compose sets this to
   // 'production'. Feeds `deployment.environment` on every OTel span and log record (lib/otel.ts).
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),

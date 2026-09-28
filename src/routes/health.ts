@@ -94,22 +94,20 @@ export const healthRoute = new Elysia()
           .describe(
             'Memory usage against its limit; null when neither a cgroup limit nor MEMORY_LIMIT_MB is available (local dev, tests)',
           ),
-        degraded: z
-          .array(z.string())
-          .describe(
-            'Optional overlays the launcher could not resolve and started without (e.g. "otel", "github") — always empty on the VPS container. Nothing gates on this; `status` stays "ok".',
-          ),
         eventLoopLagMs: z
           .number()
           .nullable()
           .describe(
-            'Event-loop lag in ms from the most recent 5s sample (lib/loop-watch.ts) — how late that interval fired; sustained high values mean the loop is being blocked (synchronous parsing, GC). Null before the first sample exists (the first seconds of a boot)',
+            'How late the last event-loop sample fired against its 5s interval — the one in-process signal that this Bun process\'s single event loop was starved by synchronous work (large-page parsing). Null before the first sample. Nothing gates on this.',
           ),
         eventLoopLagPeakMs: z
           .number()
           .nullable()
+          .describe('The worst eventLoopLagMs in the last ~minute of samples, so a single quiet poll cannot hide a stall a slower monitor missed.'),
+        degraded: z
+          .array(z.string())
           .describe(
-            'Worst event-loop lag in the last 60s of samples — the same measurement as eventLoopLagMs but not overwritten by the quiet interval that follows a stall, which is what a monitor polling every 30-60s would otherwise read',
+            'Optional overlays the launcher could not resolve and started without (e.g. "otel", "github") — always empty on the VPS container. Nothing gates on this; `status` stays "ok".',
           ),
       }),
       detail: {
