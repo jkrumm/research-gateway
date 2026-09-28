@@ -97,6 +97,7 @@ async function readOriginHtml(
   t1: number,
   attemptStartedAt: number,
   stepRef: { current: FetchStep },
+  dialUrl: string,
 ): Promise<{ terminal: FetchChainResult } | { terminal: null; block: BlockOutcome }> {
   // A 200 response can still BE the challenge — Cloudflare's managed-challenge interstitial is
   // served with a 200 (challenge.ts's header comment), so a decisive verdict counts here even
@@ -131,7 +132,7 @@ async function readOriginHtml(
     attempt(ctx.attempts, step, t1, { ok: true, chars: text.length })
     ctx.hostGate.noteOk(ctx.host, { startedAt: attemptStartedAt })
     log('tool.fetchPage', { jobId: ctx.jobId, url: ctx.url, via: step, chars: text.length })
-    return { terminal: ctx.done(step, text) }
+    return { terminal: ctx.done(step, text, dialUrl) }
   }
   const error = text && looksBinary(text) ? 'binary content' : `thin (${text?.length ?? 0} chars)`
   attempt(ctx.attempts, step, t1, { ok: false, chars: text?.length ?? 0, error })
@@ -159,6 +160,7 @@ async function readOriginBody(
   t1: number,
   attemptStartedAt: number,
   stepRef: { current: FetchStep },
+  dialUrl: string,
 ): Promise<{ terminal: FetchChainResult } | { terminal: null; block: BlockOutcome }> {
   // Read the body ONCE, as BYTES — a Response body is a stream and cannot be consumed twice,
   // and PDF detection needs the raw bytes (the `%PDF-` magic) before any text decoding. This is
@@ -205,7 +207,7 @@ async function readOriginBody(
       attempt(ctx.attempts, 'pdf', t1, { ok: true, chars: text.length })
       ctx.hostGate.noteOk(ctx.host, { startedAt: attemptStartedAt })
       log('tool.fetchPage', { jobId: ctx.jobId, url: ctx.url, via: 'pdf', chars: text.length, truncated: pdf.truncated })
-      return { terminal: ctx.done('pdf', text) }
+      return { terminal: ctx.done('pdf', text, dialUrl) }
     }
     // pdftotext missing, failed, or below the text floor (a scanned PDF with no text layer)
     // — falls through to Tavily Extract, which OCRs PDFs server-side. Never a reason to pass
@@ -225,7 +227,7 @@ async function readOriginBody(
       attempt(ctx.attempts, 'raw', t1, { ok: true, chars: raw.length })
       ctx.hostGate.noteOk(ctx.host, { startedAt: attemptStartedAt })
       log('tool.fetchPage', { jobId: ctx.jobId, url: ctx.url, via: 'raw', chars: raw.length, contentType })
-      return { terminal: ctx.done('raw', raw) }
+      return { terminal: ctx.done('raw', raw, dialUrl) }
     }
     // An empty or binary body is a miss like any other — fall through to the rendering
     // steps, which is the right answer for a URL that serves an empty JSON body to a bot and
@@ -237,7 +239,7 @@ async function readOriginBody(
     return { terminal: null, block: null }
   }
 
-  return await readOriginHtml(ctx, res, body, label, t1, attemptStartedAt, stepRef)
+  return await readOriginHtml(ctx, res, body, label, t1, attemptStartedAt, stepRef, dialUrl)
 }
 
 // ── Step 1: plain fetch + linkedom + Readability (or a site adapter's own reader) —
@@ -259,10 +261,18 @@ async function readOriginBody(
 // (the html-specific 200-challenge/js-shell/extract sub-branch); this function is left as the
 // one place that dials the origin, recognises a definitively-missing resource, and catches
 // whatever any of the above throws.
+//
+// `dialUrl` defaults to `ctx.fetchUrl` — the address a site adapter's `plan()` rewrote the
+// request to — but a 404/410 against it retries once against `ctx.site.fallbackUrl` when the
+// adapter offered one (site-adapters.ts's `SiteAdapter.plan` return shape), by recursing with
+// `dialUrl` set to it. Generic on purpose: nothing here knows this is arXiv's HTML-before-PDF
+// case specifically, only that a "definitively missing" answer against the planned address has
+// a second address worth trying before the chain gives up on the resource entirely.
 async function runOrigin(
   ctx: ChainContext,
   fetcher: Fetcher,
   label: FetchStep,
+  dialUrl: string = ctx.fetchUrl,
 ): Promise<{ terminal: FetchChainResult } | { terminal: null; block: BlockOutcome }> {
   const t1 = performance.now()
   // A SEPARATE clock from `t1` above: `t1` is `performance.now()` (monotonic, process-
@@ -278,18 +288,32 @@ async function runOrigin(
   // succeed, exactly as the single-function version did.
   const stepRef = { current: label }
   try {
-    // A definitively-absent resource stops here. Every remaining step would ask the same
-    // origin the same question and be told the same thing, and the last of them bills for it.
-    // Recorded as `missing`, not `failed`: the origin ANSWERED — 404/410 is definitive
-    // evidence that the resource does not exist at this URL, and the only kind of
-    // negative claim the ledger ever backs. See ground.ts.
+    // A definitively-absent resource stops here — UNLESS the site adapter offered a second
+    // address and this is the first miss against it (`dialUrl !== fallbackUrl` below). Every
+    // remaining step would otherwise ask the same origin the same question and be told the
+    // same thing, and the last of them bills for it. Recorded as `missing`, not `failed`: the
+    // origin ANSWERED — 404/410 is definitive evidence that the resource does not exist at
+    // this URL, and the only kind of negative claim the ledger ever backs. See ground.ts.
     //
     // Recorded against safeFetch's FINAL url, never the requested one: with redirects
     // followed by hand, `res` is the redirect target's response, and a redirect to a 404
     // says the TARGET does not exist — the requested URL's fate is unknown, and a
     // fabricated missing record there would wrongly demote or drop claims about it.
-    const { res, finalUrl } = await ctx.hostGate.run(ctx.host, ctx.policy, () => safeFetch(ctx.fetchUrl, ctx.jobId, 3, ctx.budget, fetcher), ctx.budget)
+    const { res, finalUrl } = await ctx.hostGate.run(ctx.host, ctx.policy, () => safeFetch(dialUrl, ctx.jobId, 3, ctx.budget, fetcher), ctx.budget)
     if (isDefinitivelyMissing(res.status)) {
+      const fallbackUrl = ctx.site.fallbackUrl
+      if (fallbackUrl && dialUrl !== fallbackUrl) {
+        // The planned address has no build at this URL — not evidence the RESOURCE is gone,
+        // only that this particular rewrite is. Recorded as an ordinary miss (never `missing`
+        // — see ground.ts on why a false absence claim is the worst ledger error this chain
+        // can make), and the same origin pipeline runs once more against the fallback: same
+        // host gate, same fetcher, same per-hop SSRF re-check inside `safeFetch`, PDF/raw/html
+        // dispatch all unchanged.
+        const reason = `HTTP ${res.status} — no build at this address; trying fallback`
+        attempt(ctx.attempts, stepRef.current, t1, { ok: false, error: reason })
+        log('tool.fetchPage', { jobId: ctx.jobId, url: ctx.url, via: 'origin-fallback', dialUrl, fallbackUrl, status: res.status })
+        return await runOrigin(ctx, fetcher, label, fallbackUrl)
+      }
       const reason = `HTTP ${res.status} — the resource does not exist at this URL`
       attempt(ctx.attempts, stepRef.current, t1, { ok: false, error: reason })
       ctx.ledger.recordMissing(finalUrl, reason)
@@ -301,7 +325,7 @@ async function runOrigin(
       return { terminal: null, block: await classifyOriginBlock(ctx, res, label, t1) }
     }
 
-    return await readOriginBody(ctx, res, label, t1, attemptStartedAt, stepRef)
+    return await readOriginBody(ctx, res, label, t1, attemptStartedAt, stepRef, dialUrl)
   } catch (err) {
     // fetch or parse failed — fall through to the rendering steps.
     if (label !== 'impersonate') ctx.noteReadabilityMiss('threw')

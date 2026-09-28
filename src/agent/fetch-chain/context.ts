@@ -140,7 +140,12 @@ export interface ChainContext {
    * so a render attempt during cooldown spends the same reputation for the same certain miss. */
   stageSkipReason: (stage: ChainStage) => string | null
   fail: (error: string) => FetchChainResult
-  done: (via: FetchStep, text: string) => FetchChainResult
+  /** `dialledUrl` is the address that actually produced `text` — every stage but origin.ts
+   * always means `ctx.fetchUrl` (the default), which is why every other call site omits it.
+   * origin.ts is the one stage that can dial a SECOND address (`site.fallbackUrl`, after a
+   * 404/410 against `fetchUrl`) and passes that address explicitly, so a success recorded
+   * there names the address genuinely read, never the rewritten one that 404'd. */
+  done: (via: FetchStep, text: string, dialledUrl?: string) => FetchChainResult
 }
 
 export function createContext(url: string, opts: FetchChainOptions): ChainContext {
@@ -239,7 +244,7 @@ export function createContext(url: string, opts: FetchChainOptions): ChainContex
     emitAttempts()
     return { url, fetchUrl, via: null, text: null, error, attempts }
   }
-  const done = (via: FetchStep, text: string): FetchChainResult => {
+  const done = (via: FetchStep, text: string, dialledUrl: string = fetchUrl): FetchChainResult => {
     emitAttempts()
     ledger.recordRetrieved(url)
     // When an adapter rewrote the address, BOTH forms name the page that was genuinely read,
@@ -252,7 +257,11 @@ export function createContext(url: string, opts: FetchChainOptions): ChainContex
     // `reddit.com/r/x` vs `old.reddit.com/r/x` are different keys to it. Without this, a
     // worker that fetched one form and cited the other has its finding stripped at the
     // worker boundary — the exact silent failure mode HANDOVER.md's rule 4 was written for.
-    if (fetchUrl !== url) ledger.recordRetrieved(fetchUrl)
+    //
+    // `dialledUrl` defaults to `fetchUrl` (the site adapter's planned address) but origin.ts
+    // passes the fallback address explicitly on a fallback success — recording `fetchUrl`
+    // there would be a FALSE retrieved claim on an address that actually answered 404/410.
+    if (dialledUrl !== url) ledger.recordRetrieved(dialledUrl)
     return { url, fetchUrl, via, text: capText(text, TEXT_CAP), error: null, attempts }
   }
 
