@@ -18,6 +18,7 @@ LABEL_LIGHTPANDA := com.jkrumm.research-gateway-lightpanda
 LABEL_DEPLOY     := com.jkrumm.research-gateway-deploy
 
 HEALTH_URL := http://127.0.0.1:7780/health
+LINES      ?= 100
 
 .PHONY: mini-setup
 mini-setup: ## Clone/update the deploy clone, install deps + pinned binaries, install the LaunchAgents
@@ -103,6 +104,28 @@ deploy: ## Run the app clone's mini-deploy.sh once, now (same script the poller 
 	@"$(APP_DIR)/scripts/mini-deploy.sh"
 
 # ==============================================================================
+# Repo contract (dotfiles/docs/agent-platform.md §Repo contract) — probe
+# production and read its logs. `make check` and `make deploy` live above.
+# Production is the mini's native instance (:7780), the only one since the VPS
+# container was retired; `make verify` probes it on the loopback.
+# ==============================================================================
+
+.PHONY: verify
+verify: ## Probe production: exit 0 iff the mini gateway answers /health with status ok
+	@curl -fsS --max-time 5 $(HEALTH_URL) | grep -q '"status":"ok"' \
+		|| { echo "  research-gateway not healthy ($(HEALTH_URL))"; exit 1; }
+	@echo "  research-gateway healthy ($(HEALTH_URL))"
+
+.PHONY: logs
+logs: ## Bounded tail (last $(LINES) lines) of the production logs, then exits (no -f)
+	@tail -n $(LINES) \
+	  "$(HOME)/Library/Logs/research-gateway.log" \
+	  "$(HOME)/Library/Logs/research-gateway.err" \
+	  "$(HOME)/Library/Logs/research-gateway-lightpanda.log" \
+	  "$(HOME)/Library/Logs/research-gateway-lightpanda.err" \
+	  "$(HOME)/Library/Logs/research-gateway-deploy.log"
+
+# ==============================================================================
 # CLI
 # ==============================================================================
 
@@ -135,6 +158,8 @@ help:
 	@echo ""
 	@echo "  make check              typecheck + test"
 	@echo "  make eval               golden-set answer-quality eval (API_SECRET required)"
+	@echo "  make verify             Probe the mini's /health (exit 0 = live and healthy)"
+	@echo "  make logs               Bounded tail of ~/Library/Logs, then exit (LINES=N, no -f)"
 	@echo ""
 	@echo "  Mini native instance (:7780) + lightpanda sidecar (:7781) — see AGENTS.md"
 	@echo "  make mini-setup         Clone/update the deploy clone, install deps + pinned bins, install the LaunchAgents"

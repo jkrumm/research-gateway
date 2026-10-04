@@ -92,7 +92,21 @@ template can't express since it needs `$HOME` expansion — same reasoning as `J
 `YTDLP_PATH`). `launchd/` template changes need `make launchd-install` by hand. Usage goes to
 the local usage-tracker via JSONL (`USAGE_SINK=jsonl` + `USAGE_JSONL_PATH` in `scripts/launch.sh`).
 
-## Deploy-on-push, and what it costs
+## Validate
+
+`make check` = `bun run typecheck && bun test` — no side effects, non-zero on failure. That is
+the whole local gate; there is no linter or formatter here.
+
+What it does **not** cover: anything importing `env.ts` is untested by design — factor pure
+logic out instead (`ledger`, `extract`, `archive`, `site-adapters`, `response-kind`,
+`youtube-captions`, `otel-format`, `brain`, `karakeep`, `body-mentions`, `markdown`,
+`report-text` are the pattern), never mock `env`. `scripts/smoke.ts` runs one `runResearch()`
+end to end without the HTTP server. `make eval` is the golden-set answer-quality eval and needs
+a **running** gateway plus `API_SECRET` — it is not part of `check`. If you touch
+`src/agent/ground.ts`, `src/agent/tools.ts`, or add a tool, run `src/agent/ground.test.ts` and
+do not merge a regression against issue #1's case (see Grounding above).
+
+## Deploy
 
 Push to `master` reaches the mini within 2 minutes via `scripts/mini-deploy.sh`'s git poller
 (`deploy/MINI.md`), which gates on `.github/workflows/ci.yml`'s `check` job for that SHA before
@@ -107,6 +121,26 @@ a look. A job that outlives the window is still cut — `process.drained` with `
 the error-level line that says so. **Size this off `docs/measurements.md` § Job duration, never
 off one run** — the first value was 600s, taken from a single fast deep run, and the span record
 says it missed 39% of deep jobs.
+
+`make deploy` runs that same `scripts/mini-deploy.sh` once, by hand — it is the poller's one
+tick, not a separate path. Rollback is a revert commit on `master`: the poller sees the
+reverted SHA green in CI and deploys it like any other push.
+
+## Verify & Monitor
+
+- **Health URL (full):** `https://research.mini.<your-domain>/health` — the mini's door; the
+  host is a placeholder because this repo is public. It returns `{"status":"ok"}`, with
+  `draining: true` as a field (not a 503) while shutting down. `make verify` probes
+  `http://localhost:7780/health` on the mini itself, the only instance.
+- **Uptime Kuma monitor:** `none` dedicated — the VPS monitors were dropped when the VPS
+  instance retired (2026-09-26). Coverage is the `MacMini Dev Host - Push` heartbeat monitor,
+  whose `devhost-health-check.sh` probes `/health` and `/health/render` directly.
+- **OTel `service.name`:** `research-gateway` (`src/env.ts` default; `.env.mini.tpl` sets it
+  explicitly so history stays under one HyperDX service).
+- `make verify` — `curl -fsS` the health URL, non-zero unless the body carries `"status":"ok"`.
+  `make logs` — bounded tail (last 100 lines, `LINES=N` to change) of
+  `~/Library/Logs/research-gateway{,-lightpanda,-deploy}.{log,err}`, then exits; unlike
+  `make launchd-logs` it does not follow.
 
 ## Memory watchdog, and load shedding
 
@@ -127,12 +161,6 @@ bun run dev        # secrets-run injects .env.local.tpl (op on the MacBook, seal
 bun run typecheck  # tsc --noEmit, strict
 bun test           # pure-function tests only — needs no secrets
 ```
-
-Anything importing `env.ts` is untested by design — factor pure logic out instead
-  (`ledger`, `extract`, `archive`, `site-adapters`, `response-kind`, `youtube-captions`,
-  `otel-format`, `brain`, `karakeep`, `body-mentions`, `markdown`, `report-text` are the
-  pattern). Do not mock `env`. `scripts/smoke.ts` runs one
-`runResearch()` end to end without the HTTP server.
 
 ## File map
 
@@ -194,7 +222,7 @@ Anything importing `env.ts` is untested by design — factor pure logic out inst
   (`scripts/launch-lightpanda.sh`); `Dockerfile` stays only because `boundary.test.ts` reads it
   as a self-containment guard, no image is built or deployed from it any more
 
-## Gotchas that change a decision
+## Gotchas
 
 - **Nine tools, not twelve.** New ecosystem support goes on an existing tool
   (`packageInfo`, `academicSearch`), not a new tool definition — definitions are re-sent
