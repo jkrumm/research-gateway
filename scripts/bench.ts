@@ -24,6 +24,7 @@
 //   API_SECRET=$(secrets-run read op://vps/research-gateway/API_SECRET) bun run scripts/bench.ts ...
 
 import type { Depth } from '../src/agent/schema.js'
+import { flagGetter, runJob, runPool } from './gateway-client.js'
 
 // Fixed and deliberately heterogeneous: a config that only looks good on one shape of
 // question is not an improvement. Ordered so `--queries N` takes a spread, not a run of
@@ -52,10 +53,7 @@ interface Args {
 }
 
 function parseArgs(argv: string[]): Args {
-  const get = (flag: string): string | undefined => {
-    const i = argv.indexOf(flag)
-    return i >= 0 ? argv[i + 1] : undefined
-  }
+  const get = flagGetter(argv)
   return {
     base: get('--base') ?? 'https://research.mini.jkrumm.com',
     depth: (get('--depth') as Depth | undefined) ?? 'standard',
@@ -90,9 +88,24 @@ interface RunRow {
   failedHosts: string[]
 }
 
+interface JobResult {
+  citations: unknown[]
+  sources: unknown[]
+  unverified?: Array<{ url: string | null }>
+  status: string
+  grounding: { pagesRetrieved: number; pagesFailed: number; citationsDropped: number; confidenceCapped: number }
+  cost?: {
+    wallMs: number
+    totalUsd: number | null
+    llmUsd: number | null
+    searchUsd: number
+    searchCalls: number
+    tavilyCredits: number
+  }
+}
+
 async function runOne(args: Args, secret: string, queryIndex: number, rep: number): Promise<RunRow> {
   const query = QUERIES[queryIndex]!
-  const headers = { 'Content-Type': 'application/json', Authorization: `Bearer ${secret}` }
   const started = Date.now()
 
   const base: RunRow = {
@@ -117,84 +130,44 @@ async function runOne(args: Args, secret: string, queryIndex: number, rep: numbe
     failedHosts: [],
   }
 
-  const submit = await fetch(`${args.base}/research`, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify({ query, depth: args.depth }),
-  })
-  if (!submit.ok) {
-    return { ...base, error: `submit ${submit.status}: ${(await submit.text()).slice(0, 200)}`, clientWallMs: Date.now() - started }
-  }
-  const { jobId } = (await submit.json()) as { jobId: string }
+  // `wallMs` from the server is the authoritative duration; `clientWallMs` includes queueing
+  // and is reported alongside so a queued run is visible rather than silently inflating the
+  // server figure.
+  const outcome = await runJob<JobResult>({ baseUrl: args.base, secret, query, depth: args.depth })
+  if (!outcome.ok) return { ...base, error: outcome.error, clientWallMs: Date.now() - started }
 
-  // Poll rather than long-poll: this is a measurement client, and a 5s tick adds at most
-  // 5s of quantisation to a job measured in minutes. `wallMs` from the server is the
-  // authoritative duration; `clientWallMs` includes queueing and is reported alongside so
-  // a queued run is visible rather than silently inflating the server figure.
-  for (;;) {
-    await new Promise((r) => setTimeout(r, 5_000))
-    const poll = await fetch(`${args.base}/research/${jobId}`, { headers })
-    if (!poll.ok) {
-      return { ...base, error: `poll ${poll.status}`, clientWallMs: Date.now() - started }
-    }
-    const job = (await poll.json()) as {
-      status: string
-      error?: string
-      result?: {
-        citations: unknown[]
-        sources: unknown[]
-        unverified?: Array<{ url: string | null }>
-        status: string
-        grounding: { pagesRetrieved: number; pagesFailed: number; citationsDropped: number; confidenceCapped: number }
-        cost?: {
-          wallMs: number
-          totalUsd: number | null
-          llmUsd: number | null
-          searchUsd: number
-          searchCalls: number
-          tavilyCredits: number
+  const r = outcome.result
+  // `cost` is optional here only to stay readable against a gateway older than the
+  // commit that added it — against a current one it is always present.
+  const c = r.cost
+  return {
+    ...base,
+    ok: true,
+    clientWallMs: Date.now() - started,
+    wallMs: c?.wallMs ?? Date.now() - started,
+    totalUsd: c?.totalUsd ?? null,
+    llmUsd: c?.llmUsd ?? null,
+    searchUsd: c?.searchUsd ?? 0,
+    searchCalls: c?.searchCalls ?? 0,
+    tavilyCredits: c?.tavilyCredits ?? 0,
+    citations: r.citations.length,
+    sources: r.sources.length,
+    pagesRetrieved: r.grounding.pagesRetrieved,
+    pagesFailed: r.grounding.pagesFailed,
+    citationsDropped: r.grounding.citationsDropped,
+    confidenceCapped: r.grounding.confidenceCapped,
+    status: r.status,
+    failedHosts: (r.unverified ?? [])
+      .map((u) => u.url)
+      .filter((u): u is string => typeof u === 'string' && u.length > 0)
+      .map((u) => {
+        try {
+          return new URL(u).host.toLowerCase()
+        } catch {
+          return ''
         }
-      }
-    }
-
-    if (job.status === 'error') {
-      return { ...base, error: job.error ?? 'job error', clientWallMs: Date.now() - started }
-    }
-    if (job.status !== 'done' || !job.result) continue
-
-    const r = job.result
-    // `cost` is optional here only to stay readable against a gateway older than the
-    // commit that added it — against a current one it is always present.
-    const c = r.cost
-    return {
-      ...base,
-      ok: true,
-      clientWallMs: Date.now() - started,
-      wallMs: c?.wallMs ?? Date.now() - started,
-      totalUsd: c?.totalUsd ?? null,
-      llmUsd: c?.llmUsd ?? null,
-      searchUsd: c?.searchUsd ?? 0,
-      searchCalls: c?.searchCalls ?? 0,
-      tavilyCredits: c?.tavilyCredits ?? 0,
-      citations: r.citations.length,
-      sources: r.sources.length,
-      pagesRetrieved: r.grounding.pagesRetrieved,
-      pagesFailed: r.grounding.pagesFailed,
-      citationsDropped: r.grounding.citationsDropped,
-      confidenceCapped: r.grounding.confidenceCapped,
-      status: r.status,
-      failedHosts: (r.unverified ?? [])
-        .map((u) => u.url)
-        .filter((u): u is string => typeof u === 'string' && u.length > 0)
-        .map((u) => {
-          try {
-            return new URL(u).host.toLowerCase()
-          } catch {
-            return ''
-          }
-        })
-        .filter(Boolean),
-    }
+      })
+      .filter(Boolean),
   }
 }
 
@@ -294,25 +267,19 @@ console.log(
 )
 
 const rows: RunRow[] = []
-let cursor = 0
-const workers = Array.from({ length: Math.max(1, args.concurrency) }, async () => {
-  for (;;) {
-    const idx = cursor++
-    const item = plan[idx]
-    if (!item) return
-    const t0 = Date.now()
-    const row = await runOne(args, secret, item.q, item.rep)
-    rows.push(row)
-    console.log(
-      `[${rows.length}/${plan.length}] q${item.q} rep${item.rep} ${row.ok ? 'ok' : 'FAIL'} ` +
-        `${fmt((Date.now() - t0) / 1000, 0)}s $${fmt(row.totalUsd ?? 0, 4)} ` +
-        `searches=${row.searchCalls} citations=${row.citations} pages=${row.pagesRetrieved}` +
-        (row.error ? ` err=${row.error.slice(0, 80)}` : ''),
-    )
-    if (args.out) await Bun.write(args.out, rows.map((r) => JSON.stringify(r)).join('\n') + '\n')
-  }
+await runPool(plan.length, args.concurrency, async (idx) => {
+  const item = plan[idx]!
+  const t0 = Date.now()
+  const row = await runOne(args, secret, item.q, item.rep)
+  rows.push(row)
+  console.log(
+    `[${rows.length}/${plan.length}] q${item.q} rep${item.rep} ${row.ok ? 'ok' : 'FAIL'} ` +
+      `${fmt((Date.now() - t0) / 1000, 0)}s $${fmt(row.totalUsd ?? 0, 4)} ` +
+      `searches=${row.searchCalls} citations=${row.citations} pages=${row.pagesRetrieved}` +
+      (row.error ? ` err=${row.error.slice(0, 80)}` : ''),
+  )
+  if (args.out) await Bun.write(args.out, rows.map((r) => JSON.stringify(r)).join('\n') + '\n')
 })
-await Promise.all(workers)
 
 summarize(rows)
 if (args.out) console.log(`\nrows -> ${args.out}`)

@@ -309,3 +309,5 @@ async function run(args: Args, secret: string, cases: Case[]): Promise<void> {
 }
 
 await main()
+
+export {}

@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'bun:test'
-import { matchExpect, parseGolden, resolverFor } from './lib.js'
+import { readFileSync } from 'node:fs'
+import { matchExpect, median, parseGolden, resolverFor, summarizeByDepth } from './lib.js'
 
 describe('matchExpect', () => {
   it('passes when any static pattern matches, case-insensitively', () => {
@@ -26,6 +27,21 @@ describe('matchExpect', () => {
   it('treats a live value as a literal, not a regex', () => {
     // A version with a dot must not match a different version that happens to share the shape.
     expect(matchExpect('The release is 1x2x3.', { live: 'crates:serde' }, '1.2.3').pass).toBe(false)
+  })
+})
+
+describe('matchExpect all', () => {
+  it('passes only when every pattern matches, and joins what matched', () => {
+    const expect_ = { all: ['\\b9110\\b', 'Strict-Transport-Security'] }
+    const result = matchExpect('RFC 9110 and the strict-transport-security header.', expect_, null)
+    expect(result.pass).toBe(true)
+    expect(result.matched).toBe('9110 + strict-transport-security')
+  })
+
+  it('fails when one sub-question is unanswered', () => {
+    const result = matchExpect('RFC 9110 defines HTTP semantics.', { all: ['\\b9110\\b', '27017'] }, null)
+    expect(result.pass).toBe(false)
+    expect(result.matched).toBeNull()
   })
 })
 
@@ -100,6 +116,13 @@ describe('parseGolden', () => {
     expect(items[1]?.expect).toEqual({ live: 'npm:hono' })
   })
 
+  it('parses an all-of expect and rejects an empty or invalid one', () => {
+    const [item] = parseGolden('{"id":"a","query":"q?","depth":"deep","expect":{"all":["x","y"]}}')
+    expect(item?.expect).toEqual({ all: ['x', 'y'] })
+    expect(() => parseGolden('{"id":"a","query":"q?","depth":"deep","expect":{"all":[]}}')).toThrow('expect must be')
+    expect(() => parseGolden('{"id":"a","query":"q?","depth":"deep","expect":{"all":["("]}}')).toThrow('invalid regex')
+  })
+
   it('skips blank lines', () => {
     expect(parseGolden('\n\n')).toEqual([])
   })
@@ -108,5 +131,54 @@ describe('parseGolden', () => {
     expect(() => parseGolden('{"id":"a","query":"q?","depth":"slow","expect":{"any":["x"]}}')).toThrow('depth must be one of')
     expect(() => parseGolden('{"id":"a","query":"q?","depth":"quick"}')).toThrow('expect must be')
     expect(() => parseGolden('{"id":"a","query":"q?","depth":"quick","expect":{"any":["("]}}')).toThrow('invalid regex')
+  })
+})
+
+describe('median', () => {
+  it('returns the lower median and null for an empty list', () => {
+    expect(median([])).toBeNull()
+    expect(median([30, 10, 20])).toBe(20)
+    expect(median([40, 10, 30, 20])).toBe(20)
+  })
+})
+
+describe('summarizeByDepth', () => {
+  it('reports partial rate and wall time per depth, in depth order', () => {
+    const summary = summarizeByDepth([
+      { depth: 'deep', status: 'partial', wallMs: 700_000 },
+      { depth: 'quick', status: 'ok', wallMs: 20_000 },
+      { depth: 'quick', status: 'ok', wallMs: 40_000 },
+      { depth: 'quick', status: 'partial', wallMs: 30_000 },
+      { depth: 'deep', status: 'ok', wallMs: 500_000 },
+    ])
+    expect(summary.map((s) => s.depth)).toEqual(['quick', 'deep'])
+    expect(summary[0]).toEqual({
+      depth: 'quick',
+      completed: 3,
+      partial: 1,
+      partialRate: 1 / 3,
+      p50WallMs: 30_000,
+      maxWallMs: 40_000,
+    })
+    expect(summary[1]?.partialRate).toBe(0.5)
+    expect(summary[1]?.maxWallMs).toBe(700_000)
+  })
+
+  it('ignores rows without a report and tolerates missing wall times', () => {
+    const summary = summarizeByDepth([
+      { depth: 'standard', status: null, wallMs: 1_000 },
+      { depth: 'standard', status: 'ok', wallMs: null },
+    ])
+    expect(summary).toEqual([
+      { depth: 'standard', completed: 1, partial: 0, partialRate: 0, p50WallMs: null, maxWallMs: null },
+    ])
+    expect(summarizeByDepth([])).toEqual([])
+  })
+})
+
+describe('evals/golden.jsonl', () => {
+  it('parses cleanly and holds the expected row count', () => {
+    const items = parseGolden(readFileSync(new URL('./golden.jsonl', import.meta.url), 'utf8'))
+    expect(items).toHaveLength(28)
   })
 })

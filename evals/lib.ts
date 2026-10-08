@@ -7,7 +7,10 @@
 
 import type { Depth } from '../src/agent/schema.js'
 
-export type GoldenExpect = { any: string[] } | { live: string }
+// `any`: one pattern matching is enough (a single fact). `all`: every pattern must match
+// (a multi-part query — one answered sub-question must not pass the whole item). `live`: the
+// value a registry resolver returns at eval time.
+export type GoldenExpect = { any: string[] } | { all: string[] } | { live: string }
 
 export interface GoldenItem {
   id: string
@@ -30,6 +33,15 @@ export function matchExpect(text: string, expect: GoldenExpect, liveValue: strin
     if (liveValue === null) return { pass: false, matched: null }
     const pass = text.toLowerCase().includes(liveValue.toLowerCase())
     return { pass, matched: pass ? liveValue : null }
+  }
+  if ('all' in expect) {
+    const matches: string[] = []
+    for (const pattern of expect.all) {
+      const match = text.match(new RegExp(pattern, 'i'))
+      if (!match) return { pass: false, matched: null }
+      matches.push(match[0])
+    }
+    return { pass: true, matched: matches.join(' + ') }
   }
   for (const pattern of expect.any) {
     const match = text.match(new RegExp(pattern, 'i'))
@@ -114,24 +126,29 @@ export function resolverFor(name: string, githubToken?: string): LiveResolver {
 
 // ── Golden-file parsing ───────────────────────────────────────────────────────
 
-function validateExpect(value: unknown, line: number): GoldenExpect {
-  if (value === null || typeof value !== 'object') {
-    throw new Error(`golden line ${line}: expect must be { any: string[] } or { live: string }`)
+const EXPECT_SHAPES = 'expect must be { any: string[] }, { all: string[] } or { live: string }'
+
+function validatePatterns(value: unknown, line: number): string[] | null {
+  if (!Array.isArray(value) || value.length === 0 || !value.every((p) => typeof p === 'string')) return null
+  for (const pattern of value) {
+    try {
+      new RegExp(pattern)
+    } catch {
+      throw new Error(`golden line ${line}: invalid regex ${JSON.stringify(pattern)}`)
+    }
   }
+  return value as string[]
+}
+
+function validateExpect(value: unknown, line: number): GoldenExpect {
+  if (value === null || typeof value !== 'object') throw new Error(`golden line ${line}: ${EXPECT_SHAPES}`)
   const raw = value as Record<string, unknown>
   if (typeof raw['live'] === 'string' && raw['live'].length > 0) return { live: raw['live'] }
-  const any = raw['any']
-  if (Array.isArray(any) && any.length > 0 && any.every((p) => typeof p === 'string')) {
-    for (const pattern of any) {
-      try {
-        new RegExp(pattern)
-      } catch {
-        throw new Error(`golden line ${line}: invalid regex ${JSON.stringify(pattern)}`)
-      }
-    }
-    return { any: any as string[] }
-  }
-  throw new Error(`golden line ${line}: expect must be { any: string[] } or { live: string }`)
+  const any = validatePatterns(raw['any'], line)
+  if (any) return { any }
+  const all = validatePatterns(raw['all'], line)
+  if (all) return { all }
+  throw new Error(`golden line ${line}: ${EXPECT_SHAPES}`)
 }
 
 function validateItem(raw: unknown, line: number): GoldenItem {
@@ -162,4 +179,56 @@ export function parseGolden(jsonl: string): GoldenItem[] {
     items.push(validateItem(raw, i + 1))
   })
   return items
+}
+
+// ── Per-depth aggregation ─────────────────────────────────────────────────────
+//
+// Wall time and the `partial` rate are properties of a depth, not of the whole set: a quick
+// lookup finishes in seconds and a deep run in minutes, so one pooled p50 hides both.
+
+export interface DepthRowInput {
+  depth: Depth
+  /** Report status ('ok' / 'partial'), or null when the job produced none. */
+  status: string | null
+  wallMs: number | null
+}
+
+export interface DepthSummary {
+  depth: Depth
+  /** Rows that produced a report. */
+  completed: number
+  partial: number
+  /** partial / completed — a depth is only summarised once a row completed. */
+  partialRate: number
+  p50WallMs: number | null
+  maxWallMs: number | null
+}
+
+const DEPTH_ORDER: Depth[] = ['quick', 'standard', 'deep']
+
+/** Lower median — a measured run, never an interpolated one. */
+export function median(values: number[]): number | null {
+  if (values.length === 0) return null
+  const sorted = [...values].sort((a, b) => a - b)
+  return sorted[Math.floor((sorted.length - 1) / 2)] ?? null
+}
+
+/** One entry per depth that has at least one completed row, in quick/standard/deep order. */
+export function summarizeByDepth(rows: DepthRowInput[]): DepthSummary[] {
+  const summaries: DepthSummary[] = []
+  for (const depth of DEPTH_ORDER) {
+    const completed = rows.filter((row) => row.depth === depth && row.status !== null)
+    if (completed.length === 0) continue
+    const walls = completed.map((row) => row.wallMs).filter((wall): wall is number => wall !== null)
+    const partial = completed.filter((row) => row.status === 'partial').length
+    summaries.push({
+      depth,
+      completed: completed.length,
+      partial,
+      partialRate: partial / completed.length,
+      p50WallMs: median(walls),
+      maxWallMs: walls.length === 0 ? null : Math.max(...walls),
+    })
+  }
+  return summaries
 }

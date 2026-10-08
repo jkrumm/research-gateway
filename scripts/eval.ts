@@ -17,8 +17,9 @@
 // the default base URL. Do NOT run the full set against production as part of a change
 // review: it costs money and competes with real jobs (docs/architecture-review-2026-09.md § 2b).
 
-import { matchExpect, parseGolden, resolverFor, type GoldenItem } from '../evals/lib.js'
+import { matchExpect, median, parseGolden, resolverFor, summarizeByDepth, type GoldenItem } from '../evals/lib.js'
 import type { Depth } from '../src/agent/schema.js'
+import { flagGetter, runJob, runPool } from './gateway-client.js'
 
 interface Args {
   baseUrl: string
@@ -27,10 +28,7 @@ interface Args {
 }
 
 function parseArgs(argv: string[]): Args {
-  const get = (flag: string): string | undefined => {
-    const i = argv.indexOf(flag)
-    return i >= 0 ? argv[i + 1] : undefined
-  }
+  const get = flagGetter(argv)
   return {
     baseUrl: get('--base-url') ?? process.env['RESEARCH_BASE_URL'] ?? 'http://127.0.0.1:7780',
     concurrency: Number(get('--concurrency') ?? 3),
@@ -67,22 +65,18 @@ interface EvalRow {
   error: string | null
 }
 
-interface JobPoll {
+interface JobResult {
+  report: string
   status: string
-  error?: string
-  result?: {
-    report: string
-    status: string
-    grounding: {
-      pagesRetrieved: number
-      pagesFailed: number
-      citationsKept: number
-      citationsDropped: number
-      confidenceCapped: number
-      citationsDegraded?: number
-    }
-    cost?: { wallMs: number; totalUsd: number | null }
+  grounding: {
+    pagesRetrieved: number
+    pagesFailed: number
+    citationsKept: number
+    citationsDropped: number
+    confidenceCapped: number
+    citationsDegraded?: number
   }
+  cost?: { wallMs: number; totalUsd: number | null }
 }
 
 function message(err: unknown): string {
@@ -108,7 +102,6 @@ function baseRow(index: number, item: GoldenItem): EvalRow {
 
 async function runOne(args: Args, secret: string, item: GoldenItem, index: number): Promise<EvalRow> {
   const base = baseRow(index, item)
-  const headers = { 'Content-Type': 'application/json', Authorization: `Bearer ${secret}` }
   const started = Date.now()
 
   // Resolve the expected value before spending a job on it — if the registry is
@@ -129,53 +122,30 @@ async function runOne(args: Args, secret: string, item: GoldenItem, index: numbe
     }
   }
 
-  const submit = await fetch(`${args.baseUrl}/research`, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify({ query: item.query, depth: item.depth }),
-  })
-  if (!submit.ok) {
-    base.error = `submit ${submit.status}: ${(await submit.text()).slice(0, 200)}`
+  const outcome = await runJob<JobResult>({ baseUrl: args.baseUrl, secret, query: item.query, depth: item.depth })
+  if (!outcome.ok) {
+    base.error = outcome.error
     return base
   }
-  const { jobId } = (await submit.json()) as { jobId: string }
 
-  // Poll, never long-poll, and with no overall deadline: a job runs as long as it takes
-  // (agent-limits), and the 5s tick only quantises the wall clock, which is reported from
-  // the server anyway.
-  for (;;) {
-    await new Promise((r) => setTimeout(r, 5_000))
-    const poll = await fetch(`${args.baseUrl}/research/${jobId}`, { headers })
-    if (!poll.ok) {
-      base.error = `poll ${poll.status}`
-      return base
-    }
-    const job = (await poll.json()) as JobPoll
-    if (job.status === 'error') {
-      base.error = job.error ?? 'job error'
-      return base
-    }
-    if (job.status !== 'done' || !job.result) continue
-
-    const result = job.result
-    const grounding = result.grounding
-    const match = matchExpect(result.report, item.expect, liveValue)
-    return {
-      ...base,
-      pass: match.pass,
-      matched: match.matched,
-      status: result.status,
-      grounding: {
-        pagesRetrieved: grounding.pagesRetrieved,
-        pagesFailed: grounding.pagesFailed,
-        citationsKept: grounding.citationsKept,
-        citationsDropped: grounding.citationsDropped,
-        confidenceCapped: grounding.confidenceCapped,
-        citationsDegraded: typeof grounding.citationsDegraded === 'number' ? grounding.citationsDegraded : null,
-      },
-      costUsd: result.cost?.totalUsd ?? null,
-      wallMs: result.cost?.wallMs ?? Date.now() - started,
-    }
+  const result = outcome.result
+  const grounding = result.grounding
+  const match = matchExpect(result.report, item.expect, liveValue)
+  return {
+    ...base,
+    pass: match.pass,
+    matched: match.matched,
+    status: result.status,
+    grounding: {
+      pagesRetrieved: grounding.pagesRetrieved,
+      pagesFailed: grounding.pagesFailed,
+      citationsKept: grounding.citationsKept,
+      citationsDropped: grounding.citationsDropped,
+      confidenceCapped: grounding.confidenceCapped,
+      citationsDegraded: typeof grounding.citationsDegraded === 'number' ? grounding.citationsDegraded : null,
+    },
+    costUsd: result.cost?.totalUsd ?? null,
+    wallMs: result.cost?.wallMs ?? Date.now() - started,
   }
 }
 
@@ -187,12 +157,6 @@ function cell(value: string | number | null | undefined): string {
 function pct(numerator: number, denominator: number): string {
   if (denominator === 0) return 'n/a'
   return `${((numerator / denominator) * 100).toFixed(1)}%`
-}
-
-function median(values: number[]): number | null {
-  if (values.length === 0) return null
-  const sorted = [...values].sort((a, b) => a - b)
-  return sorted[Math.floor((sorted.length - 1) / 2)] ?? null
 }
 
 function gitSha(): string {
@@ -244,26 +208,19 @@ console.log(
 
 const startedAt = new Date()
 const rows: EvalRow[] = []
-let cursor = 0
-const workers = Array.from({ length: Math.max(1, args.concurrency) }, async () => {
-  for (;;) {
-    const index = cursor++
-    const item = items[index]
-    if (!item) return
-    const row = await runOne(args, secret, item, index)
-    rows.push(row)
-    const g = row.grounding
-    console.log(
-      `[${rows.length}/${items.length}] ${row.id} ${row.pass ? 'PASS' : 'FAIL'}` +
-        (row.status === null ? '' : ` status=${row.status}`) +
-        (row.matched === null ? '' : ` matched=${row.matched}`) +
-        (g === null ? '' : ` cit=${g.citationsKept} drop=${g.citationsDropped} cap=${g.confidenceCapped} degr=${g.citationsDegraded ?? 'n/a'}`) +
-        (row.costUsd === null ? '' : ` $${row.costUsd.toFixed(4)}`) +
-        (row.error === null ? '' : ` err=${row.error.slice(0, 100)}`),
-    )
-  }
+await runPool(items.length, args.concurrency, async (index) => {
+  const row = await runOne(args, secret, items[index]!, index)
+  rows.push(row)
+  const g = row.grounding
+  console.log(
+    `[${rows.length}/${items.length}] ${row.id} ${row.pass ? 'PASS' : 'FAIL'}` +
+      (row.status === null ? '' : ` status=${row.status}`) +
+      (row.matched === null ? '' : ` matched=${row.matched}`) +
+      (g === null ? '' : ` cit=${g.citationsKept} drop=${g.citationsDropped} cap=${g.confidenceCapped} degr=${g.citationsDegraded ?? 'n/a'}`) +
+      (row.costUsd === null ? '' : ` $${row.costUsd.toFixed(4)}`) +
+      (row.error === null ? '' : ` err=${row.error.slice(0, 100)}`),
+  )
 })
-await Promise.all(workers)
 rows.sort((a, b) => a.index - b.index)
 
 printTable(rows)
@@ -280,6 +237,17 @@ console.log(
     `ok-rate: ${okRuns.length}/${completed.length} (${pct(okRuns.length, completed.length)})   ` +
     `total: $${totalUsd.toFixed(4)}   p50 wall: ${p50 === null ? 'n/a' : `${(p50 / 1000).toFixed(0)}s`}`,
 )
+const byDepth = summarizeByDepth(rows)
+if (byDepth.length > 0) {
+  console.log('\n| depth | completed | partial | partial rate | p50 wall | max wall |')
+  console.log('|-|-|-|-|-|-|')
+  for (const d of byDepth) {
+    console.log(
+      `| ${d.depth} | ${d.completed} | ${d.partial} | ${(d.partialRate * 100).toFixed(1)}% | ` +
+        `${d.p50WallMs === null ? '—' : `${(d.p50WallMs / 1000).toFixed(0)}s`} | ${d.maxWallMs === null ? '—' : `${(d.maxWallMs / 1000).toFixed(0)}s`} |`,
+    )
+  }
+}
 for (const row of rows.filter((r) => r.error !== null)) console.log(`  ERROR ${row.id}: ${row.error}`)
 
 const finishedAt = new Date()
@@ -300,6 +268,7 @@ const result = {
     okRate: completed.length === 0 ? null : okRuns.length / completed.length,
     totalUsd,
     p50WallMs: p50,
+    byDepth,
   },
   rows,
 }
