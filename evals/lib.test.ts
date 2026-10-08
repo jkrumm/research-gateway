@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'bun:test'
 import { readFileSync } from 'node:fs'
-import { matchExpect, median, parseGolden, resolverFor, summarizeByDepth, unretrievedCitations } from './lib.js'
+import { matchExpect, median, parseGolden, resolverFor, summarizeByDepth, unretrievedCitations, withinMaxChars } from './lib.js'
 
 describe('matchExpect', () => {
   it('passes when any static pattern matches, case-insensitively', () => {
@@ -103,6 +103,18 @@ describe('resolver response parsing', () => {
   })
 })
 
+describe('withinMaxChars', () => {
+  it('passes with no cap and when the report is at or under it', () => {
+    expect(withinMaxChars('x'.repeat(12_000), undefined)).toBe(true)
+    expect(withinMaxChars('x'.repeat(3_500), 3_500)).toBe(true)
+  })
+
+  it('fails when the report is over the cap', () => {
+    expect(withinMaxChars('x'.repeat(3_501), 3_500)).toBe(false)
+    expect(withinMaxChars('x'.repeat(12_000), 3_500)).toBe(false)
+  })
+})
+
 describe('parseGolden', () => {
   it('parses both expect shapes and both depths', () => {
     const items = parseGolden(
@@ -194,5 +206,16 @@ describe('unretrievedCitations', () => {
   it('parses the citationsRetrieved flag', () => {
     const [item] = parseGolden('{"id":"a","query":"q?","depth":"quick","expect":{"any":["x"]},"citationsRetrieved":true}')
     expect(item?.citationsRetrieved).toBe(true)
+  })
+
+  it('parses a maxChars cap and rejects a non-positive-integer one', () => {
+    const [item] = parseGolden('{"id":"a","query":"q?","depth":"quick","expect":{"any":["x"]},"maxChars":3500}')
+    expect(item?.maxChars).toBe(3500)
+    expect(() => parseGolden('{"id":"a","query":"q?","depth":"quick","expect":{"any":["x"]},"maxChars":0}')).toThrow(
+      'maxChars must be a positive integer',
+    )
+    expect(() => parseGolden('{"id":"a","query":"q?","depth":"quick","expect":{"any":["x"]},"maxChars":12.5}')).toThrow(
+      'maxChars must be a positive integer',
+    )
   })
 })

@@ -40,10 +40,12 @@ commerce multi-item (German market), a German-language spec query, a multi-part 
 "must say not found" cases and two standard lookups. First live run 2026-10-09 (4a6c3a4,
 `evals/results/2026-10-08-4a6c3a4.json`): 28/28 pass, $1.36, partial 0/19 quick, 3/8 standard,
 1/1 deep. A multi-part case uses the `all` expect
-kind (every pattern must match), since `any` passes on the first answered sub-question. Not
-checked by the matcher: that a not-found report cites nothing fabricated, and that a
-commerce price is correct — it only sees report text, and the results file stores no report, so a
-not-found row can only be audited by re-running the query (done by eye in Wave 6, below).
+kind (every pattern must match), since `any` passes on the first answered sub-question. An item may
+also carry `citationsRetrieved` (every cited URL must be among the job's sources — the not-found
+fabrication check) or `maxChars` (the report must stay under a character cap — the not-found length
+target). Each row stores its report text and citations, so a not-found row can be audited from the
+results file without a re-run. What the matcher still cannot judge: that a commerce price is
+correct.
 
 ```bash
 API_SECRET=<gateway bearer> bun scripts/eval.ts                                  # mini, :7780
@@ -783,5 +785,6 @@ the fetch log), and the one dropped citation is a guessed registry URL. No fabri
 in either. The npm report is ~12k chars for a "does not exist" answer, over the 10k standard
 target — the negatives are collapsed but the tangents (what hono/flux/router are) are not.
 
-**Still unproven:** the deep tail (n=2) against `SHUTDOWN_DRAIN_MS`, deep synthesis output tokens
-(not logged on success), and whether 64k synthesis budget worsens it.
+**Still unproven:** the deep tail (n=2) against `SHUTDOWN_DRAIN_MS`, and whether the 64k synthesis
+budget worsens it. Deep synthesis output tokens *are* logged on the success path — `synthesis.done`
+carries `outputTokens` in `synthesize.ts` — so that leg is measurable from the logs, not missing.

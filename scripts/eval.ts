@@ -17,7 +17,7 @@
 // the default base URL. Do NOT run the full set against production as part of a change
 // review: it costs money and competes with real jobs (docs/architecture-review-2026-09.md § 2b).
 
-import { matchExpect, median, parseGolden, resolverFor, summarizeByDepth, unretrievedCitations, type GoldenItem } from '../evals/lib.js'
+import { matchExpect, median, parseGolden, resolverFor, summarizeByDepth, unretrievedCitations, withinMaxChars, type GoldenItem } from '../evals/lib.js'
 import type { Depth } from '../src/agent/schema.js'
 import { flagGetter, runJob, runPool } from './gateway-client.js'
 
@@ -146,7 +146,7 @@ async function runOne(args: Args, secret: string, item: GoldenItem, index: numbe
   const unretrieved = item.citationsRetrieved ? unretrievedCitations(citations, result.sources) : null
   return {
     ...base,
-    pass: match.pass && (unretrieved === null || unretrieved.length === 0),
+    pass: match.pass && withinMaxChars(result.report, item.maxChars) && (unretrieved === null || unretrieved.length === 0),
     report: result.report,
     citations,
     unretrievedCitations: unretrieved,
