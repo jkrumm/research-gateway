@@ -4,6 +4,7 @@ import type { RetrievalLedger, RetrievalTier } from './ledger.js'
 import { unmatchedNumbers } from './numbers.js'
 import { tidyUnverified } from './unverified-hygiene.js'
 import { scrubBody } from './body-mentions.js'
+import { isCrossMarketClaim, type Market } from './market.js'
 
 // Grounding — the code-side gate between what a model CLAIMS it verified and what the run
 // actually retrieved. Applied twice: at the worker boundary (findings, before they can
@@ -87,6 +88,7 @@ export function groundClaims(
   claims: readonly Finding[],
   ledger: RetrievalLedger,
   ineligible: ReadonlySet<string> = new Set(),
+  market: Market | null = null,
 ): GroundedClaims {
   const kept: Finding[] = []
   const dropped: GroundedClaims['dropped'] = []
@@ -164,6 +166,12 @@ export function groundClaims(
       ceiling = 'low'
       unmatched.push({ index: kept.length, numbers: missingNumbers })
     }
+
+    // A price or availability figure is a fact about one market. When the query names a market
+    // and the claim rests on another market's page (or quotes another currency), `medium` is
+    // the most it can carry — in code, because the worker prompt's "prefer local pages" did not
+    // stop US/AU pages backing German prices at `high` (market.ts).
+    if (market && isCrossMarketClaim(claim.claim, claim.url, market)) ceiling = capConfidence(ceiling, 'medium')
 
     const cappedClaim = capConfidence(claim.confidence, ceiling)
     if (cappedClaim !== claim.confidence) capped.add(kept.length)
@@ -437,6 +445,7 @@ export function partialCauseOf(
 export function groundReport(
   submitted: SubmittedReport,
   ledger: RetrievalLedger,
+  market: Market | null = null,
 ): Omit<ResearchReport, 'cost'> {
   // The model's own unverified list makes those URLs ineligible as citation sources —
   // independent of the ledger, so a failure mode the tools never observed still counts.
@@ -454,7 +463,7 @@ export function groundReport(
       .filter((url) => ledger.tierOf(url) !== 'retrieved'),
   )
 
-  const { kept: citedClaims, dropped, capped, unmatched } = groundClaims(submitted.citations, ledger, ineligible)
+  const { kept: citedClaims, dropped, capped, unmatched } = groundClaims(submitted.citations, ledger, ineligible, market)
   // Issue #4, second gate: a kept citation can still ASSERT facts about a document the run
   // could not read, via a different URL. Confidence degrades; the claim and its citation
   // stay, so a wrong subject match costs caution, not evidence. The same ledger-vindication

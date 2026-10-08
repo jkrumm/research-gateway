@@ -2035,3 +2035,51 @@ describe('groundReport — a scheme-less citation matches the retrieved page', (
     expect(report.grounding.citationsDropped).toBe(0)
   })
 })
+
+describe('groundClaims — a price rests on the market it names (2026-10-08 job b9b24998)', () => {
+  const de = { country: 'DE' } as const
+  const ledgerWith = (...urls: string[]) => {
+    const l = createLedger()
+    for (const u of urls) l.recordRetrieved(u)
+    return l
+  }
+
+  it('caps a German price claim cited to a US or AU page at medium', () => {
+    const us = 'https://www.specialized.com/en-us/p/rebel'
+    const au = 'https://www.specialized.com/au/en/p/rebel'
+    const { kept, capped } = groundClaims(
+      [
+        { claim: 'The Rebel costs 4,999 EUR', url: us, confidence: 'high' },
+        { claim: 'The Rebel is priced at 4,999 EUR', url: au, confidence: 'high' },
+      ],
+      ledgerWith(us, au),
+      new Set(),
+      de,
+    )
+    expect(kept.map((k) => k.confidence)).toEqual(['medium', 'medium'])
+    expect(capped.size).toBe(2)
+  })
+
+  it('leaves a same-market page, a non-price claim and a no-market query alone', () => {
+    const local = 'https://www.bike24.de/p/rebel'
+    const us = 'https://www.specialized.com/en-us/p/rebel'
+    const ledger = ledgerWith(local, us)
+    const price = { claim: 'The Rebel costs 4,999 EUR', url: local, confidence: 'high' as const }
+    const spec = { claim: 'The frame is carbon fibre', url: us, confidence: 'high' as const }
+    expect(groundClaims([price, spec], ledger, new Set(), de).kept.map((k) => k.confidence)).toEqual(['high', 'high'])
+    expect(groundClaims([{ ...price, url: us }], ledger).kept[0]?.confidence).toBe('high')
+  })
+
+  it('issue #1 stays caught: a failed page is still dropped under a market', () => {
+    const l = createLedger()
+    l.recordFailed('https://www.bike24.de/p/rebel', 'HTTP 403')
+    const { kept, dropped } = groundClaims(
+      [{ claim: 'The Rebel costs 4,999 EUR', url: 'https://www.bike24.de/p/rebel', confidence: 'high' }],
+      l,
+      new Set(),
+      de,
+    )
+    expect(kept).toHaveLength(0)
+    expect(dropped).toHaveLength(1)
+  })
+})
