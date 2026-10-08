@@ -704,3 +704,10 @@ this feature was built for:
 Both terminate at their first attempt (`attempts: [{step, ok:true}]`) — no wasted lightpanda or
 Tavily Extract call for either shape, confirming the PDF/arXiv steps sit ahead of the renderer
 and the paid fallback exactly as designed.
+
+## Grounding signal accuracy (Wave 3, 2026-10-09)
+
+Expected, not yet measured — re-measure in Wave 6 against the 2026-10-08 audit baseline
+(partial 22% overall / deep 65% / standard 24%; 22 of 35 partials were scrub-only; unverified
+up to 91 entries). Read `partialCause` on `research.done` to split the new partial rate by
+cause, and compare `confidenceCapped` on the jobs that were 9/52 and 15/61 capped.

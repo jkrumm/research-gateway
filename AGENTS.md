@@ -170,7 +170,9 @@ bun test           # pure-function tests only — needs no secrets
 - `src/agent/{plan,worker,synthesize,run}.ts` — the fan-out: lead plans → workers dig →
   lead synthesizes
 - `src/agent/ledger.ts` + `ground.ts` — the grounding invariant above; `body-mentions.ts` extends
-  it to the report PROSE (a blocked source named in the body, not just cited); `markdown.ts` +
+  it to the report PROSE (a blocked source named in the body, not just cited — a bare
+  homepage with no claim, or a sentence that says the source was unreadable, is exempt);
+  `unverified-hygiene.ts` drops guessed-URL 404s and budget housekeeping from `unverified`; `markdown.ts` +
   `report-text.ts` render the model-controlled fields that invariant produces
 - `src/agent/tools.ts` — the ten tools (source-of-truth lookups + `searchWeb`/`fetchPage`);
   adding a source to an existing tool is cheap, a new tool definition is not (README §

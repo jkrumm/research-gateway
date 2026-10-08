@@ -8,6 +8,7 @@ import {
   groundReport,
   isAbsenceClaim,
   degradeClaimsOnUnverifiedSources,
+  partialCauseOf,
 } from './ground.js'
 import type { SubmittedReport, WorkerDigest } from './schema.js'
 
@@ -470,6 +471,7 @@ describe('groundReport — the job boundary', () => {
       confidenceCapped: 0,
       citationsDegraded: 0,
       citationsNumberUnmatched: 0,
+      partialCause: null,
     })
   })
 
@@ -662,6 +664,79 @@ describe('groundReport — the job boundary', () => {
         [{ topic: 'bulk delete docs', url: 'https://wiki.example/Module:Items?action=raw' }],
       )
       expect(kept[0]?.confidence).toBe('high')
+    })
+
+    // Wave 3: a claim citing a page the run READ is backed by it. An unverified entry about a
+    // sibling document must not cap it (2026-10-08 audit: 9 of 52 and 15 of 61 capped).
+    it('does not cap a claim whose cited same-host page was retrieved', () => {
+      const claims = [{ claim: 'Rakan Module:Items stats changed', url: 'https://wiki.example/Rakan', confidence: 'high' as const }]
+      const unverified = [{ topic: 'Module:Items stats', url: 'https://wiki.example/Module:Items' }]
+      expect(degradeClaimsOnUnverifiedSources(claims, unverified).kept[0]?.confidence).toBe('low')
+      const backed = (url: string) => url === 'https://wiki.example/Rakan'
+      expect(degradeClaimsOnUnverifiedSources(claims, unverified, backed).kept[0]?.confidence).toBe('high')
+    })
+
+    it('still caps a claim citing a mirror of the unread document, even when the mirror was read', () => {
+      const { kept } = degradeClaimsOnUnverifiedSources(
+        [{ claim: 'Module:Items is stale', url: 'https://mirror.example/Module:Items?action=raw', confidence: 'high' }],
+        [{ topic: 'Module:Items', url: 'https://wiki.example/Module:Items' }],
+        () => true,
+      )
+      expect(kept[0]?.confidence).toBe('low')
+    })
+
+    it('groundReport sets partialCause and drops guessed-404 / housekeeping noise from unverified', () => {
+      const ledger = createLedger()
+      ledger.recordRetrieved('https://good.example/x')
+      ledger.recordMissing('https://shop.example/guess', 'HTTP 404 — the resource does not exist at this URL')
+      const ok = groundReport(
+        submitted({
+          citations: [{ claim: 'ok', url: 'https://good.example/x', confidence: 'high' }],
+          unverified: [
+            { topic: 'guess', url: 'https://shop.example/guess', reason: 'HTTP 404' },
+            { topic: 'rest', url: null, reason: "This worker's page-text budget is spent" },
+            { topic: 'real', url: 'https://blocked.example/p', reason: 'blocked' },
+          ],
+        }),
+        ledger,
+      )
+      expect(ok.unverified.map((u) => u.topic)).toEqual(['real'])
+      expect(ok.grounding.partialCause).toBeNull()
+      expect(ok.status).toBe('ok')
+
+      const scrubbed = groundReport(
+        submitted({
+          report: 'Per https://blocked.example/p the price is 12 EUR.',
+          citations: [{ claim: 'ok', url: 'https://good.example/x', confidence: 'high' }],
+          unverified: [{ topic: 'real', url: 'https://blocked.example/p', reason: 'blocked' }],
+        }),
+        ledger,
+      )
+      expect(scrubbed.grounding.partialCause).toBe('scrubbed')
+      expect(scrubbed.status).toBe('partial')
+    })
+
+    it('a sentence that says unreadable but states a figure is still flagged', () => {
+      const ledger = createLedger()
+      ledger.recordRetrieved('https://good.example/x')
+      const r = groundReport(
+        submitted({
+          report: 'https://blocked.example/p could not be read but lists the frame at 1,299 EUR.',
+          citations: [{ claim: 'ok', url: 'https://good.example/x', confidence: 'high' }],
+          unverified: [{ topic: 'real', url: 'https://blocked.example/p', reason: 'blocked' }],
+        }),
+        ledger,
+      )
+      expect(r.grounding.partialCause).toBe('scrubbed')
+    })
+
+    it('records why a run is partial, first cause wins', () => {
+      const base = { pagesRetrieved: 3, pagesMissing: 0, pagesFailed: 0, citationsDropped: 0 }
+      expect(partialCauseOf(base, 0)).toBeNull()
+      expect(partialCauseOf({ ...base, citationsDropped: 1 }, 2)).toBe('dropped')
+      expect(partialCauseOf(base, 1)).toBe('scrubbed')
+      expect(partialCauseOf({ ...base, pagesRetrieved: 0 }, 0)).toBe('no-pages')
+      expect(partialCauseOf({ ...base, pagesFailed: 4 }, 0)).toBe('failures')
     })
 
     it('does NOT degrade a claim about a document the ledger says was retrieved anyway (issue #1 direction)', () => {
@@ -1579,7 +1654,7 @@ describe('numeric check — review fixes', () => {
       const ledger = createLedger()
       ledger.recordRetrieved('https://good.example/x')
       ledger.recordFailed('https://nunu.gg', 'rendered page empty')
-      for (const body of ['Per nunu.gg, item counts matter.', 'See https://nunu.gg/ here.']) {
+      for (const body of ['Per nunu.gg, item counts matter.', 'Per https://nunu.gg/ the item counts matter.']) {
         const report = groundReport(
           submitted({
             report: body,

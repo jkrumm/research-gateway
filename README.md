@@ -143,6 +143,14 @@ fully-read page is information and is kept). Gating runs at two boundaries:
 A URL in `unverified` is structurally ineligible as a `citations[].url`, so the two can never
 contradict each other. When evidence was lost the report comes back `status: "partial"` with a
 banner prepended to the markdown — text-only MCP clients read the prose and nothing else.
+`grounding.partialCause` (`dropped` | `scrubbed` | `no-pages` | `failures`, first match wins)
+says why, and `research.done` logs it. A prose mention only counts as `scrubbed` when it
+leans on the source: a bare homepage named without a claim, or a sentence that already says
+the source could not be read or verified, is not flagged. A citation is capped by the
+subject-match rule only when it cites a copy of the unverified document or no page the run
+read; a different retrieved source backs it. `unverified` leaves out guessed-URL 404s and
+page-text-budget housekeeping unless the prose names them, and groups the rest by topic — so an
+empty `unverified` no longer proves nothing was blocked, only that nothing relevant was.
 A run whose every evidence is a 404/410 answer (`pagesMissing > 0`, nothing retrieved) is NOT
 partial: the origin's answer is the evidence, and absence claims citing it stay `high`.
 A job that retrieved **nothing at all** is not a `partial` report: it is a terminal

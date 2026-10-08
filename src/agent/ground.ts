@@ -2,6 +2,7 @@ import type { Finding, Grounding, ResearchReport, SubmittedReport, UnverifiedEnt
 import { normalizeUrl } from './ledger.js'
 import type { RetrievalLedger, RetrievalTier } from './ledger.js'
 import { unmatchedNumbers } from './numbers.js'
+import { tidyUnverified } from './unverified-hygiene.js'
 import { scrubBody } from './body-mentions.js'
 
 // Grounding — the code-side gate between what a model CLAIMS it verified and what the run
@@ -308,11 +309,20 @@ function countShared(subject: ReadonlySet<string>, words: ReadonlySet<string>): 
   return shared
 }
 
-function restsOn(claim: Finding, words: ReadonlySet<string>, subject: Subject, isVocabulary: (t: string) => boolean): boolean {
+// `backed(url)`: the run actually read that URL. A claim citing a page the run read is backed by
+// that page, so an unverified entry about some OTHER document cannot cap it — only a claim
+// citing a copy of the unread document itself (`isCopy`) or one with no read page behind it can.
+function restsOn(
+  claim: Finding,
+  words: ReadonlySet<string>,
+  subject: Subject,
+  isVocabulary: (t: string) => boolean,
+  backed: (url: string) => boolean,
+): boolean {
   const tokens = new Set([...subject.tokens].filter((t) => !isVocabulary(t)))
   if (tokens.size < 2) return false
   const shared = countShared(tokens, words)
-  if (!subject.url) return shared >= Math.max(2, Math.ceil(tokens.size / 2))
+  if (!subject.url) return !backed(claim.url) && shared >= Math.max(2, Math.ceil(tokens.size / 2))
   if (shared < Math.max(2, Math.ceil(tokens.size / 3))) return false
 
   const docPath = new Set([...pathTokens(subject.url)].filter((t) => !isVocabulary(t)))
@@ -323,6 +333,7 @@ function restsOn(claim: Finding, words: ReadonlySet<string>, subject: Subject, i
     normalizeUrl(claim.url) !== normalizeUrl(subject.url) &&
     [...docPath].every((t) => citedTokens.has(t))
   if (isCopy) return true
+  if (backed(claim.url)) return false
   const label = siteLabel(subject.url)
   const anchored = hostOf(claim.url) === hostOf(subject.url) || (label.length >= 3 && words.has(label))
   return anchored && [...docPath].some((t) => words.has(t) && !citedPath.has(t))
@@ -331,6 +342,7 @@ function restsOn(claim: Finding, words: ReadonlySet<string>, subject: Subject, i
 export function degradeClaimsOnUnverifiedSources(
   claims: readonly Finding[],
   unverified: ReadonlyArray<{ topic: string; url: string | null }>,
+  backed: (url: string) => boolean = () => false,
 ): { kept: Finding[]; degraded: ReadonlySet<number> } {
   const subjects: Subject[] = unverified.map((entry) => ({ tokens: subjectTokens(entry), url: entry.url }))
   if (subjects.every((s) => s.tokens.size < 2)) return { kept: [...claims], degraded: new Set() }
@@ -347,7 +359,7 @@ export function degradeClaimsOnUnverifiedSources(
   const kept = claims.map((claim, index) => {
     if (claim.confidence === 'low') return claim
     const words = claimWords[index] ?? new Set<string>()
-    if (!subjects.some((subject) => restsOn(claim, words, subject, isVocabulary))) return claim
+    if (!subjects.some((subject) => restsOn(claim, words, subject, isVocabulary, backed))) return claim
     degraded.add(index)
     return { ...claim, confidence: 'low' as const }
   })
@@ -405,6 +417,19 @@ function banner(grounding: Grounding, annotated: number): string {
   return `> **Partial result — evidence was lost during this run.** ${parts.join('; ')}. Anything below that is not backed by an entry in \`citations\` is unconfirmed; see \`unverified\` for what could not be checked.\n\n`
 }
 
+// Why a run is `partial`, first match wins. Recorded on `grounding.partialCause` and in
+// `research.done` so an audit reads the cause instead of re-deriving it from counters.
+export function partialCauseOf(
+  grounding: Pick<Grounding, 'pagesRetrieved' | 'pagesMissing' | 'pagesFailed' | 'citationsDropped'>,
+  annotated: number,
+): NonNullable<Grounding['partialCause']> | null {
+  if (grounding.citationsDropped > 0) return 'dropped'
+  if (annotated > 0) return 'scrubbed'
+  if (grounding.pagesRetrieved === 0 && grounding.pagesMissing === 0) return 'no-pages'
+  if (grounding.pagesFailed > grounding.pagesRetrieved) return 'failures'
+  return null
+}
+
 // Job boundary. Takes the model's submission and returns the public report, with every
 // citation checked against the ledger and every count derived in code.
 // Returns everything except `cost`: grounding is about evidence, and this function has no
@@ -438,7 +463,11 @@ export function groundReport(
   const degradeSubjects = submitted.unverified.filter(
     (e) => !e.url || ledger.tierOf(e.url) !== 'retrieved',
   )
-  const { kept, degraded } = degradeClaimsOnUnverifiedSources(citedClaims, degradeSubjects)
+  const { kept, degraded } = degradeClaimsOnUnverifiedSources(
+    citedClaims,
+    degradeSubjects,
+    (url) => ledger.tierOf(url) === 'retrieved',
+  )
   const snap = ledger.snapshot()
 
   // Both passes index into the same `kept` array: `capped` holds positions into
@@ -448,7 +477,7 @@ export function groundReport(
   // not passes over them.
   const confidenceCapped = new Set([...capped, ...degraded]).size
 
-  const grounding: Grounding = {
+  const grounding: Omit<Grounding, 'partialCause'> = {
     pagesRetrieved: snap.retrieved.length,
     pagesMissing: snap.missing.length,
     pagesFailed: snap.failed.length,
@@ -474,7 +503,7 @@ export function groundReport(
       reason: `Number check: ${notOnPage(numbers)} (${claim?.url ?? ''}) — the figure may be invented, taken from another page or the given background, or computed; confirm before relying on it.`,
     }
   })
-  const unverified = dedupeUnverified([...submitted.unverified, ...dropped, ...numberEntries]).map((entry) => {
+  const detached = dedupeUnverified([...submitted.unverified, ...dropped, ...numberEntries]).map((entry) => {
     if (!entry.url || !cited.has(normalizeUrl(entry.url))) return entry
     // Say what the ledger actually holds: "retrieved" was asserted for snippet- and 404-tier
     // pages too, which read as a contradiction next to a medium-capped citation.
@@ -493,7 +522,14 @@ export function groundReport(
   // A scrub note is evidence lost, exactly like a dropped citation: the body named a source
   // this run could not verify. It therefore feeds `degradedRun` — without that, issue #7 is
   // only half closed and the contradiction still ships under `status: ok`.
-  const scrubbed = scrubBody(submitted.report, unverified)
+  const scrubbed = scrubBody(submitted.report, detached)
+  // Hygiene runs AFTER the scrub so an entry the prose leans on is still flagged inline; only
+  // guessed-URL 404s and budget housekeeping nothing depends on leave the public list.
+  const unverified = tidyUnverified(detached, {
+    isMissing: (url) => ledger.tierOf(url) === 'missing',
+    inProse: (entry) => !!entry.url && scrubbed.flaggedUrls.has(entry.url),
+    protectedUrls: new Set(dropped.flatMap((d) => (d.url ? [d.url] : []))),
+  })
 
   // A `partial` report is one where evidence was demonstrably LOST — a citation dropped for
   // lack of a retrieved source, nothing retrievable at all, or failures outnumbering the
@@ -502,11 +538,8 @@ export function groundReport(
   // `confidenceCapped` / `citationsDegraded`, but it must not flip `status` or banner a run
   // whose evidence is intact — which is exactly what the 2026-09-23..25 over-firing did
   // (docs/architecture-review-2026-09.md §2b).
-  const degradedRun =
-    grounding.citationsDropped > 0 ||
-    scrubbed.annotated > 0 ||
-    (grounding.pagesRetrieved === 0 && grounding.pagesMissing === 0) ||
-    grounding.pagesFailed > grounding.pagesRetrieved
+  const partialCause = partialCauseOf(grounding, scrubbed.annotated)
+  const degradedRun = partialCause !== null
 
   const warnings: string[] = []
   if (scrubbed.annotated > 0) {
@@ -558,6 +591,6 @@ export function groundReport(
     unverified,
     status: degradedRun ? 'partial' : 'ok',
     warnings,
-    grounding,
+    grounding: { ...grounding, partialCause },
   }
 }

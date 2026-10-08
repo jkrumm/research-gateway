@@ -118,6 +118,13 @@ export const Grounding = z.object({
     .describe(
       'Of the capped citations, those quoting a number that does not occur in the text retrieved from the page they cite (invented, carried over from another page, or computed). Each is capped at `low` and restated in `unverified`.',
     ),
+  partialCause: z
+    .enum(['dropped', 'scrubbed', 'no-pages', 'failures'])
+    .nullable()
+    .optional()
+    .describe(
+      "Why `status` is 'partial' (null when it is 'ok'): `dropped` citations were removed, `scrubbed` the prose names an unverifiable source, `no-pages` nothing was retrieved, `failures` fetch failures outnumber successes. First match wins, in that order.",
+    ),
 })
 export type Grounding = z.infer<typeof Grounding>
 

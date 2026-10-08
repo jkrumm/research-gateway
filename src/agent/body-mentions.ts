@@ -305,7 +305,11 @@ function patternFor(url: string): RegExp | null {
   return new RegExp(body, 'u')
 }
 
-// Whether the body names this source.
+// Whether the body names this source in a way worth flagging. A mention is exempt when its
+// sentence already says the source could not be read or verified (the note would repeat the
+// report), or — for a blocked bare host with no path — when the sentence makes no claim (a
+// homepage named in passing, "Checked https://www.bike24.de/."). Issue #7's case stays
+// flagged: an ASSERTION resting on the source ("Per bike24.de the price is 1,299").
 //
 // The body is normalized before matching, for the same reason in two forms: a difference a
 // reader cannot see must not change whether the source is flagged.
@@ -318,7 +322,41 @@ function patternFor(url: string): RegExp | null {
 //     but matched nothing. Both sides are NFC-normalized.
 function referencesBody(body: string, url: string): boolean {
   const pattern = patternFor(url)
-  return pattern !== null && pattern.test(normalizeForMatch(body))
+  if (pattern === null) return false
+  const text = normalizeForMatch(body)
+  const parts = urlParts(url)
+  const bareHost = !!parts && !parts.rest && !parts.hash
+  const global = new RegExp(pattern.source, 'gu')
+  for (const match of text.matchAll(global)) {
+    const sentence = sentenceAround(text, match.index, match[0].length)
+    // The URL itself is removed first: `example.com/blocked` must not exempt itself. A
+    // sentence that says the source was unreadable but still states a figure is an assertion.
+    const around = sentence.replace(match[0], ' ')
+    if (SAYS_UNVERIFIED.test(around) && !/\d/.test(around)) continue
+    if (bareHost && !makesClaim(around)) continue
+    return true
+  }
+  return false
+}
+
+// The sentence (or line) holding a match: bounded by a newline or terminal punctuation
+// followed by whitespace. A URL's own dots are never followed by whitespace mid-URL.
+function sentenceAround(text: string, at: number, length: number): string {
+  const before = text.slice(0, at)
+  const start = Math.max(before.lastIndexOf('\n'), ...[...before.matchAll(/[.!?](?=\s)/g)].map((m) => m.index + 1))
+  const after = text.slice(at + length)
+  const end = after.search(/[.!?](?=\s|$)|\n/)
+  return text.slice(start + 1, end === -1 ? text.length : at + length + end)
+}
+
+const SAYS_UNVERIFIED =
+  /\b(?:could\s?n[o']t|can\s?not|can't|unable to|failed to|not (?:be )?(?:able to )?)(?:\s+be)?\s*(?:read|retriev\w*|fetch\w*|verif\w*|access\w*|load\w*|confirm\w*|reach\w*)|\b(?:unverified|unverifiable|unreachable|inaccessible|blocked|paywalled)\b|\bnot (?:been )?verified\b/i
+
+// A sentence makes a claim when it carries a figure or an attribution/assertion verb. Without
+// either, a bare homepage is a pointer ("Checked bike24.de"), not something the report leans on.
+const CLAIM = /\d|\b(?:per|according to|states?|says?|said|lists?|listed|reports?|reported|shows?|showed|confirms?|confirmed|offers?|sells?|costs?|prices?|priced|is|are)\b/i
+function makesClaim(sentence: string): boolean {
+  return CLAIM.test(sentence)
 }
 
 // One normalization for the match input, mirroring what `patternFor` does to the URL side.
@@ -367,9 +405,10 @@ function dedupKey(url: string): string {
 export function scrubBody(
   body: string,
   unverified: ReadonlyArray<UnverifiedEntry>,
-): { body: string; annotated: number } {
+): { body: string; annotated: number; flaggedUrls: ReadonlySet<string> } {
   let notes = ''
   let annotated = 0
+  const flaggedUrls = new Set<string>()
   const seen = new Set<string>()
   for (const entry of unverified) {
     if (!entry.url) continue
@@ -378,8 +417,9 @@ export function scrubBody(
     seen.add(key)
     if (!referencesBody(body, entry.url)) continue
     annotated++
+    flaggedUrls.add(entry.url)
     // `renderUrl`/`renderProse`: model-controlled, and this is markdown (see markdown.ts).
     notes += `> **Unverified in prose:** this report references ${renderUrl(entry.url)}, which this run could NOT verify (${renderProse(entry.reason)}). Treat that reference as unconfirmed — see \`unverified\`.\n\n`
   }
-  return { body: notes + body, annotated }
+  return { body: notes + body, annotated, flaggedUrls }
 }

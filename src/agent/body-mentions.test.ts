@@ -141,3 +141,31 @@ describe('scrubBody — regex boundaries', () => {
     expect(annotated).toBe(1)
   })
 })
+
+// Wave 3: a scrub note counts as evidence lost, so it must fire on an ASSERTION resting on an
+// unverified source — not on a homepage named in passing or a sentence that already says the
+// source could not be read (22 of 35 partials in the 2026-10-08 audit were these alone).
+describe('scrubBody — mentions that are not claims', () => {
+  const home = 'https://www.bike24.de/'
+  const cases: Array<{ body: string; want: boolean; why: string }> = [
+    { body: 'Per bike24.de the Tarmac costs 1,299 EUR.', want: true, why: 'issue #7: a figure resting on the unverified host' },
+    { body: 'According to https://www.bike24.de/ the frame is in stock.', want: true, why: 'an attribution to the unverified homepage' },
+    { body: 'Retailers checked: https://www.bike24.de/.', want: false, why: 'a bare homepage with no claim' },
+    { body: 'Sources consulted\n- https://www.bike24.de/\n- https://example.org/', want: false, why: 'a bare homepage in a list' },
+    { body: 'https://www.bike24.de/ could not be read, so its stock is unknown.', want: false, why: 'the sentence already says it could not be read' },
+    { body: 'Prices on bike24.de were unverified. Per bike24.de the frame costs 1,299 EUR.', want: true, why: 'a later asserting sentence is still flagged' },
+  ]
+  for (const { body, want, why } of cases) {
+    it(`${want ? 'flags' : 'leaves alone'}: ${why}`, () => {
+      expect(flags(body, home)).toBe(want)
+    })
+  }
+
+  it('a path-bearing source named with "could not be verified" is exempt', () => {
+    expect(flags('The page https://nunu.gg/patch-notes could not be verified.', 'https://nunu.gg/patch-notes')).toBe(false)
+  })
+
+  it('a path-bearing source named without a claim is still flagged', () => {
+    expect(flags('See https://nunu.gg/patch-notes here.', 'https://nunu.gg/patch-notes')).toBe(true)
+  })
+})
