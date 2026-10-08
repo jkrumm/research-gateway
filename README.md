@@ -82,8 +82,8 @@ dashboard report one number. `tavilyCredits` counts **search only**; extraction 
 invisible at this call shape ([measurements](./docs/measurements.md#what-tavilycredits-cannot-see)).
 
 Runs are **async**: submit returns a `jobId` immediately (p50 audited 2026-10-08: quick 100s, standard
-362s, deep 770s, before the consistency-pass gate; expected ~45s / ~300s / ~700s, re-measured in the
-hardening plan's Wave 6 —
+362s, deep 770s; re-measured 2026-10-09 after the consistency-pass gate: quick ~11s, standard ~152s,
+deep ~450s on n=2 —
 [full distribution](./docs/measurements.md#job-duration-by-depth--the-30-day-span-record)).
 `RESEARCH_MAX_CONCURRENCY` caps concurrent jobs and `RESEARCH_MAX_QUEUE` the backlog.
 

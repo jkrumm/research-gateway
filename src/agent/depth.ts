@@ -51,13 +51,12 @@ export interface DepthProfile {
 }
 
 // Wall time per depth, surfaced on every status read so a caller can tell slow from stuck.
-// ESTIMATE since 2026-10-08: the audit measured quick 100s / standard 362s / deep 770s p50, and
-// the consistency gate (skipped at quick; capped at 32k tokens elsewhere) is expected to remove
-// most of the 119s p50 it added. Re-measure in Wave 6 (docs/measurements.md § Job duration)
-// and replace these — never tune them from one run.
+// Re-measured 2026-10-09 on the live gateway after Waves 1-5 (docs/measurements.md § Job
+// duration): quick p50 11s, standard 152s. Deep has n=2 post-gate runs (442s, 538s) and keeps
+// its pre-gate estimate until a larger sample exists — never tune these from one run.
 export const TYPICAL_DURATION_MS: Record<Depth, { p50: number; p90: number }> = {
-  quick: { p50: 45_000, p90: 90_000 },
-  standard: { p50: 300_000, p90: 500_000 },
+  quick: { p50: 12_000, p90: 40_000 },
+  standard: { p50: 150_000, p90: 260_000 },
   deep: { p50: 700_000, p90: 1_200_000 },
 }
 

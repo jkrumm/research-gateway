@@ -22,7 +22,7 @@ Everything is submit-then-poll — never expect a synchronous result.
 
 - HTTP (Hermes's and sideclaw's lane): `POST /research` → `{ jobId, status }`; **poll**
   `GET /research/:jobId` — it returns current state at once and never blocks — until
-  `status: "done"` — p50 quick ~45s / standard ~300s / deep ~700s (estimates after the 2026-10-08 consistency-pass gate, to re-measure; the 2026-08/09 record was 38s / 111s / 366s), full distribution in
+  `status: "done"` — p50 quick ~12s / standard ~150s / deep ~450-700s (re-measured 2026-10-09 after the consistency-pass gate, deep n=2; the 2026-10-08 audit was 100s / 362s / 770s, the 2026-08/09 record 38s / 111s / 366s), full distribution in
   `docs/measurements.md` § Job duration.
 - MCP (`/mcp`, bearer): tools `research`, `job_status`, `job_wait`, `job_cancel` — same submit → poll
   contract — but `job_wait` blocks for the WHOLE job, not a 50s slice, so one call is normally
