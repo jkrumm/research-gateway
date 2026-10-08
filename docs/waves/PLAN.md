@@ -82,21 +82,21 @@ Sources: `~/Library/Logs/research-gateway.log` (JSON lines), `~/.research-gatewa
 - `7e93267`: human solve escalates to the dialog only on positive challenge evidence.
 - `c4aaea3`: `JOB_TTL_MINUTES` default restored to 7 days.
 
-## Wave 1 — Consistency pass: stop paying 2 minutes for 2 edits            <!-- status: active -->
-- [ ] Diagnose from the logs and spans where the 16-53k output tokens go: reasoning vs. the `submit_review` arguments. Check whether the reviewer echoes the whole report into `replace` spans. Record the finding in `docs/measurements.md`.
-- [ ] Give consistency its own role in `ROLE_BUDGETS` (`src/lib/llm-settings.ts`), sized from that measurement, and use it instead of the budget-less `leadModel`. Then remove `leadModel` / `effortProviderSettings` if they become dead.
-- [ ] Gate the pass so it runs only where a contradiction is possible:
+## Wave 1 — Consistency pass: stop paying 2 minutes for 2 edits            <!-- status: done -->
+- [x] Diagnose from the logs and spans where the 16-53k output tokens go: reasoning vs. the `submit_review` arguments. Check whether the reviewer echoes the whole report into `replace` spans. Record the finding in `docs/measurements.md`.
+- [x] Give consistency its own role in `ROLE_BUDGETS` (`src/lib/llm-settings.ts`), sized from that measurement, and use it instead of the budget-less `leadModel`. Then remove `leadModel` / `effortProviderSettings` if they become dead.
+- [x] Gate the pass so it runs only where a contradiction is possible:
   - Skip `quick`.
   - Skip reports built from a single digest or a single worker.
   - Pick a size floor from data.
   - Optionally add a cheap deterministic pre-check, but only if it is simple and tested.
   - Log the skip reason.
   - Fewer retries on a 5xx (`maxRetries`): a failed review is a no-op by contract anyway.
-- [ ] Shrink the work itself in `consistencyPrompt` (`src/agent/prompt.ts`): minimal `find` spans, no rewriting of unaffected text, an explicit "return consistent when nothing contradicts".
-- [ ] Retune `TYPICAL_DURATION_MS` (`src/agent/depth.ts`) and the `docs/measurements.md` job-duration and consistency sections to the expected new numbers. Mark them "to re-measure in Wave 6".
-**Left behind:**
+- [x] Shrink the work itself in `consistencyPrompt` (`src/agent/prompt.ts`): minimal `find` spans, no rewriting of unaffected text, an explicit "return consistent when nothing contradicts".
+- [x] Retune `TYPICAL_DURATION_MS` (`src/agent/depth.ts`) and the `docs/measurements.md` job-duration and consistency sections to the expected new numbers. Mark them "to re-measure in Wave 6".
+**Left behind:** Finding: the 16-53k tokens are reasoning, not echoed `replace` text (edits ~230 chars p50; clean verdicts still 21k p50) — recorded in `docs/measurements.md`. `reasoning_effort` stays untouched (not a proven lever). Shipped: `ROLE_BUDGETS.consistency` = 64k (a first 32k draft was caught in review as clipping ~50% of passes; truncated passes now log `outcome: truncated`), `leadModel`/`effortProviderSettings` deleted, `consistency-gate.ts` (skip quick / <2 digests / <6k chars, logs `consistency.skipped`), `maxRetries: 0`, minimal-span prompt. Gate is mostly a quick-depth win: standard/deep reports still pass it, so their saving rests on the prompt and is unproven. `TYPICAL_DURATION_MS` (45/300/700s p50) are estimates — re-measure in Wave 6 and check the `consistency.skipped`/`truncated` rates. Deferred review items: shared no-op review factory (skip path in `run.ts` duplicates the catch-path literal), fallow flags on `run.ts` complexity and the `run.ts`/`job-runner-core.ts` duplicate block and unused exports in `llm.ts` — Wave 5.
 
-## Wave 2 — Synthesis: never ship the stitched dump, lead with the answer            <!-- status: pending -->
+## Wave 2 — Synthesis: never ship the stitched dump, lead with the answer            <!-- status: active -->
 - [ ] Log WHY synthesis is rejected: finishReason, output tokens, text-only reply vs. a malformed tool call. Field: `synthesis.rejected`.
 - [ ] Recover before assembling. If the model replied with the report as plain text, or hit `length`, salvage or retry once with a compact target (the existing doubled-budget path in `llm.ts`/`synthesize.ts` covers `length`; extend it to the deep 36-65k reality). Re-check `ROLE_BUDGETS.synthesis` against measured deep outputs.
 - [ ] Make the `assembled` fallback (`src/agent/assemble.ts`) a usable report: a deterministic top summary from the digest summaries, and no first-person process narration lines.
