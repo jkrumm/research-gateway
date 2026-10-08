@@ -47,6 +47,9 @@ not-found row is auditable without a re-run; the two `citationsRetrieved` cases 
 `NOT-IN-SOURCES=` for cited URLs that are not among the job's `sources`. That check is
 informational, not scored: a 404 the origin answered (`missing`) legitimately backs an absence
 claim yet is not a page read, so both not-found rows list their registry 404 and nothing else.
+The two not-found items also carry `maxChars: 3500` — unlike `citationsRetrieved`, that cap *is*
+scored: the report must stay under the character target so the short-answer rule fails loudly
+rather than regressing silently behind the prompt.
 Second live run 2026-10-09 (dcb6490, `evals/results/2026-10-08-dcb6490.json`, Wave 7 prompt
 changes): 28/28 on the matcher (the saved file records 26/28: the citation check was scored in
 that run and was relaxed to informational right after), $1.34, partial 0/19 quick, 2/8 standard
@@ -791,5 +794,6 @@ the fetch log), and the one dropped citation is a guessed registry URL. No fabri
 in either. The npm report is ~12k chars for a "does not exist" answer, over the 10k standard
 target — the negatives are collapsed but the tangents (what hono/flux/router are) are not.
 
-**Still unproven:** the deep tail (n=2) against `SHUTDOWN_DRAIN_MS`, deep synthesis output tokens
-(not logged on success), and whether 64k synthesis budget worsens it.
+**Still unproven:** the deep tail (n=2) against `SHUTDOWN_DRAIN_MS`, and whether the 64k synthesis
+budget worsens it. Deep synthesis output tokens *are* logged on the success path — `synthesis.done`
+carries `outputTokens` in `synthesize.ts` — so that leg is measurable from the logs, not missing.
