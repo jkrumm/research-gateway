@@ -141,6 +141,13 @@ function failIfNoData<T>(params: {
 // `getJson`.
 const REGISTRY_JSON_CAP_BYTES = 32 * 1024 * 1024
 
+// The status out of getJson's "HTTP 404 Not Found" error string, or null for a transport
+// failure / rate-limit message — so a failure log line can be grouped by status.
+function httpStatusOf(error: string): number | null {
+  const m = /^HTTP (\d{3})\b/.exec(error)
+  return m ? Number(m[1]) : null
+}
+
 async function getJson<T>(url: string, headers: Record<string, string>): Promise<JsonResult<T>> {
   try {
     const res = await fetch(url, { headers, signal: AbortSignal.timeout(TIMEOUT_MS) })
@@ -596,7 +603,7 @@ function buildGithubRepoTool(ledger: RetrievalLedger, jobId: string): AnyTool {
       if (!repoRes.ok || !repoRes.data) {
         const error = repoRes.error ?? 'not found'
         ledger.recordFailed(pageUrl, error)
-        log('tool.githubRepo', { jobId, owner, repo, ok: false })
+        log('tool.githubRepo', { jobId, owner, repo, ok: false, status: httpStatusOf(error), error })
         return { error: `githubRepo failed for ${owner}/${repo}: ${error}` }
       }
 

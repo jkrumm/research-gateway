@@ -29,7 +29,7 @@ import { env } from '../env.js'
 import { log } from '../lib/log.js'
 import { createSemaphore } from '../lib/semaphore.js'
 import { assertPublicHttpUrl } from '../lib/ssrf.js'
-import { readBoundedText, readCappedText, MAX_BODY_BYTES } from '../lib/bounded-read.js'
+import { readBoundedBytes, readBoundedText, readCappedText, MAX_BODY_BYTES } from '../lib/bounded-read.js'
 import { pickCaptionTrack, parseJson3, buildTranscriptText, type YtdlpInfo } from './youtube-captions.js'
 
 // YouTube rate-limits this datacenter IP under burst (see the module header above) —
@@ -40,11 +40,14 @@ const slots = createSemaphore(env.YTDLP_MAX_CONCURRENCY, env.YTDLP_TIMEOUT_MS)
 const BROWSER_UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36'
 
-// Bounds how much of a spawned process's stdout/stderr this reads into memory. `-J` on a
-// single video was measured at 642 KB; this cap is far above that so it never trips on a
-// real video and only guards against a pathological response (a huge search result set, a
-// binary gone wrong).
-const MAX_OUTPUT_BYTES = 8 * 1024 * 1024
+// Bounds how much of a spawned process's stdout this reads into memory. `-J` on a single
+// video was measured at 642 KB when this was written (2026-08), but 11.3 MB on 2026-10-09 for
+// SZfmz97LbdU (every format URL is inlined). The first cap, 8 MB, was a pathological-response
+// guard that real videos crossed: stopping the read closes the pipe, yt-dlp's next write dies
+// with `[Errno 32] Broken pipe`, and that stderr line was logged as the failure (12 events
+// 2026-09-25/26, one video). Sized ~3x past the worst `-J` seen; a cut is now reported as a cut.
+const MAX_OUTPUT_BYTES = 32 * 1024 * 1024
+const MAX_STDERR_BYTES = 64 * 1024
 
 function firstErrorLine(stderr: string): string {
   const line = stderr.split('\n').find((l) => l.trim().length > 0)
@@ -70,9 +73,9 @@ async function runYtdlp(args: string[], jobId: string): Promise<SpawnResult> {
       killSignal: 'SIGKILL',
     })
 
-    const [stdout, stderr] = await Promise.all([
-      readCappedText(proc.stdout, MAX_OUTPUT_BYTES),
-      readCappedText(proc.stderr, MAX_OUTPUT_BYTES),
+    const [out, stderr] = await Promise.all([
+      readBoundedBytes(proc.stdout, MAX_OUTPUT_BYTES),
+      readCappedText(proc.stderr, MAX_STDERR_BYTES),
     ])
     const code = await proc.exited
 
@@ -83,10 +86,13 @@ async function runYtdlp(args: string[], jobId: string): Promise<SpawnResult> {
     if (proc.signalCode) {
       return { ok: false, stdout: '', error: `yt-dlp timed out after ${env.YTDLP_TIMEOUT_MS}ms` }
     }
+    if (out.truncated) {
+      return { ok: false, stdout: '', error: `yt-dlp output exceeded ${MAX_OUTPUT_BYTES} bytes` }
+    }
     if (code !== 0) {
       return { ok: false, stdout: '', error: firstErrorLine(stderr) }
     }
-    return { ok: true, stdout }
+    return { ok: true, stdout: new TextDecoder().decode(out.bytes) }
   } catch (err) {
     return { ok: false, stdout: '', error: String(err) }
   }
