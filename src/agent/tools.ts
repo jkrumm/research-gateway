@@ -13,6 +13,7 @@ import { createLedger } from './ledger.js'
 import { buildDirectSourceTools } from './direct-sources.js'
 import { sonarSearch, type SonarContextSize } from './sonar.js'
 import { runFetchChain, hostOf } from './fetch-chain.js'
+import { createFlightRegistry, isTerminalOutcome, missingHint } from './fetch-flight.js'
 import { humanSolver } from './human-solve.js'
 import { normalizeUrl, type RetrievalLedger } from './ledger.js'
 import { readBrainNote, searchBrain } from './brain-search.js'
@@ -527,6 +528,10 @@ function buildSearchWebTool(args: {
   })
 }
 
+// One registry for the process, keyed by job; run.ts clears a job's entry when it finishes.
+const fetchFlights = createFlightRegistry()
+export const clearFetchFlights = (jobId: string): void => fetchFlights.clear(jobId)
+
 function buildFetchPageTool(ledger: RetrievalLedger, pageBudget: PageBudget, jobId = '-'): AnyTool {
   // Per-run dedup: a URL fetched once is not fetched again. Re-fetching wastes network,
   // readability/Tavily-extract work, and budget; the model already has the content above.
@@ -577,47 +582,63 @@ function buildFetchPageTool(ledger: RetrievalLedger, pageBudget: PageBudget, job
 
       // The chain itself lives in fetch-chain.ts so it can be replayed and measured without
       // an LLM in the loop (scripts/fetch-bench.ts). This tool owns only what is specific to
-      // being a tool: the per-run dedup above, and turning the result into a model-facing
-      // shape. The chain never throws and records the ledger itself.
+      // being a tool: the per-worker dedup above, the per-JOB single-flight (fetch-flight.ts:
+      // parallel workers asking for one URL share a chain run, and a page/404/block is
+      // remembered for the job), and turning the outcome into a model-facing shape. The chain
+      // never throws and records the ledger itself.
       // The chain records into a per-fetch ledger, committed below once it is known whether the
       // model actually receives the text (fetch-guard.ts's commitRead).
-      const staged = createLedger()
-      const result = await runFetchChain(url, {
-        ledger: staged,
-        jobId,
-        signal: options?.abortSignal,
-        onTavilyCredits: (credits) => recordTavilyExtract(jobId, credits),
-        onRender: (r) => meterRender.add(jobId, { renders: 1, failures: r.ok ? 0 : 1, totalMs: r.ms }),
-        onYtdlp: (r) => meterYtdlp.add(jobId, { calls: 1, failures: r.ok ? 0 : 1, totalMs: r.ms }),
-        onArchive: (r) =>
-          meterArchive.add(jobId, {
-            rescues: r.ok ? 1 : 0,
-            failures: r.ok ? 0 : 1,
-            totalMs: r.ms,
-            oldestSnapshotDays: r.snapshotAgeDays,
-          }),
-        // Undefined off the mini (HUMAN_SOLVE_SSH_HOST unset) — the chain then has no human stage.
-        ...(humanSolver ? { humanSolve: humanSolver } : {}),
-        onHuman: (r) => log('tool.fetchPage.human', { jobId, url, ok: r.ok, ms: r.ms, mode: r.mode, reason: r.reason }),
+      const { outcome, source } = await fetchFlights.run(jobId, url, async () => {
+        const staged = createLedger()
+        const result = await runFetchChain(url, {
+          ledger: staged,
+          jobId,
+          signal: options?.abortSignal,
+          onTavilyCredits: (credits) => recordTavilyExtract(jobId, credits),
+          onRender: (r) => meterRender.add(jobId, { renders: 1, failures: r.ok ? 0 : 1, totalMs: r.ms }),
+          onYtdlp: (r) => meterYtdlp.add(jobId, { calls: 1, failures: r.ok ? 0 : 1, totalMs: r.ms }),
+          onArchive: (r) =>
+            meterArchive.add(jobId, {
+              rescues: r.ok ? 1 : 0,
+              failures: r.ok ? 0 : 1,
+              totalMs: r.ms,
+              oldestSnapshotDays: r.snapshotAgeDays,
+            }),
+          // Undefined off the mini (HUMAN_SOLVE_SSH_HOST unset) — the chain then has no human stage.
+          ...(humanSolver ? { humanSolve: humanSolver } : {}),
+          onHuman: (r) => log('tool.fetchPage.human', { jobId, url, ok: r.ok, ms: r.ms, mode: r.mode, reason: r.reason }),
+        })
+
+        // The per-step waterfall is already on this span as `fetch.step` events, emitted by
+        // runFetchChain itself; these are the dimensions you group by around them.
+        const blockedAttempt = result.attempts.find((a) => a.blocked)
+        getActiveSpan().setAttributes({
+          'fetch.url': url,
+          'fetch.host': hostOf(result.fetchUrl),
+          'fetch.via': result.via ?? 'none',
+          'fetch.chars': result.text?.length ?? 0,
+          'fetch.attempts': result.attempts.length,
+          'fetch.error': result.error ?? undefined,
+          'fetch.ok': result.via !== null,
+          'fetch.blocked': blockedAttempt?.blocked ?? undefined,
+        })
+        const snapshot = staged.snapshot()
+        return {
+          text: result.text,
+          error: result.error,
+          staged: snapshot,
+          terminal: isTerminalOutcome({ text: result.text, staged: snapshot, blocked: blockedAttempt !== undefined }),
+        }
       })
 
-      // The per-step waterfall is already on this span as `fetch.step` events, emitted by
-      // runFetchChain itself; these are the dimensions you group by around them.
-      const blockedAttempt = result.attempts.find((a) => a.blocked)
-      getActiveSpan().setAttributes({
-        'fetch.url': url,
-        'fetch.host': hostOf(result.fetchUrl),
-        'fetch.via': result.via ?? 'none',
-        'fetch.chars': result.text?.length ?? 0,
-        'fetch.attempts': result.attempts.length,
-        'fetch.error': result.error ?? undefined,
-        'fetch.ok': result.via !== null,
-        'fetch.blocked': blockedAttempt?.blocked ?? undefined,
-      })
+      if (source !== 'ran') {
+        getActiveSpan().setAttributes({ 'fetch.url': url, 'fetch.host': hostOf(url), 'fetch.via': source, 'fetch.ok': outcome.text !== null })
+        log('tool.fetchPage', { jobId, url, via: source })
+      }
 
-      const text = result.text === null ? null : pageBudget.take(result.text)
-      commitRead({ staged: staged.snapshot(), into: ledger, delivered: text !== null })
-      if (result.text === null) return { url, error: result.error ?? 'fetch failed' }
+      const text = outcome.text === null ? null : pageBudget.take(outcome.text)
+      commitRead({ staged: outcome.staged, into: ledger, delivered: text !== null })
+      if (outcome.text === null) return { url, error: missingHint(url, outcome) ?? outcome.error ?? 'fetch failed' }
       if (text === null) return { url, error: PAGE_BUDGET_SPENT }
       fetched.add(url)
       return { url, text }

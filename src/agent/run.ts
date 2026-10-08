@@ -8,11 +8,12 @@ import { applyConsistencyGate, CONSISTENCY_WARNING, stripInlineConfidenceTags } 
 import { assembleReport, nextRoundQuestions } from './assemble.js'
 import { mergeLedgers, type LedgerSnapshot } from './ledger.js'
 import { groundReport } from './ground.js'
+import { marketOfQuery } from './market.js'
 import { CHECKPOINT_VERSION, type ResearchCheckpoint } from './checkpoint.js'
 import type { Depth, JobProgress, ResearchReport, SubmittedReport, SubQuestion, WorkerDigest } from './schema.js'
 import { log } from '../lib/log.js'
 import { chooseCost, emptyUsage, addUsage } from '../lib/usage.js'
-import { readSearchSpend, readRenderStats } from './tools.js'
+import { readSearchSpend, readRenderStats, clearFetchFlights } from './tools.js'
 import type { UsageStats } from '../lib/usage.js'
 import { env } from '../env.js'
 import { traceIdFromJobId, withRootSpan, withSpan } from '../lib/otel.js'
@@ -469,7 +470,7 @@ export async function runResearch(
       const toGround = submitted
       const grounded = await withSpan('research.ground', {}, async (s) => {
         const jobLedger = mergeLedgers(allLedgers)
-        const result = groundReport(toGround, jobLedger)
+        const result = groundReport(toGround, jobLedger, marketOfQuery(input.query))
         s.setAttributes({
           'grounding.pages_retrieved': result.grounding.pagesRetrieved,
           'grounding.pages_missing': result.grounding.pagesMissing,
@@ -600,5 +601,5 @@ export async function runResearch(
 
       return report
     },
-  )
+  ).finally(() => clearFetchFlights(jobId))
 }

@@ -208,6 +208,11 @@ bun test           # pure-function tests only — needs no secrets
   that flow. Readability/site-adapter parsing runs off the event loop in a worker
   pool (`html-parse.ts` + `parse-worker.ts`); the whole chain is bounded by a per-fetch
   budget (`FETCH_CHAIN_BUDGET_MS`).
+- `src/agent/fetch-flight.ts` — per-job single-flight and memory for `fetchPage` (tools.ts owns
+  the registry; run.ts clears a job's entry). Page/404/block outcomes are replayed, transient
+  failures are not; every caller still commits the staged ledger into its OWN ledger and charges
+  its OWN page budget. `market.ts` — query market, URL market, and the cross-market price cap that
+  `groundClaims` applies at the job boundary.
 - `src/lib/bounded-read.ts` — the one place every network response body is read, so nothing
   unbounded is ever downloaded, decoded or allocated in one piece; env- and log-free, the
   logger is injected per call site

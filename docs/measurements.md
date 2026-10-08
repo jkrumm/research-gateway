@@ -711,3 +711,16 @@ Expected, not yet measured — re-measure in Wave 6 against the 2026-10-08 audit
 (partial 22% overall / deep 65% / standard 24%; 22 of 35 partials were scrub-only; unverified
 up to 91 entries). Read `partialCause` on `research.done` to split the new partial rate by
 cause, and compare `confidenceCapped` on the jobs that were 9/52 and 15/61 capped.
+
+## Fetch efficiency (Wave 4, 2026-10-09)
+
+Expected, not yet measured — re-measure in Wave 6 against the 2026-10-08 audit baseline
+(1,037 repeated (job, url) pairs against 6,204 unique; 11% of fetches `via:"missing"` with
+specialized.com 47, bike-discount.de 42, github.com 38; one URL 11x in 7s). New signals:
+`tool.fetchPage` `via:"joined"` (shared an in-flight run) and `via:"replayed"` (job memory);
+count them against `via:"missing"` per job. Cross-market caps show up in `confidenceCapped`.
+
+yt-dlp `Broken pipe` (12 events, 2026-09-25/26, one video): ours. `-J` for SZfmz97LbdU is 11.3 MB
+(re-measured 2026-10-09) against an 8 MB stdout cap, so the reader closed the pipe mid-write.
+Cap raised to 32 MB, and a cut now reports `output exceeded N bytes`. `githubRepo` failures now
+log `status` and `error`; the 39% failure rate has not been broken down yet.

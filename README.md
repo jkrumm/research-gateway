@@ -140,6 +140,13 @@ fully-read page is information and is kept). Gating runs at two boundaries:
 - **job** — the merged ledger gates the synthesized citations, `sources` becomes the pages
   genuinely read, and dropped claims are restated in `unverified`.
 
+Two further job-boundary rules cap at `medium`: a **price or availability** claim whose cited URL
+belongs to another market than the one the query names (ccTLD, country subdomain or locale path;
+a bare `.com` is unknown, never foreign) or that quotes another market's currency — `market.ts`.
+Fetches are **single-flight per job**: workers asking for one URL share a chain run, and a page,
+a 404/410 or a classified block is remembered for the job (`fetch-flight.ts`); a 404 returns a
+"search the host instead" hint, not a bare status.
+
 A URL in `unverified` is structurally ineligible as a `citations[].url`, so the two can never
 contradict each other. When evidence was lost the report comes back `status: "partial"` with a
 banner prepended to the markdown — text-only MCP clients read the prose and nothing else.
