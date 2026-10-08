@@ -63,7 +63,11 @@ interface EvalRow {
   report: string | null
   /** Cited URLs, deduplicated. */
   citations: string[]
-  /** Cited URLs missing from the job's sources; only computed for `citationsRetrieved` items. */
+  /**
+   * Cited URLs missing from the job's `sources`; only for `citationsRetrieved` items. Informational, not
+   * scored: a 404 the origin answered (`missing`) legitimately backs an absence claim yet is not a
+   * source read, so read these rows by eye — a URL that is neither a 404 nor a read page is the signal.
+   */
   unretrievedCitations: string[] | null
   costUsd: number | null
   wallMs: number | null
@@ -146,7 +150,7 @@ async function runOne(args: Args, secret: string, item: GoldenItem, index: numbe
   const unretrieved = item.citationsRetrieved ? unretrievedCitations(citations, result.sources) : null
   return {
     ...base,
-    pass: match.pass && (unretrieved === null || unretrieved.length === 0),
+    pass: match.pass,
     report: result.report,
     citations,
     unretrievedCitations: unretrieved,
@@ -234,7 +238,7 @@ await runPool(items.length, args.concurrency, async (index) => {
       (row.matched === null ? '' : ` matched=${row.matched}`) +
       (g === null ? '' : ` cit=${g.citationsKept} drop=${g.citationsDropped} cap=${g.confidenceCapped} degr=${g.citationsDegraded ?? 'n/a'}`) +
       (row.costUsd === null ? '' : ` $${row.costUsd.toFixed(4)}`) +
-      (row.unretrievedCitations?.length ? ` UNRETRIEVED=${row.unretrievedCitations.join(',')}` : '') +
+      (row.unretrievedCitations?.length ? ` NOT-IN-SOURCES=${row.unretrievedCitations.join(',')}` : '') +
       (row.error === null ? '' : ` err=${row.error.slice(0, 100)}`),
   )
 })

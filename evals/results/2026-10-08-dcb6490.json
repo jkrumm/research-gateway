@@ -1,0 +1,936 @@
+{
+  "startedAt": "2026-10-08T23:22:07.110Z",
+  "finishedAt": "2026-10-08T23:31:07.812Z",
+  "baseUrl": "http://127.0.0.1:7780",
+  "concurrency": 3,
+  "filter": null,
+  "gitSha": "dcb6490",
+  "summary": {
+    "total": 28,
+    "scored": 28,
+    "passed": 26,
+    "completed": 28,
+    "okRuns": 25,
+    "accuracy": 0.9285714285714286,
+    "okRate": 0.8928571428571429,
+    "totalUsd": 1.3445344549999996,
+    "p50WallMs": 11382,
+    "byDepth": [
+      {
+        "depth": "quick",
+        "completed": 19,
+        "partial": 0,
+        "partialRate": 0,
+        "p50WallMs": 9911,
+        "maxWallMs": 28078
+      },
+      {
+        "depth": "standard",
+        "completed": 8,
+        "partial": 2,
+        "partialRate": 0.25,
+        "p50WallMs": 83288,
+        "maxWallMs": 228213
+      },
+      {
+        "depth": "deep",
+        "completed": 1,
+        "partial": 1,
+        "partialRate": 1,
+        "p50WallMs": 309952,
+        "maxWallMs": 309952
+      }
+    ]
+  },
+  "rows": [
+    {
+      "index": 0,
+      "id": "rfc9110-413",
+      "query": "Which HTTP status code does RFC 9110 assign to 'Content Too Large'?",
+      "depth": "quick",
+      "pass": true,
+      "matched": "413",
+      "live": null,
+      "status": "ok",
+      "grounding": {
+        "pagesRetrieved": 1,
+        "pagesFailed": 0,
+        "citationsKept": 3,
+        "citationsDropped": 0,
+        "confidenceCapped": 0,
+        "citationsDegraded": 0
+      },
+      "report": "## Bottom line\nRFC 9110 assigns HTTP status code **413** to **\"Content Too Large.\"** It is defined in §15.5.14 (Client Error 4xx) of RFC 9110 (HTTP Semantics, June 2022). The reason phrase is \"Content Too Large,\" a rename from the earlier RFC 7231 phrase \"Payload Too Large.\"\n\n## Detail\n- RFC 9110's Table of Contents lists, under §15.5 (Client Error 4xx): **15.5.14. 413 Content Too Large** — i.e., code 413 paired with the phrase \"Content Too Large\".\n- Semantics: the 413 (Content Too Large) status code indicates the server is refusing to process a request because the request content is larger than the server is willing or able to process.\n- History: prior to RFC 9110, the response phrase for status 413 was \"Payload Too Large\"; RFC 9110 obsoletes RFC 7231.\n\n## Caveats\n- Use \"Content Too Large\" for RFC 9110; \"Payload Too Large\" is the pre-9110 (RFC 7231) wording.\n\n## Unverified\n- The body text of §15.5.14 itself (full behavior description, Retry-After handling) was not shown in the retrieved RFC page, which was truncated at 80,000 of 425,295 characters; the section number and reason phrase came from the document's Table of Contents, and the behavior description was taken from the IETF Datatracker snippet rather than read directly in the RFC section body.",
+      "citations": [
+        "https://www.rfc-editor.org/rfc/rfc9110.html",
+        "https://datatracker.ietf.org/doc/rfc9110/",
+        "https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Status/413"
+      ],
+      "unretrievedCitations": null,
+      "costUsd": 0.011812492,
+      "wallMs": 19345,
+      "error": null
+    },
+    {
+      "index": 1,
+      "id": "postgres-default-port",
+      "query": "What is the default TCP port of PostgreSQL?",
+      "depth": "quick",
+      "pass": true,
+      "matched": "5432",
+      "live": null,
+      "status": "ok",
+      "grounding": {
+        "pagesRetrieved": 1,
+        "pagesFailed": 0,
+        "citationsKept": 2,
+        "citationsDropped": 0,
+        "confidenceCapped": 0,
+        "citationsDegraded": 0
+      },
+      "report": "## Bottom line\n\nPostgreSQL's default TCP port is **5432** — the `port` configuration parameter defaults to 5432 and is defined in `postgresql.conf`.\n\n## Details\n\nThe official PostgreSQL documentation for the `port` parameter (Connection Settings, Section 19.3) states: \"The TCP port the server listens on; 5432 by default.\" It notes the same port number is used for all IP addresses the server listens on, and that this parameter can only be set at server start. The setting lives in `postgresql.conf`.\n\nIndependent corroboration: Microsoft's Azure Database for PostgreSQL parameter reference lists the `port` parameter (Connections and Authentication → Connection Settings) with a default value of 5432 (read-only on that platform, allowed value `5432`).\n\nScope note: 5432 is the network/TCP default. On Linux, local connections typically use a Unix-domain socket rather than TCP, though the socket file name incorporates the port number (`.s.PGSQL.nnnn`).\n\n## Unverified\n\nNothing material remains open; no sources were blocked.\n",
+      "citations": [
+        "https://www.postgresql.org/docs/current/runtime-config-connection.html",
+        "https://learn.microsoft.com/en-us/azure/postgresql/parameters/parameters-connections-authentication-connection-settings"
+      ],
+      "unretrievedCitations": null,
+      "costUsd": 0.007742926000000001,
+      "wallMs": 9853,
+      "error": null
+    },
+    {
+      "index": 2,
+      "id": "redis-default-port",
+      "query": "What is the default TCP port of Redis?",
+      "depth": "quick",
+      "pass": true,
+      "matched": "6379",
+      "live": null,
+      "status": "ok",
+      "grounding": {
+        "pagesRetrieved": 2,
+        "pagesFailed": 0,
+        "citationsKept": 3,
+        "citationsDropped": 0,
+        "confidenceCapped": 0,
+        "citationsDegraded": 0
+      },
+      "report": "## Bottom line\nThe default TCP port of Redis (`redis-server` / Redis Open Source) is **6379**. Both the server listens on it and `redis-cli` connects to it out of the box.\n\n## Details\nThe official Redis documentation states this explicitly on the `redis-cli` page:\n- \"By default, `redis-cli` connects to the server at the address 127.0.0.1 with port 6379.\"\n- Options reference: \"`-p <port>`: Server port (default: 6379).\"\n\nThe interactive prompt renders as `127.0.0.1:6379>`, and the configuration page's examples use 6379 as the base instance port (e.g. `./redis-server --port 6380 --replicaof 127.0.0.1 6379`).\n\n## Overriding the default\n6379 is only the built-in default. It can be changed via the `port` directive in `redis.conf`, the `--port` command-line flag on the server, or `redis-cli -p <port>` on the client.\n\n## Unverified\nNone — the port value is confirmed directly by the Redis docs.",
+      "citations": [
+        "https://redis.io/docs/latest/develop/tools/cli/",
+        "https://redis.io/docs/latest/operate/oss_and_stack/management/config/"
+      ],
+      "unretrievedCitations": null,
+      "costUsd": 0.008971012,
+      "wallMs": 11805,
+      "error": null
+    },
+    {
+      "index": 3,
+      "id": "jwt-rfc",
+      "query": "Which RFC defines JSON Web Token (JWT)?",
+      "depth": "quick",
+      "pass": true,
+      "matched": "RFC 7519",
+      "live": null,
+      "status": "ok",
+      "grounding": {
+        "pagesRetrieved": 1,
+        "pagesFailed": 0,
+        "citationsKept": 5,
+        "citationsDropped": 0,
+        "confidenceCapped": 0,
+        "citationsDegraded": 0
+      },
+      "report": "## Bottom line\n\nJSON Web Token (JWT) is defined by **RFC 7519, \"JSON Web Token (JWT)\"**, published May 2015 by the IETF as a Standards Track document. Canonical text: https://www.rfc-editor.org/rfc/rfc7519.txt (info page: http://www.rfc-editor.org/info/rfc7519).\n\n## Details\n\nFrom the RFC text itself:\n\n- **Title:** JSON Web Token (JWT)\n- **Authors:** M. Jones (Microsoft), J. Bradley (Ping Identity), N. Sakimura (NRI)\n- **Date:** May 2015\n- **Header:** *Request for Comments: 7519, Category: Standards Track*, ISSN 2070-1721; produced by the IETF OAuth working group. The status memo reads: *\"This is an Internet Standards Track document... it has received public review and has been approved for publication by the Internet Engineering Steering Group (IESG).\"*\n- **Abstract:** JWT is \"a compact, URL-safe means of representing claims to be transferred between two parties,\" with claims encoded as a JSON object used as the payload of a JSON Web Signature (JWS) structure or as the plaintext of a JSON Web Encryption (JWE) structure.\n- RFC 7519 also registers the URN `urn:ietf:params:oauth:token-type:jwt` and the media type `application/jwt`, both referencing RFC 7519.\n\n**Related JOSE-family specs normatively referenced by RFC 7519:** RFC 7515 (JWS), RFC 7516 (JWE), RFC 7518 (JWA).\n\n**Status label:** the RFC 7519 text header calls it \"Standards Track,\" while the IETF Datatracker entry labels it \"RFC - Proposed Standard (May 2015)\" and notes it was *Updated by* RFC 8725 and RFC 7797, originating as `draft-ietf-oauth-json-web-token`. Both labels refer to the same document; the Datatracker entry did not list a full replacement, so RFC 7519 remains the defining specification for JWT.",
+      "citations": [
+        "https://www.rfc-editor.org/rfc/rfc7519.txt",
+        "https://datatracker.ietf.org/doc/rfc7519/"
+      ],
+      "unretrievedCitations": null,
+      "costUsd": 0.009221739999999999,
+      "wallMs": 10867,
+      "error": null
+    },
+    {
+      "index": 4,
+      "id": "pkce-rfc",
+      "query": "Which RFC defines PKCE (Proof Key for Code Exchange) for OAuth 2.0?",
+      "depth": "quick",
+      "pass": true,
+      "matched": "7636",
+      "live": null,
+      "status": "ok",
+      "grounding": {
+        "pagesRetrieved": 1,
+        "pagesFailed": 0,
+        "citationsKept": 4,
+        "citationsDropped": 0,
+        "confidenceCapped": 0,
+        "citationsDegraded": 0
+      },
+      "report": "## Bottom line\n\nPKCE (Proof Key for Code Exchange) is defined in **RFC 7636**, *\"Proof Key for Code Exchange by OAuth Public Clients\"* (September 2015, IETF Standards Track).\n\n## Details\n\nRFC 7636 specifies the PKCE extension that mitigates the authorization code interception attack against OAuth 2.0 public clients using the Authorization Code Grant (the grant itself is defined in RFC 6749). It was authored/edited by N. Sakimura (Ed.), J. Bradley, and N. Agarwal.\n\nMechanism: the client generates a one-time, high-entropy `code_verifier` and sends a derived `code_challenge` (with a transformation method) in the authorization request; at the token endpoint the client sends the original `code_verifier`, and the server re-derives and compares it against the stored challenge before issuing tokens. The two challenge methods are `plain` (`code_challenge` = `code_verifier`) and `S256` (`code_challenge` = BASE64URL-ENCODE(SHA256(ASCII(`code_verifier`)))). `S256` is Mandatory To Implement. The RFC registers the OAuth parameters `code_verifier`, `code_challenge`, and `code_challenge_method`, and establishes the IANA \"PKCE Code Challenge Methods\" registry with initial entries `plain` and `S256`.\n\nRFC 7636 is the original PKCE specification. PKCE was later folded into broader OAuth 2.0 security guidance (e.g., OAuth 2.0 Security Best Current Practice recommends PKCE for all clients, not only public ones), but the defining document for the PKCE protocol remains RFC 7636.",
+      "citations": [
+        "https://www.rfc-editor.org/rfc/rfc7636",
+        "https://www.ibm.com/docs/ja/wm-apigateway-ipaas?topic=authorize-secure-access-token-calls-pkce"
+      ],
+      "unretrievedCitations": null,
+      "costUsd": 0.00790289,
+      "wallMs": 10740,
+      "error": null
+    },
+    {
+      "index": 5,
+      "id": "oauth2-rfc",
+      "query": "Which RFC defines the OAuth 2.0 Authorization Framework?",
+      "depth": "quick",
+      "pass": true,
+      "matched": "6749",
+      "live": null,
+      "status": "ok",
+      "grounding": {
+        "pagesRetrieved": 1,
+        "pagesFailed": 0,
+        "citationsKept": 3,
+        "citationsDropped": 0,
+        "confidenceCapped": 0,
+        "citationsDegraded": 0
+      },
+      "report": "## Bottom line\n\nThe OAuth 2.0 Authorization Framework is defined by **RFC 6749**.\n\n## Details\n\nRFC 6749 — \"The OAuth 2.0 Authorization Framework\" — is a Standards Track document authored by D. Hardt, Ed. (Microsoft), dated October 2012. Its header notes `Obsoletes: 5849`, and its abstract states that it \"replaces and obsoletes the OAuth 1.0 protocol described in RFC 5849.\" The framework defines the four OAuth roles (resource owner, resource server, client, authorization server), the abstract protocol flow, the four grant types (authorization code, implicit, resource owner password credentials, client credentials), and the token and authorization endpoints.\n\nDistinct companion specs, not the framework itself: RFC 6750 covers OAuth 2.0 Bearer Token Usage (referenced by RFC 6749 for access-token details), and RFC 5849 is the older OAuth 1.0 protocol.",
+      "citations": [
+        "https://www.rfc-editor.org/rfc/rfc6749.html"
+      ],
+      "unretrievedCitations": null,
+      "costUsd": 0.009573142,
+      "wallMs": 12345,
+      "error": null
+    },
+    {
+      "index": 6,
+      "id": "http2-obsoleted-by",
+      "query": "Which RFC obsoleted RFC 7540 as the HTTP/2 specification?",
+      "depth": "quick",
+      "pass": true,
+      "matched": "9113",
+      "live": null,
+      "status": "ok",
+      "grounding": {
+        "pagesRetrieved": 1,
+        "pagesFailed": 0,
+        "citationsKept": 3,
+        "citationsDropped": 0,
+        "confidenceCapped": 0,
+        "citationsDegraded": 0
+      },
+      "report": "## Bottom line\n\n**RFC 9113** (\"HTTP/2\", June 2022, Standards Track) is the document that obsoletes RFC 7540 as the HTTP/2 specification. RFC 9113's own Abstract and Introduction state this directly: \"This document obsoletes RFCs 7540 and 8740.\"\n\n## Detail\n\n- RFC 9113's Abstract and Introduction both read: \"This document obsoletes RFCs 7540 and 8740.\" (The Introduction adds that Appendix B lists notable changes.) — https://www.rfc-editor.org/rfc/rfc9113.html\n- RFC 9113 is dated June 2022, is an IETF Standards Track document authored by Martin Thomson and Cory Benfield, and deprecates the HTTP/2 priority signaling scheme defined in RFC 7540 (Sections 5.3.1–5.3.2). — https://www.rfc-editor.org/rfc/rfc9113.html\n- The IETF Datatracker copy of RFC 9113 confirms the same obsoletion. — https://datatracker.ietf.org/doc/html/rfc9113\n\nNote: RFC 9113 also obsoletes RFC 8740 alongside RFC 7540, so it is not solely a replacement for 7540.\n",
+      "citations": [
+        "https://www.rfc-editor.org/rfc/rfc9113.html",
+        "https://datatracker.ietf.org/doc/html/rfc9113"
+      ],
+      "unretrievedCitations": null,
+      "costUsd": 0.00944969,
+      "wallMs": 9911,
+      "error": null
+    },
+    {
+      "index": 7,
+      "id": "retry-after-header",
+      "query": "Which HTTP response header tells a client how long to wait before retrying after a 429 or 503?",
+      "depth": "quick",
+      "pass": true,
+      "matched": "Retry-After",
+      "live": null,
+      "status": "ok",
+      "grounding": {
+        "pagesRetrieved": 1,
+        "pagesFailed": 0,
+        "citationsKept": 3,
+        "citationsDropped": 0,
+        "confidenceCapped": 0,
+        "citationsDegraded": 0
+      },
+      "report": "## Bottom line\nThe header is **`Retry-After`**. It tells the client how long to wait before retrying, and it is the standard signal used with **429 Too Many Requests** and **503 Service Unavailable**.\n\n## What it is and its value forms\n`Retry-After` is a response header that indicates how long a user agent should wait before issuing a follow-up request. MDN's reference describes two value forms (appears to be, on one low-confidence read):\n- `Retry-After: <http-date>` — an absolute date after which to retry.\n- `Retry-After: <delay-seconds>` — a non-negative integer giving seconds to delay from receipt of the response.\n\n## Meaning by status code\n- With **429**: it specifies how long the client should wait before retrying the request.\n- With **503**: it indicates how long the service is expected to be unavailable.\n\nMDN also cautions that support for `Retry-After` on both clients and servers \"is still inconsistent.\" Ping Identity's API guidance likewise notes that 429 and 503 responses often include a `Retry-After` header giving the client a wait time.\n\n## Unverified\nThe header is described as standardized in HTTP Semantics, but the RFC number did not appear in the retrieved page text, so the exact RFC number is not confirmed here. The English MDN page's introductory paragraph defining the 429/503 usage was not captured on retrieval; that description was corroborated from MDN's localized `Retry-After` page and Ping Identity's guide instead.",
+      "citations": [
+        "https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Retry-After",
+        "https://developer.mozilla.org/fr/docs/Web/HTTP/Reference/Headers/Retry-After",
+        "https://developer.pingidentity.com/pingone-api/before-you-begin/retry-best-practices.html"
+      ],
+      "unretrievedCitations": null,
+      "costUsd": 0.00762554,
+      "wallMs": 11779,
+      "error": null
+    },
+    {
+      "index": 8,
+      "id": "rust-1.0-year",
+      "query": "In which year was Rust 1.0 released?",
+      "depth": "quick",
+      "pass": true,
+      "matched": "2015",
+      "live": null,
+      "status": "ok",
+      "grounding": {
+        "pagesRetrieved": 1,
+        "pagesFailed": 0,
+        "citationsKept": 3,
+        "citationsDropped": 0,
+        "confidenceCapped": 0,
+        "citationsDegraded": 0
+      },
+      "report": "## Bottom line\nRust 1.0 was released in **2015**, specifically on **May 15, 2015**.\n\n## Detail\nThe official Rust Blog post \"Announcing Rust 1.0,\" dated May 15, 2015, states: \"Today we are very proud to announce the 1.0 release of Rust, a new programming language aiming to make it easier to build reliable, efficient systems.\" The same announcement points to the GitHub `RELEASES.md` entry labeled \"Version 1.0.0 (May 2015).\"\n\nIndependent confirmations:\n- English Wikipedia: \"On May 15, 2015, Rust 1.0 became the first stable release.\"\n- ZDNET's 10-year retrospective: \"Rust 1.0 shipped on May 15, 2015.\"\n\nThe 1.0 release marked the start of Rust's stability commitment and its six-week train-based release model, with the 1.1 beta shipped simultaneously.",
+      "citations": [
+        "https://blog.rust-lang.org/2015/05/15/Rust-1.0.html",
+        "https://en.wikipedia.org/wiki/Rust_(programming_language)",
+        "https://www.zdnet.com/article/rust-turns-10-how-a-broken-elevator-changed-software-forever/"
+      ],
+      "unretrievedCitations": null,
+      "costUsd": 0.006806342,
+      "wallMs": 9548,
+      "error": null
+    },
+    {
+      "index": 9,
+      "id": "node-sqlite-version",
+      "query": "Which Node.js version first added the node:sqlite module?",
+      "depth": "quick",
+      "pass": true,
+      "matched": "22.5.0",
+      "live": null,
+      "status": "ok",
+      "grounding": {
+        "pagesRetrieved": 1,
+        "pagesFailed": 0,
+        "citationsKept": 2,
+        "citationsDropped": 0,
+        "confidenceCapped": 0,
+        "citationsDegraded": 0
+      },
+      "report": "## Bottom line\nThe `node:sqlite` module was first added in **Node.js v22.5.0**. It shipped experimental and behind the `--experimental-sqlite` flag; the flag requirement was dropped in v22.13.0 (the module remained experimental).\n\n## Detail\nThe history table at the top of the official SQLite API documentation lists `v22.5.0 — Added in: v22.5.0` for the module, and the same \"Added in: v22.5.0\" annotation appears against the module's initial classes and methods — `DatabaseSync`, `StatementSync`, and their early methods (`exec`, `open`, `close`, `prepare`, `run`, `get`, `all`).\n\nGating changed later: the same page records that in **v22.13.0** \"SQLite is no longer behind `--experimental-sqlite` but still experimental.\"\n\n## Sources\nThe v22.x API documentation on nodejs.org was read directly and shows the v22.5.0 introduction annotation. Nothing in this run contradicts it.",
+      "citations": [
+        "https://nodejs.org/docs/latest-v22.x/api/sqlite.html"
+      ],
+      "unretrievedCitations": null,
+      "costUsd": 0.007305376000000001,
+      "wallMs": 9234,
+      "error": null
+    },
+    {
+      "index": 10,
+      "id": "euro-codepoint",
+      "query": "What is the Unicode code point of the euro sign?",
+      "depth": "quick",
+      "pass": true,
+      "matched": "U+20AC",
+      "live": null,
+      "status": "ok",
+      "grounding": {
+        "pagesRetrieved": 1,
+        "pagesFailed": 0,
+        "citationsKept": 2,
+        "citationsDropped": 0,
+        "confidenceCapped": 0,
+        "citationsDegraded": 0
+      },
+      "report": "## Bottom line\n\nThe euro sign **€** is the Unicode character EURO SIGN with code point **U+20AC** (decimal 8364).\n\n## Details\n\n- **Code point:** U+20AC\n- **Decimal:** 8364\n- **Name:** EURO SIGN\n- **Block:** Currency Symbols (Basic Multilingual Plane)\n- **Added in:** Unicode version 2.1 (May 1998)\n- **General category:** Currency Symbol; bidirectional class European Terminator (ET)\n- **HTML entities:** `&euro;`, `&#8364;`, `&#x20AC;`\n- **UTF-8 bytes:** 0xE2 0x82 0xAC\n- **UTF-16:** 0x20AC\n- **URL escape:** %E2%82%AC\n\nCode escapes seen in the sources: `\\u20AC` (Java/JSON), `\\u{20AC}` (JavaScript/Rust) and `\\U000020AC` (C++/Python).\n\nTwo independent references agree on U+20AC. The unicodeplus.com entry for the character and the codepoints.net entry both identify U+20AC as the euro sign, in the Currency Symbols block, and both date it to Unicode version 2.1; the codepoints.net agreement is at lower confidence than the unicodeplus.com page.\n\n## Unverified\n\nNo blocked or unread sources were reported for this sub-question; everything above was checked against the sources listed.",
+      "citations": [
+        "https://unicodeplus.com/U+20AC",
+        "https://codepoints.net/U+20AC"
+      ],
+      "unretrievedCitations": null,
+      "costUsd": 0.006108658,
+      "wallMs": 9989,
+      "error": null
+    },
+    {
+      "index": 11,
+      "id": "sqlite-wal-pragma",
+      "query": "Which SQLite PRAGMA enables write-ahead logging?",
+      "depth": "quick",
+      "pass": true,
+      "matched": "journal_mode=WAL",
+      "live": null,
+      "status": "ok",
+      "grounding": {
+        "pagesRetrieved": 1,
+        "pagesFailed": 0,
+        "citationsKept": 3,
+        "citationsDropped": 0,
+        "confidenceCapped": 1,
+        "citationsDegraded": 0
+      },
+      "report": "## Bottom line\nThe PRAGMA that enables write-ahead logging in SQLite is `journal_mode`, set to `WAL`:\n\n```sql\nPRAGMA journal_mode=WAL;\n```\n\n## Details\nSQLite's database connection defaults to `journal_mode=DELETE`. Its WAL page states: \"To convert to WAL mode, use the following pragma: `PRAGMA journal_mode=WAL;`\" WAL is available beginning with version 3.7.0 (2010-07-21).\n\nThe `journal_mode` pragma \"queries or sets the journal mode for databases associated with the current database connection.\" Valid values are `DELETE | TRUNCATE | PERSIST | MEMORY | WAL | OFF`.\n\n**Return value / confirmation.** On success the pragma returns the string `\"wal\"`. If the conversion cannot be completed (for example, if the VFS lacks the necessary shared-memory primitives), the journaling mode is left unchanged and the prior mode string (e.g. `\"delete\"`) is returned instead.\n\n**Behaviors worth knowing:**\n- WAL is **persistent**: unlike other journaling modes, once set the database reopens in WAL mode after being closed. Setting WAL on any one connection sets it on all connections to the same database file.\n- To leave WAL mode, set another journal mode, e.g. `PRAGMA journal_mode=DELETE;`.\n- WAL does not work over a network filesystem (all processes must be on the same host and share memory).\n\nNo conflicting sources were found; the WAL page and the PRAGMA reference agree.",
+      "citations": [
+        "https://www.sqlite.org/wal.html",
+        "https://www.sqlite.org/pragma.html"
+      ],
+      "unretrievedCitations": null,
+      "costUsd": 0.007548658,
+      "wallMs": 11382,
+      "error": null
+    },
+    {
+      "index": 12,
+      "id": "pep779-free-threaded",
+      "query": "Which Python version made the free-threaded (no-GIL) build officially supported rather than experimental, per PEP 779?",
+      "depth": "standard",
+      "pass": true,
+      "matched": "3.14",
+      "live": null,
+      "status": "partial",
+      "grounding": {
+        "pagesRetrieved": 13,
+        "pagesFailed": 0,
+        "citationsKept": 17,
+        "citationsDropped": 1,
+        "confidenceCapped": 0,
+        "citationsDegraded": 0
+      },
+      "report": "> **Partial result — evidence was lost during this run.** 1 claim(s) were dropped because the pages backing them could not be retrieved; 1 source(s) named in the report body could not be verified and are flagged inline below. Anything below that is not backed by an entry in `citations` is unconfirmed; see `unverified` for what could not be checked.\n\n> **Unverified in prose:** this report references <https://peps.python.org/pep-0809/>, which this run could NOT verify (Not fetched; the statement that the PEP 779 acceptance post 'expects that Stable ABI for free-threading should be prepared and defined for Python 3.15' is supported only by a search snippet, not a fully read page.). Treat that reference as unconfirmed — see `unverified`.\n\n## Bottom line\n\n- **Which version:** Python **3.14** is the release in which the free-threaded (no-GIL) build moved from \"experimental\" to officially **\"supported\"** under PEP 779. Python 3.13 shipped the free-threaded build but explicitly as an *experimental* feature.\n- **What PEP 779 specifies:** \"Criteria for supported status for free-threaded Python,\" by Thomas Wouters, Matt Page and Sam Gross; Status **Final** (Standards Track), created **13-Mar-2025**, **Resolution 16-Jun-2025**, `Python-Version: 3.14`. It sets the Phase II criteria (performance, memory, proven stable APIs, internal documentation) and states *\"Python 3.14 is the right time frame for phase II of PEP 703.\"*\n- **Steering Council:** approved PEP 779 in June 2025 *\"with the effect of removing the 'experimental' tag from the free-threaded build of Python 3.14.\"*\n- **Roadmap / no deferral:** 3.13 = Phase I (experimental) → 3.14 = Phase II (officially supported but still optional) → Phase III (default) remains undecided, \"left for a future PEP.\" No 3.14→3.15 deferral was found; Python 3.14.0 was released **7 October 2025**.\n\n## The version: Python 3.14\n\nPEP 779 names the target version explicitly. Its header records `Python-Version: 3.14`, `Status: Final`, `Resolution: 16-Jun-2025` (created 13-Mar-2025), and its Specification closes with *\"With these criteria satisfied, we believe Python 3.14 is the right time frame for phase II of PEP 703.\"* ([peps.python.org/pep-0779](https://peps.python.org/pep-0779/)).\n\nThe official documentation confirms the promotion to a released version:\n\n- **What's New in Python 3.14** lists, under *Release changes*, the item **\"PEP 779: Free-threaded Python is officially supported,\"** notes \"Python 3.14 was released on 7 October 2025,\" and says the free-threaded mode \"(PEP 703), initially added in 3.13, has been significantly improved in Python 3.14\" ([docs.python.org/3/whatsnew/3.14.html](https://docs.python.org/3/whatsnew/3.14.html)).\n- The python.org release page for the stable Python 3.14.0 (Release date: Oct. 7, 2025) lists among its major new features \"PEP 779: Free-threaded Python is officially supported\" ([python.org/downloads/release/python-3140](https://www.python.org/downloads/release/python-3140/)).\n\nBy contrast, **Python 3.13** is documented as experimental. What's New in Python 3.13 says \"CPython 3.13 has experimental support for running with the global interpreter lock disabled,\" its Free-threaded CPython section says \"This is an experimental feature and therefore is not enabled by default\" and \"The free-threaded mode is experimental and work is ongoing to improve it,\" and the version string contains \"experimental free-threading build\" ([docs.python.org/3.13/whatsnew/3.13.html](https://docs.python.org/3.13/whatsnew/3.13.html)). The free-threading howto states that \"Starting with the 3.13 release, CPython has support for a build of Python called free threading\" — i.e., 3.13 is where the build first appeared, with officially supported status arriving in 3.14 ([docs.python.org/3.14/howto/free-threading-python.html](https://docs.python.org/3.14/howto/free-threading-python.html)).\n\n## What PEP 779 says (phases, criteria, resolution)\n\n**Phases (inherited from PEP 703).** The Abstract describes three phases: *\"Phase I … includes making the free-threaded (GIL-less) Python build available but explicitly experimental. Phase II would make the free-threaded build officially supported but still optional, and phase III would make the free-threaded build the default.\"* PEP 779 only sets the criteria for **entering Phase II**; Phase III is \"left for a future PEP\" ([peps.python.org/pep-0779](https://peps.python.org/pep-0779/)).\n\n**Phase II criteria (quoted).**\n- **\"Acceptable performance.\"** \"for phase II (not the default flip), we propose 15% as a hard performance target\" (the Steering Council expected 10–15%; the build was then measuring \"around 10%\").\n- **\"Acceptable memory use\"**: \"We propose a target of 20% (geometric mean, as measured by pyperformance) for phase II.\"\n- **\"Proven, stable APIs.\"** Expects \"all future changes to follow PEP 387's change policy.\"\n- **\"Internal documentation.\"** To \"shore up the introductory documentation for the internals of free-threaded Python,\" targeted for 3.14.\n\nAn **Open Issue** remains: \"Should the Stable ABI be a strong requirement for 'supported' status of the free-threaded build?\" ([peps.python.org/pep-0779](https://peps.python.org/pep-0779/)).\n\n**Metadata** (title, authors, status, dates) per the PEP source: title \"Criteria for supported status for free-threaded Python\"; authors Thomas Wouters (thomas@python.org), Matt Page (mpage@python.org), Sam Gross (colesbury@gmail.com); Status Final (Standards Track), Created 13-Mar-2025, Resolution 16-Jun-2025, Python-Version 3.14, Discussions-To https://discuss.python.org/t/84319 ([github.com/python/peps … /pep-0779.rst](https://github.com/python/peps/blob/HEAD/peps/pep-0779.rst)).\n\n**Steering Council resolution (June 2025).** The SC \"approves PEP 779, with the effect of removing the 'experimental' tag from the free-threaded build of Python 3.14,\" adding a non-exhaustive set of Phase II requirements: C API/ABI compatibility and Stable ABI (prepared for 3.15); new CPython experimental projects must be free-threading-compatible; performance/memory guard rails; documentation expectations; high-level concurrency primitives; and repeatable pyperformance-based benchmarks ([discuss.python.org … /84319/123](https://discuss.python.org/t/pep-779-criteria-for-supported-status-for-free-threaded-python/84319/123)). The guard rails, quoted: \"the official target is to stay within 10% performance degradation, any changes expected to cause a slowdown of up to 15% should be discussed with the SC\"; \"Memory usage increases must stay below 15% compared to the GIL build\" with \"a hard limit of 20%\" ([discuss.python.org … /84319/123](https://discuss.python.org/t/pep-779-criteria-for-supported-status-for-free-threaded-python/84319/123)).\n\nA second source carries the SC announcement with the same wording and adds that Phase III \"is still undecided … We leave that decision for the future\" ([simonwillison.net/2025/Jun/17](https://simonwillison.net/2025/Jun/17/)). The discuss post is timestamped \"June 15, 2025, 10:00pm\"; the PEP's Resolution field records 16-Jun-2025 — a one-day difference in recording, not a substantive disagreement.\n\n## Timeline and roadmap (no deferral found)\n\nPEP 703 (Sam Gross; Final, created 09-Jan-2023, resolution 24-Oct-2023, `Python-Version: 3.13`) introduced the `--disable-gil` build configuration (ABI tag letter \"t\") and laid out a phased roadmap with explicit years: 2024 — CPython 3.13 ships the build-time flag with two ABIs; \"After 2–3 releases, (i.e., in 2026–2027)\" — GIL controlled by a runtime flag, single ABI; \"After another 2–3 release (i.e., in 2028–2030)\" — GIL disabled by default. The SC's acceptance note accepted PEP 703 \"with clear proviso: that the rollout be gradual … and that we can roll back any changes … which includes potentially rolling back all of PEP 703 entirely if necessary\" ([peps.python.org/pep-0703](https://peps.python.org/pep-0703/)).\n\nPEP 779 formalised the transition: Phase I = experimental (3.13), Phase II = \"officially supported but still optional,\" Phase III = default, with \"Python 3.14 is the right time frame for phase II\" ([peps.python.org/pep-0779](https://peps.python.org/pep-0779/)). **No statement of a 3.14→3.15 deferral of the \"supported\" status was found** — Phase II landed in 3.14 as proposed, and What's New confirms the 7 October 2025 release carrying \"PEP 779: Free-threaded Python is officially supported\" ([docs.python.org/3/whatsnew/3.14.html](https://docs.python.org/3/whatsnew/3.14.html)). A third-party handbook summarises the same sequence — experimental in 3.13, officially supported under PEP 779 in 3.14, default-build switch deferred ([pydevtools.com/handbook/explanation/what-is-pep-703](https://pydevtools.com/handbook/explanation/what-is-pep-703/)).\n\nThe one 3.15-linked milestone surfaced is that the SC's PEP 779 acceptance post \"expects that Stable ABI for free-threading should be prepared and defined for Python 3.15\" — a future Stable-ABI deliverable, not a change of when free-threaded status becomes \"supported\" ([peps.python.org/pep-0809](https://peps.python.org/pep-0809/)).\n\n## Cross-verification\n\nAll retrieved sources — the PEP 779 primary text, docs.python.org (What's New in 3.14 and the free-threading howto), the python.org 3.14.0 release page, and third-party coverage — agree that **Python 3.14** is the version in which free-threaded Python became officially supported. No source gives a different version.\n\nThird-party corroboration: LWN's coverage of a PyCon talk by Thomas Wouters states Python 3.13 (Oct 2024) \"had experimental free-threading support\" and that PEP 779, approved for 3.14, \"described what needed to be done to remove the 'experimental' tag from the free-threaded build and turn it into a supported feature for the language\" ([lwn.net/Articles/1078367](https://lwn.net/Articles/1078367/)).\n\nOne distinction worth stating to avoid conflation: a free-threaded **build** first shipped in **3.13, but explicitly experimental**; \"officially supported\" is specifically the **3.14** milestone. Also note the status is \"officially supported **but still optional**,\" not default — becoming the default is reserved for a future Phase III.\n\n## Unverified / open\n\n- Whether **Python 3.15** changes the free-threaded status further: no source was retrieved stating a 3.15 status change; the promotion is attributed to 3.14, and 3.15 remains in development. See `unverified`.\n- The **3.15 Stable ABI** expectation also appears in the SC's acceptance post; the PEP 809 page was seen only via a search snippet, not a fully read page. See `unverified`.\n",
+      "citations": [
+        "https://github.com/python/peps/blob/HEAD/peps/pep-0779.rst",
+        "https://peps.python.org/pep-0779/",
+        "https://discuss.python.org/t/pep-779-criteria-for-supported-status-for-free-threaded-python/84319/123",
+        "https://simonwillison.net/2025/Jun/17/",
+        "https://docs.python.org/3.13/whatsnew/3.13.html",
+        "https://docs.python.org/3/whatsnew/3.14.html",
+        "https://docs.python.org/3.14/howto/free-threading-python.html",
+        "https://www.python.org/downloads/release/python-3140/",
+        "https://lwn.net/Articles/1078367/",
+        "https://peps.python.org/pep-0703/",
+        "https://pydevtools.com/handbook/explanation/what-is-pep-703/"
+      ],
+      "unretrievedCitations": null,
+      "costUsd": 0.098230326,
+      "wallMs": 135188,
+      "error": null
+    },
+    {
+      "index": 13,
+      "id": "bun-serve-idle-timeout",
+      "query": "What is the maximum value Bun.serve accepts for idleTimeout, in seconds?",
+      "depth": "standard",
+      "pass": true,
+      "matched": "255",
+      "live": null,
+      "status": "ok",
+      "grounding": {
+        "pagesRetrieved": 30,
+        "pagesFailed": 6,
+        "citationsKept": 12,
+        "citationsDropped": 0,
+        "confidenceCapped": 0,
+        "citationsDegraded": 0
+      },
+      "report": "## Bottom line\n\n- **The maximum value `Bun.serve` accepts for `idleTimeout` is 255 seconds.** Anything above 255 is rejected with an exception — it is not silently clamped.\n- `0` disables the idle timeout entirely, and the default is **10 seconds**; usable timeouts are therefore 1–255.\n- The cap is a runtime constraint (a `u8` field `idleTimeout = 10`), not something encoded in Bun's TypeScript types.\n- **The maximum has not changed across versions:** it is 255 in the earliest confirmable version, Bun **v1.1.26** (August 2024, when the option was introduced), and remains 255 in the current release, Bun **v1.4.2** (2026‑09‑05).\n\n## Documented range — official Bun docs\n\nBun's HTTP server documentation states, verbatim: \"By default, `Bun.serve` closes connections after **10 seconds** of inactivity... To configure this, set the `idleTimeout` field (in seconds). The maximum value is **255**, and **0** disables the timeout entirely.\" This text appears on the current canonical page (bun.com/docs/runtime/http/server) and on the older bun.sh/docs/api/http page. Sources: https://bun.com/docs/runtime/http/server, https://bun.sh/docs/api/http.\n\nSo, per the docs: **default = 10 s, minimum = 0 (0 disables), maximum = 255 s**, units in seconds.\n\n## What happens above the maximum — throws, does not clamp\n\nThe v1.1.26 implementation (`ServerConfig.fromJS` in `src/bun.js/api/server.zig`) enforces the cap explicitly and rejects over-limit input instead of truncating it:\n\n```zig\nif (arg.get(global, \"idleTimeout\")) |value| {\n    if (!value.isUndefinedOrNull()) {\n        if (!value.isAnyInt()) {\n            JSC.throwInvalidArguments(\"Bun.serve expects idleTimeout to be an integer\", .{}, global, exception);\n            return args;\n        }\n        const idleTimeout: u64 = @intCast(@max(value.toInt64(), 0));\n        if (idleTimeout > 255) {\n            JSC.throwInvalidArguments(\"Bun.serve expects idleTimeout to be 255 or less\", .{}, global, exception);\n            return args;\n        }\n        args.idleTimeout = @truncate(idleTimeout);\n    }\n}\n```\n\nThe behaviour is three-way, and none of it is \"accept the larger value\":\n- **> 255 → throws** `\"Bun.serve expects idleTimeout to be 255 or less\"` (the `Bun.serve` call fails).\n- **0–255 → accepted** (`0` disables the timeout).\n- **negative → clamped to 0** via `@max(value.toInt64(), 0)` — this is the only clamping, and it is on the *lower* bound.\n- **non-integer (e.g. a float) → throws** `\"Bun.serve expects idleTimeout to be an integer\"`.\n\nThe internal field is `idleTimeout: u8 = 10`, which is *why* 255 is the ceiling: a `u8` cannot hold more, so rather than silently truncating, the code rejects anything larger. Source: https://github.com/oven-sh/bun/blob/bun-v1.1.26/src/bun.js/api/server.zig.\n\n## Cross-check against a second independent source\n\n**SvelteKit's official adapter-bun docs** (which pass this option through to Bun) state the constraint as a range: \"`CONNECTION_IDLE_TIMEOUT` … must be an **integer from 0 through 255**; 0 disables the timeout,\" and their example shows an adapter default of `idleTimeout: 30`. Source: https://svelte.dev/docs/kit/adapter-bun.\n\nThe **svelte-adapter-bun README** describes it as \"Bun's per-connection idle timeout in seconds (**10 default, range 0–255**)\" and reports that out-of-range values fail with a clear error. Source: https://github.com/gabehirakawa/svelte-adapter-bun.\n\nThese independent sources agree with the Bun docs on the 0–255 range and are consistent with the runtime throw for values above 255. No conflict on the value was found.\n\n## Type declarations vs runtime\n\nBun's generated TypeScript surface declares the option as a plain optional number: `idleTimeout?: number`, whose JSDoc is only \"Sets the number of seconds to wait before timing out a connection due to inactivity.\" The declaration states **neither a default nor a maximum**, and imposes **no type-level range constraint** — so the 0–255 cap is a runtime constraint, not compile-time. Source: https://bun.com/reference/bun/Serve/Options. (Note: the raw `packages/bun-types/bun.d.ts` file was truncated before the server types and its own JSDoc line could not be read; the type-level info above comes from Bun's generated type reference page.)\n\n## Across versions — no change\n\n- **Earliest confirmable version: Bun v1.1.26 (August 2024).** The `idleTimeout` option for `Bun.serve` was introduced here, and its source already enforced a hard ceiling of 255 (the `u8` field plus the \"255 or less\" throw). Source: https://github.com/oven-sh/bun/blob/bun-v1.1.26/src/bun.js/api/server.zig; the option's introduction is documented in the v1.1.26 release notes. Source: https://bun.com/blog/bun-v1.1.26.\n- **Current release: Bun v1.4.2 (released 2026‑09‑05).** Source: https://github.com/oven-sh/bun. Current documentation still states the same maximum (\"The maximum value is 255\"). Source: https://bun.com/docs/runtime/http/server.\n\nThe value does not conflict across sources — 255 appears both at introduction and today. What varies is *documentation coverage*: some intermediate documentation snapshots described `idleTimeout` and its 10-second default but did not state a maximum. Because the enforcement lived in `u8`-typed source throughout, the limit was effectively 255 regardless of whether a given docs snapshot mentioned it. This is treated here as provisional, since the relevant historical snapshot URLs could not be re-read in this run (see Unverified).\n\n## Caveats and related-but-different options\n\n- **Units are seconds.** The idle timer also counts in-flight requests where the handler hasn't written bytes yet, and it **applies while a response is streamed** — a quiet stream longer than `idleTimeout` is closed mid-response. For long streams the docs recommend `server.timeout(req, 0)` to disable the timeout for that request rather than raising the global value. Source: https://bun.com/docs/runtime/http/server.\n- **Per-request override:** `server.timeout(request, seconds)` resets the idle timeout for one request, where `0` means no timeout. Source: https://bun.com/docs/runtime/http/server.\n- **Do not confuse it with `fetch()`.** Bun's `fetch()` client has a separate, unrelated option also named `idleTimeout` with a default of 300 seconds. Source: https://bun.sh/docs/runtime/networking/fetch.\n- **Do not confuse it with the WebSocket setting.** uWebSockets' `WebSocketBehavior.idleTimeout` is a distinct WebSocket-only setting (a third-party summary describes it with its own default and validation rules); it is not Bun's HTTP `Bun.serve` option. One source suggests this distinction; treat with caution. Source: https://deepwiki.com/uNetworking/uWebSockets/7.3-websocket-server.\n\n## Unverified / open\n\n- The current (HEAD / v1.4.x) source-level enforcement of the 255 cap could not be re-read: the v1.1.26-era path `src/bun.js/api/server.zig` no longer resolves on the default branch (the source tree was reorganised), so the throw behaviour is verified against the bun-v1.1.26 tag only; the current limit is instead corroborated by the current docs page.\n- The exact publication day of the `bun-v1.1.26` tag is only known to month precision (August 2024); the GitHub release-tag pages could not be retrieved.\n- The precise native mechanism in Bun's vendored uSockets that yields the 255 cap could not be confirmed (the vendored header was not retrieved).\n- Older documentation snapshots' exact wording about `idleTimeout` (including whether they omitted the maximum) could not be re-read in this run; the corresponding archive URLs are listed in `unverified`.",
+      "citations": [
+        "https://bun.com/docs/runtime/http/server",
+        "https://bun.sh/docs/api/http",
+        "https://github.com/oven-sh/bun/blob/bun-v1.1.26/src/bun.js/api/server.zig",
+        "https://svelte.dev/docs/kit/adapter-bun",
+        "https://bun.com/blog/bun-v1.1.26",
+        "https://github.com/oven-sh/bun",
+        "https://bun.com/reference/bun/Serve/Options",
+        "https://github.com/gabehirakawa/svelte-adapter-bun",
+        "https://bun.sh/docs/runtime/networking/fetch",
+        "https://deepwiki.com/uNetworking/uWebSockets/7.3-websocket-server"
+      ],
+      "unretrievedCitations": null,
+      "costUsd": 0.173245822,
+      "wallMs": 228213,
+      "error": null
+    },
+    {
+      "index": 14,
+      "id": "npm-hono-latest",
+      "query": "What is the latest published version of the npm package hono?",
+      "depth": "quick",
+      "pass": true,
+      "matched": "4.13.13",
+      "live": {
+        "resolver": "npm:hono",
+        "value": "4.13.13"
+      },
+      "status": "ok",
+      "grounding": {
+        "pagesRetrieved": 2,
+        "pagesFailed": 0,
+        "citationsKept": 1,
+        "citationsDropped": 0,
+        "confidenceCapped": 0,
+        "citationsDegraded": 0
+      },
+      "report": "## Bottom line\n\nThe latest published version of the npm package `hono` is **4.13.13**, published under the `latest` dist-tag (last published 2026-10-08), according to a live read of the npm registry.\n\n## Detail\n\n- `latest` → **4.13.13** — the stable release; this is the current version.\n- `next` → 5.0.0-rc.0 — prerelease track, not the stable version.\n- `v4` → 4.0.0-rc.4 — release-candidate tag for the v4 line.\n\nSo `4.13.13` is the version to use; `5.0.0-rc.0` exists only under the `next` tag and should not be treated as current stable.\n\nPackage metadata: description \"Web framework built on Web Standards\", license MIT, no runtime dependencies, engines `node >=16.9.0`. Homepage https://hono.dev, repository https://github.com/honojs/hono.\n\nSource: https://www.npmjs.com/package/hono and https://registry.npmjs.org/hono.",
+      "citations": [
+        "https://www.npmjs.com/package/hono"
+      ],
+      "unretrievedCitations": null,
+      "costUsd": 0.00082149,
+      "wallMs": 5398,
+      "error": null
+    },
+    {
+      "index": 15,
+      "id": "npm-ai-latest",
+      "query": "What is the latest published version of the npm package ai (Vercel AI SDK)?",
+      "depth": "quick",
+      "pass": true,
+      "matched": "7.0.135",
+      "live": {
+        "resolver": "npm:ai",
+        "value": "7.0.135"
+      },
+      "status": "ok",
+      "grounding": {
+        "pagesRetrieved": 2,
+        "pagesFailed": 0,
+        "citationsKept": 2,
+        "citationsDropped": 0,
+        "confidenceCapped": 0,
+        "citationsDegraded": 0
+      },
+      "report": "## Bottom line\n\nThe latest published version of the npm package `ai` (the Vercel AI SDK) is **7.0.135**, published **2026-10-08**. The registry's `latest` dist-tag points at 7.0.135.\n\n## Version and release channel\n\nRead live from the npm registry, which is authoritative for a package's current version:\n\n| dist-tag | version |\n|---|---|\n| `latest` | **7.0.135** |\n| `ai-v6` | 6.0.302 |\n| `ai-v5` | 5.0.273 |\n| `beta` | 7.0.0-beta.187 |\n| `canary` | 7.0.0-canary.176 |\n| `alpha` | 5.0.0-alpha.15 |\n| `snapshot` | 0.0.0-f1630544-20260811180950 |\n\nThe `ai-v5` / `ai-v6` tags are maintenance lines for older majors; current development work sits on the 7.x line (`latest`, plus `beta`/`canary` pre-releases of 7.0.0).\n\n## Package metadata\n\nDescription \"AI SDK by Vercel…\"; license Apache-2.0; homepage https://ai-sdk.dev/docs; repository https://github.com/vercel/ai; `engines.node` >=22; not deprecated. Runtime dependencies at 7.0.135: `@ai-sdk/gateway` 4.0.109, `@ai-sdk/provider` 4.0.26, `@ai-sdk/provider-utils` 5.0.58; peer dependency `zod` \"^3.25.76 || ^4.1.8\".\n\n## Unverified\n\nNothing was blocked; all claims above rest on the npm registry and package page.\n",
+      "citations": [
+        "https://www.npmjs.com/package/ai"
+      ],
+      "unretrievedCitations": null,
+      "costUsd": 0.00116919,
+      "wallMs": 6711,
+      "error": null
+    },
+    {
+      "index": 16,
+      "id": "pypi-requests-latest",
+      "query": "What is the latest version of the Python package requests on PyPI?",
+      "depth": "quick",
+      "pass": true,
+      "matched": "2.34.2",
+      "live": {
+        "resolver": "pypi:requests",
+        "value": "2.34.2"
+      },
+      "status": "ok",
+      "grounding": {
+        "pagesRetrieved": 2,
+        "pagesFailed": 0,
+        "citationsKept": 2,
+        "citationsDropped": 0,
+        "confidenceCapped": 0,
+        "citationsDegraded": 0
+      },
+      "report": "## Bottom line\n\nThe latest version of the `requests` package on PyPI is **2.34.2**, per the PyPI registry itself.\n\n## Details\n\n- **Package:** `requests` — \"Python HTTP for Humans.\"\n- **Latest version:** `2.34.2`\n- **License:** Apache-2.0\n- **Requires Python:** `>=3.10`\n- **Not yanked**; 163 releases published in total.\n- **Runtime dependencies:** `charset_normalizer<4,>=2`, `idna<4,>=2.5`, `urllib3<3,>=1.26`, `certifi>=2023.5.7`. Optional extras add `PySocks!=1.5.7,>=1.5.6` (socks) and `chardet<8,>=3.0.2` (use-chardet-on-py3).\n- **Source / docs:** https://github.com/psf/requests , https://requests.readthedocs.io\n\nThis is read straight from the PyPI registry (the source of truth), not from a blog or prior knowledge. PyPI reports a single current release number for this package, so `2.34.2` is the authoritative latest version.\n\n## Unverified\n\nNo blocked or unverifiable sources were encountered for this question.",
+      "citations": [
+        "https://pypi.org/project/requests/"
+      ],
+      "unretrievedCitations": null,
+      "costUsd": 0.00103209,
+      "wallMs": 6408,
+      "error": null
+    },
+    {
+      "index": 17,
+      "id": "crates-serde-latest",
+      "query": "What is the latest stable version of the Rust crate serde?",
+      "depth": "quick",
+      "pass": true,
+      "matched": "1.0.229",
+      "live": {
+        "resolver": "crates:serde",
+        "value": "1.0.229"
+      },
+      "status": "ok",
+      "grounding": {
+        "pagesRetrieved": 2,
+        "pagesFailed": 0,
+        "citationsKept": 2,
+        "citationsDropped": 0,
+        "confidenceCapped": 0,
+        "citationsDegraded": 0
+      },
+      "report": "## Bottom line\n\nThe latest stable version of the Rust crate **serde** is **1.0.229**, per the live crates.io registry (no newer prerelease is published — newest equals latest; not yanked).\n\n## Details\n\nRead from crates.io:\n\n- **Latest / newest version:** 1.0.229 (`latestVersion` = `newestVersion` = 1.0.229)\n- **Yanked:** false\n- **License:** MIT OR Apache-2.0\n- **Description:** \"A generic serialization/deserialization framework\"\n- **Homepage / docs / repo:** https://serde.rs, https://docs.rs/serde, https://github.com/serde-rs/serde\n- **Version count:** 316 published versions\n- **Downloads:** ~1,500,232,877 all-time; ~349,823,955 recent\n\nBecause serde follows the `1.0.x` compatibility line, 1.0.229 is a backward-compatible point release, so the usual dependency declaration remains `serde = \"1\"` (or pinned as `serde = \"1.0.229\"`). With no prerelease/RC present, 1.0.229 is unambiguously the current stable release.\n\nNo blocked sources; nothing was left unverified.",
+      "citations": [
+        "https://crates.io/crates/serde",
+        "https://crates.io/api/v1/crates/serde"
+      ],
+      "unretrievedCitations": null,
+      "costUsd": 0.00089964,
+      "wallMs": 6582,
+      "error": null
+    },
+    {
+      "index": 18,
+      "id": "bun-runtime-latest",
+      "query": "What is the latest release version of the Bun runtime?",
+      "depth": "quick",
+      "pass": true,
+      "matched": "1.4.2",
+      "live": {
+        "resolver": "github-release:oven-sh/bun",
+        "value": "1.4.2"
+      },
+      "status": "ok",
+      "grounding": {
+        "pagesRetrieved": 3,
+        "pagesFailed": 0,
+        "citationsKept": 2,
+        "citationsDropped": 0,
+        "confidenceCapped": 0,
+        "citationsDegraded": 0
+      },
+      "report": "## Bottom line\n\nThe latest stable release of the Bun runtime is **v1.4.2**, confirmed by both the npm registry's `latest` dist-tag and the latest non-prerelease GitHub release (`bun-v1.4.2`).\n\n## Details\n\n- **npm** — the `bun` package's `latest` dist-tag is **1.4.2** (MIT license, homepage bun.com, no deprecation). A separate `canary` dist-tag points to `1.4.2-canary.20261008.1`, which is a pre-release build, not the stable release. (https://www.npmjs.com/package/bun)\n- **GitHub** — the `oven-sh/bun` repository's latest non-prerelease release is tagged `bun-v1.4.2` (\"Bun v1.4.2\"), published 2026-09-05. The repo is not archived and was last pushed 2026-10-08. (https://github.com/oven-sh/bun)\n\n**Date note:** the GitHub release tag was published 2026-09-05, while the npm package's most recent publish timestamp is 2026-10-08 (consistent with the canary build stamp `20261008`). The stable `latest` version on both channels is the same: **1.4.2**.\n\n**Install / upgrade:** `curl -fsSL https://bun.sh/install | bash` or `npm install -g bun`; check with `bun --version`.\n\nNo blocked sources; both channels were read live and agree.",
+      "citations": [
+        "https://www.npmjs.com/package/bun",
+        "https://github.com/oven-sh/bun"
+      ],
+      "unretrievedCitations": null,
+      "costUsd": 0.00112374,
+      "wallMs": 6865,
+      "error": null
+    },
+    {
+      "index": 19,
+      "id": "npm-elysia-latest",
+      "query": "What is the latest release version of Elysia (the Bun web framework) on npm?",
+      "depth": "quick",
+      "pass": true,
+      "matched": "1.4.30",
+      "live": {
+        "resolver": "npm:elysia",
+        "value": "1.4.30"
+      },
+      "status": "ok",
+      "grounding": {
+        "pagesRetrieved": 2,
+        "pagesFailed": 0,
+        "citationsKept": 3,
+        "citationsDropped": 0,
+        "confidenceCapped": 0,
+        "citationsDegraded": 0
+      },
+      "report": "## Bottom line\n\nThe latest release version of **Elysia** on npm is **1.4.30** (the `latest` dist-tag), read live from the npm registry.\n\n## Detail\n\nThe current published stable release is **elysia@1.4.30**, last published 2026-10-08T22:35:12.452Z.\n\nThe registry also lists these non-`latest` dist-tags:\n- `next`: 2.0.0-beta.27\n- `experimental`: 2.0.0-exp.64\n- `rc`: 1.2.0-rc.3\n\nSo the v2 line is still in beta/pre-release; the stable published release is 1.4.30.\n\nOther confirmed metadata (same authoritative source): MIT license; repository `git+https://github.com/elysiajs/elysia.git`; not deprecated; runtime dependencies `cookie` ^1.1.1, `memoirist` ^0.4.0, `exact-mirror` ^0.2.7, `fast-decode-uri-component` ^1.0.1; peer dependencies include `file-type` >= 20.0.0, `@types/bun` >= 1.2.0, `typescript` >= 5.0.0, `openapi-types` >= 12.0.0, and `@sinclair/typebox` >= 0.34.0 < 1.\n\nNote: `latest` is a dist-tag maintainers can repoint at any time, so treat 1.4.30 as the current stable release as of the registry read on 2026-10-08.\n\n## Unverified\n\nNone — the version and dist-tags were read directly from the npm registry.",
+      "citations": [
+        "https://www.npmjs.com/package/elysia"
+      ],
+      "unretrievedCitations": null,
+      "costUsd": 0.00125169,
+      "wallMs": 7030,
+      "error": null
+    },
+    {
+      "index": 20,
+      "id": "deep-http2-vs-http3",
+      "query": "Compare HTTP/2 and HTTP/3 as specified in their current RFCs: which RFC defines each, which transport each runs on, how each handles head-of-line blocking, and which header-compression scheme each uses.",
+      "depth": "deep",
+      "pass": true,
+      "matched": "HTTP/2** is specified by **RFC 9113 + HTTP/3** is specified by **RFC 9114",
+      "live": null,
+      "status": "partial",
+      "grounding": {
+        "pagesRetrieved": 38,
+        "pagesFailed": 0,
+        "citationsKept": 76,
+        "citationsDropped": 1,
+        "confidenceCapped": 3,
+        "citationsDegraded": 2
+      },
+      "report": "> **Partial result — evidence was lost during this run.** 1 claim(s) were dropped because the pages backing them could not be retrieved; 1 source(s) named in the report body could not be verified and are flagged inline below; 3 citation(s) had their confidence lowered to match the evidence actually retrieved. Anything below that is not backed by an entry in `citations` is unconfirmed; see `unverified` for what could not be checked.\n\n> **Unverified in prose:** this report references <https://blog.cloudflare.com/hpack-the-silent-killer-feature-of-http-2/>, which this run could NOT verify (Full page not retrieved; corroboration drawn only from a search-result snippet.). Treat that reference as unconfirmed — see `unverified`.\n\n## Bottom line\n\n- **HTTP/2** is specified by **RFC 9113 (\"HTTP/2\", June 2022)**, a Standards Track document at Proposed Standard maturity that **obsoletes RFC 7540 and RFC 8740**; **HTTP/3** is specified by **RFC 9114 (\"HTTP/3\", June 2022)**, also Standards Track, which declares no obsoletes/updates relationship.\n- **HTTP/2 runs over TCP** (TLS 1.2 or higher when secured) using the ALPN token **\"h2\"**, with a deprecated cleartext **\"h2c\"** variant that must never appear in a TLS negotiation; **HTTP/3 runs over QUIC (RFC 9000), which runs over UDP**, integrating **TLS 1.3 via RFC 9001**, using the ALPN token **\"h3\"**.\n- **Head-of-line blocking:** HTTP/2 removes HTTP/1.x *application-level* HOL blocking via stream multiplexing but explicitly leaves *TCP transport-level* HOL blocking in place — RFC 9113 §1 says \"TCP head-of-line blocking is not addressed by this protocol\"; HTTP/3 removes *inter-stream transport-level* HOL blocking via QUIC's independently ordered streams, leaving only *intra-stream* and *header-compression (QPACK)* residual blocking.\n- **Header compression:** HTTP/2 uses **HPACK (RFC 7541)**; HTTP/3 uses **QPACK (RFC 9204)**, which reuses HPACK's prefixed-integer and Huffman primitives but moves all dynamic-table updates onto separate unidirectional streams.\n\n## 1. The defining RFCs\n\n**HTTP/2 — RFC 9113.** The current, non-obsoleted HTTP/2 specification is RFC 9113, exact title **\"HTTP/2\"**, published **June 2022**, editors M. Thomson (Mozilla) and C. Benfield (Apple). It is a Standards Track document. Its Abstract/Introduction state \"This document obsoletes RFCs 7540 and 8740,\" and the Datatracker header confirms `Obsoletes: 7540, 8740` ([rfc9113](https://www.rfc-editor.org/rfc/rfc9113.html), [datatracker](https://datatracker.ietf.org/doc/rfc9113/), [info](https://www.rfc-editor.org/info/rfc9113)).\n\nThe superseded original was **RFC 7540** (\"Hypertext Transfer Protocol Version 2 (HTTP/2)\", May 2015), now marked obsoleted by RFC 9113 and updated by RFC 8740 ([errata/rfc7540](https://www.rfc-editor.org/errata/rfc7540)). Appendix B of RFC 9113 lists the notable changes from RFC 7540, including deprecation of the RFC 7540 priority-signaling scheme.\n\n**HTTP/3 — RFC 9114.** HTTP/3 is specified by RFC 9114, exact title **\"HTTP/3\"**, published **June 2022**, editor M. Bishop (Akamai). It is an Internet Standards Track document; the document's own header shows **no `Obsoletes:` or `Updates:` line** — it declares no obsoletes/updates relationship ([rfc9114](https://www.rfc-editor.org/rfc/rfc9114.html), [datatracker](https://datatracker.ietf.org/doc/rfc9114/), [info](https://www.rfc-editor.org/info/rfc9114)). It registers the ALPN token \"h3\" ([rfc9114](https://www.rfc-editor.org/rfc/rfc9114.html)).\n\n**Cross-verification / disagreements.** RFC Editor and Datatracker agree exactly on both documents' numbers, titles, dates and status. The only status-wording nuance is that the RFC prose says \"Standards Track\" (the *track*) while Datatracker's listing shows \"Proposed Standard\" (the *maturity level*) — these describe the same document and are not a conflict. No source disagreed on the RFC numbers, and none shows RFC 9113 elevated to Internet Standard (§5). Independent corroboration: Apache HTTP Server docs state the HTTP/2 protocol \"is defined in RFC 9113 (which obsoletes the original RFC 7540)\" ([httpd](https://httpd.apache.org/docs/current/howto/http2.html)).\n\n## 2. Transport layer\n\n### HTTP/2 over TCP\n\nRFC 9113 §2 states: \"HTTP/2 is a connection-oriented application-layer protocol that runs over a TCP connection ([TCP]). The client is the TCP connection initiator.\" It uses the \"http\" and \"https\" URI schemes with the same default port numbers as HTTP/1.1 — i.e. TCP 80 for http and TCP 443 for https ([rfc9113](https://www.rfc-editor.org/rfc/rfc9113.html); the https default port of 443 is defined by HTTP Semantics, RFC 9110, [datatracker](https://datatracker.ietf.org/doc/rfc9110/)).\n\n**ALPN identifiers.** §3.1 states the string \"h2\" identifies HTTP/2 over TLS and \"is serialized into an ALPN protocol identifier as the two-octet sequence: 0x68, 0x32.\" The \"h2c\" string was an HTTP Upgrade token for cleartext HTTP/2; RFC 9113 says \"This usage was never widely deployed and is deprecated by this document. The same applies to the HTTP2-Settings header field.\" §3.2 is explicit: \"the 'h2c' protocol identifier MUST NOT be sent by a client or selected by a server; the 'h2c' protocol identifier describes a protocol that does not use TLS\" ([rfc9113](https://www.rfc-editor.org/rfc/rfc9113.html)).\n\n**TLS layering.** A client to an \"https\" URI uses TLS with the ALPN extension (§3.2). §9.2: \"Implementations of HTTP/2 MUST use TLS version 1.2 [TLS12] or higher for HTTP/2 over TLS\" ([info/rfc9113](https://www.rfc-editor.org/info/rfc9113)). TLS 1.2 is RFC 5246, confirmed as a normative reference in RFC 7301 ([rfc7301](https://www.rfc-editor.org/rfc/rfc7301.html)).\n\n**ALPN is defined by RFC 7301** (\"Transport Layer Security (TLS) Application-Layer Protocol Negotiation Extension\", Standards Track, July 2014), TLS extension type 16, which established the ALPN Protocol IDs registry ([rfc7301](https://www.rfc-editor.org/rfc/rfc7301.html)). The IANA \"TLS ALPN Protocol IDs\" registry lists \"HTTP/2 over TLS 0x68 0x32 ('h2') [RFC 9113]\" and \"HTTP/2 over TCP 0x68 0x32 0x63 ('h2c') [RFC 9113]\", the latter with the note that it \"is not allowed to appear in a TLS ALPN negotiation\" — so **h2c is a reserved cleartext identifier, not a TLS ALPN token**, a common misconception ([IANA](https://www.iana.org/assignments/tls-extensiontype-values/tls-extensiontype-values.xhtml)).\n\n**Alternative transports.** RFC 9113 defines no non-TCP binding; §11 creates registrations for the strings \"h2\" and \"h2c\" ([rfcinfo §11](https://rfcinfo.com/rfc-9113/11/)). The alternative-transport mapping is HTTP/3 over QUIC. The IANA ALPN registry lists \"HTTP/3 0x68 0x33 ('h3') [RFC 9114]\" ([IANA](https://www.iana.org/assignments/tls-extensiontype-values/tls-extensiontype-values.xhtml)). Nuance/caveat: RFC 9113 §3.2 cites TLS as \"[TLS13]\" while §9.2 sets the floor at TLS 1.2 (modern vs. minimum, not a conflict); Apache httpd still supports h2c even though RFC 9113 deprecated it.\n\n### HTTP/3 over QUIC/UDP\n\nRFC 9114 §1 states \"HTTP/3 supports the same semantics over a new transport protocol: QUIC,\" and §1.2 says \"QUIC is described in [QUIC-TRANSPORT].\" §3.2: \"HTTP/3 relies on QUIC version 1 as the underlying transport\" ([rfc9114](https://www.rfc-editor.org/rfc/rfc9114.html)).\n\n**QUIC is RFC 9000**, \"QUIC: A UDP-Based Multiplexed and Secure Transport\" (May 2021, Standards Track) ([rfc9000](https://www.rfc-editor.org/rfc/rfc9000.html)). RFC 9000 §1 states \"QUIC packets are carried in UDP datagrams [UDP] to better facilitate deployment in existing systems and networks\" and §1.2 defines the encapsulation \"one or more QUIC packets can be encapsulated in a UDP datagram, which is in turn encapsulated in an IP packet.\" QUIC version 1 is identified as 0x00000001 (§7) ([rfc9000](https://www.rfc-editor.org/rfc/rfc9000.html)). RFC 9114 §3.1 reinforces the UDP dependency (\"Connectivity problems (e.g., blocking UDP) can result in a failure to establish a QUIC connection\").\n\n**TLS 1.3 integration.** RFC 9114 §1.2: \"QUIC also incorporates TLS 1.3 ([TLS]) at the transport layer\"; §3.2: \"QUIC version 1 uses TLS version 1.3 or greater as its handshake protocol.\" The mapping of TLS onto QUIC is **RFC 9001, \"Using TLS to Secure QUIC\"**, which RFC 9000 references as [QUIC-TLS] ([datatracker rfc9001](https://datatracker.ietf.org/doc/html/rfc9001)). IANA's TLS ExtensionType registry independently confirms extension 57 \"quic_transport_parameters\" with reference [RFC 9001] ([IANA](https://www.iana.org/assignments/tls-extensiontype-values/tls-extensiontype-values.xhtml)).\n\n**ALPN and port.** RFC 9114 §3.1: \"the token 'h3' is used in the Application-Layer Protocol Negotiation (ALPN; see [RFC7301]) extension during the TLS handshake\"; §3.2: \"HTTP/3 support is indicated by selecting the ALPN token 'h3'.\" The IANA ALPN registry lists HTTP/3 → `0x68 0x33 (\"h3\") [RFC 9114]` ([IANA](https://www.iana.org/assignments/tls-extensiontype-values/tls-extensiontype-values.xhtml)). RFC 9114 §3.1 says \"Servers MAY serve HTTP/3 on any UDP port\"; the typical/default port for `https` is **UDP 443** ([rfc9114](https://www.rfc-editor.org/rfc/rfc9114.html)). Related QUIC specs referenced by the transport RFCs are [QUIC-INVARIANTS] (RFC 8999) and [QUIC-RECOVERY] (RFC 9002, loss detection and congestion control) ([rfc9000](https://www.rfc-editor.org/rfc/rfc9000.html)).\n\n**Cross-verification:** RFC 9114, RFC 9000 and the IANA ALPN registry agree on QUIC (RFC 9000), the \"h3\" token and the TLS-in-QUIC model; IANA's extension-57 reference corroborates RFC 9001. **No substantive disagreements** were found. One rendering artifact: the RFC Editor HTML header for RFC 9000 shows the short label \"QUIC Transport Protocol\" rather than the full title, with the full title confirmed from the same URL's metadata ([rfc9000](https://www.rfc-editor.org/rfc/rfc9000.html)).\n\n## 3. Head-of-line blocking\n\n### HTTP/2: application-level HOL removed, TCP-level HOL remains\n\n**Multiplexing removes HTTP/1.x application-level HOL blocking.** RFC 9113 §1 notes HTTP/1.1 pipelining \"only partially addressed request concurrency and still suffers from application-layer head-of-line blocking,\" which is why HTTP/1.x clients open multiple connections. HTTP/2 gives \"each HTTP request/response exchange… its own stream\" and interleaves their frames so \"a blocked or stalled request or response does not prevent progress on other streams\" (§2). §5 adds that a single connection \"can contain multiple concurrently open streams, with either endpoint interleaving frames\" ([rfc9113](https://www.rfc-editor.org/rfc/rfc9113.html)). RFC 7540, the obsoleted original, carries the same framing/interleaving rationale ([rfc7540](https://www.rfc-editor.org/rfc/rfc7540.html)).\n\n**TCP transport-layer HOL blocking remains.** RFC 9113 §1 states plainly: **\"Note, however, that TCP head-of-line blocking is not addressed by this protocol.\"** §5.2 acknowledges \"Using streams for multiplexing introduces contention over use of the TCP connection, resulting in blocked streams,\" and §5.3 warns that with \"no parallelism at the TCP layer\" performance \"could be significantly worse than HTTP/1.1\" ([rfc9113](https://www.rfc-editor.org/rfc/rfc9113.html)).\n\n**Mechanism.** TCP guarantees in-order delivery: when a packet is lost, TCP holds *all* later received bytes in its receive buffer until the missing segment is retransmitted (≥1 RTT) and then delivers in order. Because TCP is blind to HTTP/2 streams, a loss in one stream's bytes stalls delivery of unrelated streams whose bytes arrived later. Robin Marx: HTTP/2 \"only solved HOL blocking at the HTTP level\"; TCP sees \"just a single, opaque bytestream,\" and on loss \"keeps packet 3 in its receive buffer until it receives the retransmitted copy of packet 2\" ([holblocking-blogpost](https://github.com/rmarx/holblocking-blogpost)). Daniel Stenberg (curl): with HTTP/2, \"if a single packet is dropped, or lost… the entire TCP connection is brought to a halt while the lost packet is re-transmitted\" ([http3-explained](https://http3-explained.haxx.se/en/why-quic/why-tcphol)).\n\n**Nuances / disagreements.** (1) Severity depends on loss and RTT; Marx stresses loss is usually rare/bursty (wired ~0.01%; cellular rarely >2%) and TCP HOL blocking therefore has \"a much smaller impact on Web performance than HTTP/1.1 HOL blocking.\" (2) Under loss, HTTP/2 on one connection can be *slower* than HTTP/1.1 across ~6 connections; Stenberg: \"at 2% packet loss… HTTP/1 users are usually better off - because they typically have up to six TCP connections.\" (3) It is essentially unavoidable with TCP — \"Fixing this issue is not easy, if at all possible, with TCP\" (Stenberg), which motivates QUIC/HTTP/3 ([http3-explained](https://http3-explained.haxx.se/en/why-quic/why-tcphol), [holblocking-blogpost](https://github.com/rmarx/holblocking-blogpost)). (4) HTTP/2 adds its own residual ordering constraints: HPACK field blocks \"MUST be transmitted as a contiguous sequence of frames, with no interleaved frames\" (§4.3), and large frames can delay time-sensitive control frames (§4.2) ([rfc9113](https://www.rfc-editor.org/rfc/rfc9113.html)). Wikipedia concurs that HTTP/2 \"eliminates HOL blocking at the application layer, but HOL still exists at the transport (TCP) layer,\" and that latency degradation \"depends on the underlying packet loss rate and round-trip time\" ([Wikipedia](https://en.wikipedia.org/wiki/Head-of-line_blocking)).\n\n### HTTP/3: transport-level HOL removed, residual intra-stream and compression blocking\n\n**QUIC's independently ordered streams remove inter-stream transport-layer HOL blocking.** RFC 9114 §2: \"Each request-response pair consumes a single QUIC stream. Streams are independent of each other, so one stream that is blocked or suffers packet loss does not prevent progress on other streams.\" §1.1 contrasts directly with HTTP/2 over TCP, where \"a lost or reordered packet causes all active transactions to experience a stall regardless of whether that transaction was directly impacted by the lost packet\" ([rfc9114](https://www.rfc-editor.org/rfc/rfc9114.html)). RFC 9000 §2 makes the model explicit: streams are a \"lightweight, ordered byte-stream abstraction,\" and \"QUIC does not provide any means of ensuring ordering between bytes on different streams\" ([rfc9000](https://www.rfc-editor.org/rfc/rfc9000.html)). Because loss recovery is per stream+offset, a lost STREAM frame on stream A stalls only stream A's reassembly while streams B, C… continue.\n\n**Residual HOL blocking remains.**\n- *Intra-stream:* RFC 9000 §2.2 — endpoints \"MUST be able to deliver stream data to an application as an ordered byte stream,\" which \"requires that an endpoint buffer any data that is received out of order,\" and QUIC \"makes no specific allowances for delivery of stream data out of order.\" RFC 9114 §6 adds: \"Although QUIC permits out-of-order delivery within a stream, HTTP/3 does not make use of this feature.\" So a byte gap inside one stream blocks that stream's later bytes ([rfc9000](https://www.rfc-editor.org/rfc/rfc9000.html), [rfc9114](https://www.rfc-editor.org/rfc/rfc9114.html)). Marx: QUIC \"retains ordering within a single resource stream but no longer across individual streams,\" so \"we still have a form of HOL blocking, even in QUIC\" ([holblocking-blogpost](https://github.com/rmarx/holblocking-blogpost)).\n- *Application-layer (compression):* RFC 9114 §2 — because HPACK \"relies on in-order transmission of compressed field sections (a guarantee not provided by QUIC),\" HTTP/3 replaces it with QPACK, which \"uses separate unidirectional streams to modify and track field table state.\" If the encoder stream lags, header blocks that reference not-yet-received dynamic-table entries are blocked ([rfc9114](https://www.rfc-editor.org/rfc/rfc9114.html)).\n- *Scheduling/flow-control:* RFC 9000 §2.3 — \"QUIC does not provide a mechanism for exchanging prioritization information. Instead, it relies on receiving priority information from the application\"; §6.2.1 of RFC 9114 warns the control stream must not become blocked ([rfc9000](https://www.rfc-editor.org/rfc/rfc9000.html), [rfc9114](https://www.rfc-editor.org/rfc/rfc9114.html)).\n\n**Nuance/disagreement:** Vendor/glossary sources boil this to \"HTTP/3 eliminates HOL blocking,\" but they mean *transport-layer* HOL blocking only; RFC 9114 itself never claims total elimination and explicitly documents the QPACK residual. Marx warns the performance benefit over HTTP/2 is often overstated.\n\n## 4. Header compression\n\n### HTTP/2 — HPACK, RFC 7541\n\nHTTP/2's header-compression scheme is **HPACK**, defined by **RFC 7541, \"HPACK: Header Compression for HTTP/2\"** (R. Peon, Google; H. Ruellan, Canon CRF; Standards Track, May 2015). Its abstract: \"This specification defines HPACK, a compression format for efficiently representing HTTP header fields, to be used in HTTP/2.\" It replaced SPDY's DEFLATE-based scheme, which was vulnerable to CRIME ([rfc7541](https://www.rfc-editor.org/rfc/rfc7541.html), [info/rfc7541](https://www.rfc-editor.org/info/rfc7541)). A second independent publication (httpwg.org) shows the identical title and body ([httpwg](https://httpwg.org/specs/rfc7541.html)).\n\n**How it works.** HPACK treats a header list as ordered name–value pairs and uses two tables merged into a single index address space (§2.3.3):\n- **Static table** (§2.3.1, Appendix A): **61 predefined, read-only entries (indices 1–61)**, built from the most frequent headers plus HTTP/2 pseudo-headers (`:method`, `:path`, `:scheme`, `:status`, etc.), most with empty values.\n- **Dynamic table** (§2.3.2): initially empty, FIFO (newest at the lowest index), strictly bounded in size, and may hold duplicates.\n\nEach field is encoded as an **indexed header field** — pattern `1` plus a 7-bit-prefix index (§6.1; index 0 is an error) — or as a **literal** whose name may itself be a table index. Three literal forms exist (§6.2): *with incremental indexing* (`01`, adds the field to the dynamic table, §6.2.1), *without indexing* (`0000`, §6.2.2), and *never-indexed* (`0001`, which intermediaries MUST preserve, protecting sensitive values, §6.2.3). Literal names/values are string literals (§5.2) with a 1-bit **H** flag; when set they are Huffman-coded using the static canonical Huffman code of Appendix B (symbols 0–255 plus EOS=256), padded to an octet boundary using EOS's leading bits ([rfc7541](https://www.rfc-editor.org/rfc/rfc7541.html), [httpwg](https://httpwg.org/specs/rfc7541.html)).\n\n**Table synchronization.** The **encoder alone** decides which fields to insert; the decoder replays the exact modifications the encoder prescribes (§1.1), so the dynamic table is the only decoding state needed, and request/response tables are independent (§2.2). The maximum dynamic-table size is HTTP/2's SETTINGS_HEADER_TABLE_SIZE; a change is signalled by a **dynamic table size update** (`001` + 5-bit prefix, §6.3) that MUST appear at the start of the next header block after the settings acknowledgment. Entry size = name length + value length + 32 octets, computed without Huffman (§4.1) ([rfc7541](https://www.rfc-editor.org/rfc/rfc7541.html), [httpwg](https://httpwg.org/specs/rfc7541.html)).\n\n**Cross-verification / version caveat.** RFC Editor, httpwg.org, IANA's HTTP/2 Parameters registry, MDN's spec list and Cloudflare's blog all agree **HPACK = RFC 7541** ([MDN](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Resources_and_specifications), [Cloudflare](https://blog.cloudflare.com/hpack-the-silent-killer-feature-of-http-2/)). IANA's HTTP/2 Settings registry lists HEADER_TABLE_SIZE (code 0x01, initial value 4096) with its reference given as RFC 9113 §6.5.2, not RFC 7541 ([IANA](https://www.iana.org/assignments/http2-parameters/http2-parameters.xhtml)). One caveat, not a disagreement about HPACK: the HTTP/2 *base* spec RFC 7540 was **obsoleted by RFC 9113** (June 2022), but **HPACK itself (RFC 7541) is unchanged and not obsoleted**.\n\n### HTTP/3 — QPACK, RFC 9204\n\nHTTP/3 compresses HTTP fields with **QPACK**, defined by **RFC 9204, \"QPACK: Field Compression for HTTP/3\"** (Standards Track, June 2022; Krasic, Bishop and Frindell (editor)). The RFC states plainly that \"QPACK is a name, not an abbreviation\" (§1.1) ([rfc9204](https://www.rfc-editor.org/rfc/rfc9204.html), [info/rfc9204](https://www.rfc-editor.org/info/rfc9204)).\n\n**How it works.** Like HPACK, QPACK uses two tables (§2):\n- **Static table** (§3.1, Appendix A): predefined, **indices 0–98** (99 common field lines); references to it need no dynamic state and \"never risk head-of-line blocking\" (§2.1).\n- **Dynamic table** (§3.2): built over the connection. QPACK's key structural change is that static and dynamic entries are **addressed separately** (§3), with Absolute Indices (§3.2.4), Relative (§3.2.5) and Post-Base (§3.2.6) indexing.\n\nTable updates travel on a dedicated **encoder stream (unidirectional type 0x02)**; decoder→encoder feedback on a **decoder stream (type 0x03)** (§4.2); each endpoint MUST open at most one of each. Because QUIC does not order data across streams, a field section carries a **Required Insert Count**; if it exceeds the decoder's Insert Count the stream is \"blocked\" (§2.1.2, §2.2.1). The decoder caps blocked streams via **SETTINGS_QPACK_BLOCKED_STREAMS**; an encoder MUST respect it. State is synchronized via **Section Acknowledgment, Stream Cancellation and Insert Count Increment** (§2.2.2), which advance the encoder's **Known Received Count** (§2.1.4). Settings: **SETTINGS_QPACK_MAX_TABLE_CAPACITY** (0x01, default 0) and **SETTINGS_QPACK_BLOCKED_STREAMS** (0x07, default 0) (§5). Error codes: **QPACK_DECOMPRESSION_FAILED 0x0200, QPACK_ENCODER_STREAM_ERROR 0x0201, QPACK_DECODER_STREAM_ERROR 0x0202** (§6) ([rfc9204](https://www.rfc-editor.org/rfc/rfc9204.html)).\n\n**Why HPACK was unsuitable.** HPACK assumes a total ordering of frames across all streams; QUIC provides none, so HPACK would induce head-of-line blocking (§1). RFC 9114 states HTTP/3 replaces HPACK because it \"relies on in-order transmission of compressed field sections (a guarantee not provided by QUIC)\" ([rfc9114](https://www.rfc-editor.org/rfc/rfc9114.html)). **Key differences from HPACK:** (a) HPACK embeds table-modifying instructions inline within header blocks; QPACK moves all table mutations to separate unidirectional streams and field sections only *reference* table state (§2.2); (b) separate addressing of static vs dynamic tables (§3); (c) explicit, ACK-based, bounded blocking; (d) added post-Base indexing and the 'N' never-indexed literal bit. QPACK reuses HPACK's prefixed integers and string-literal Huffman format unmodified (§4.1.1–4.1.2) ([rfc9204](https://www.rfc-editor.org/rfc/rfc9204.html)).\n\n**Cross-verification / caveats.** Three independent sources agree on **QPACK = RFC 9204**: RFC Editor text/info page; IANA's \"HTTP/3 Parameters\" registry (citing [RFC9204, Section 5] for the two settings, [RFC9204, Section 4.2] for the encoder/decoder stream types 0x02/0x03, and [RFC9204, Section 6] for the three error codes) ([IANA](https://www.iana.org/assignments/http3-parameters)); and the quic-go library docs (\"HTTP/3 utilizes QPACK (RFC 9204)\") ([quic-go](https://quic-go.net/docs/http3/qpack/)). The RFC number is consistent everywhere — no version disagreement. Two flagged caveats: (1) **Title wording** — \"HTTP/3 explained\" and the draft-series label RFC 9204 \"QPACK: *Header* Compression for HTTP/3,\" whereas the RFC Editor's official title is \"QPACK: *Field* Compression for HTTP/3\" ([http3-explained](https://http3-explained.haxx.se/en/specs), [rfc9204](https://www.rfc-editor.org/rfc/rfc9204.html)). (2) **Version caveat** — early drafts used different byte codes (e.g. draft-ietf-quic-qpack-03 lists QPACK Encoder Stream = 0x48), whereas final RFC 9204 assigns 0x02/0x03; implementations must follow RFC 9204 ([draft-03](https://datatracker.ietf.org/doc/html/draft-ietf-quic-qpack-03)).\n\n## 5. Standards status, errata and registries\n\n### Status (RFC 9113 still Proposed Standard)\n\n**RFC 9113 (HTTP/2) remains Proposed Standard — no Internet Standard elevation has occurred.** The IETF Datatracker lists it as \"RFC - Proposed Standard (June 2022)\" (was draft-ietf-httpbis-http2bis) with no STD number ([datatracker](https://datatracker.ietf.org/doc/rfc9113/)). The RFC Editor's record shows only the generic Standards-Track boilerplate \"This is an Internet Standards Track document,\" not \"Internet Standard\" ([info/rfc9113](https://www.rfc-editor.org/info/rfc9113)). MDN's spec table lists \"RFC 9113 | HTTP/2 | Proposed Standard,\" as does rfcinfo ([MDN](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Resources_and_specifications), [rfcinfo](https://rfcinfo.com/rfc-9113/)). Nothing in any retrieved source shows an elevation action. **Limitation:** the authoritative Datatracker status field could not be read verbatim from a machine-readable endpoint, so the claim rests on the Datatracker page metadata and independent trackers. RFC 9114's specific maturity level (Proposed Standard vs Internet Standard) was likewise not captured.\n\n### RFC 9113 errata — exactly two\n\nRFC 9113 has **exactly two published errata**: **Verified (1)** and **Reported (1)**. There are **no \"Held for Document Update\" and no \"Rejected\" errata** ([errata table](https://www.rfc-editor.org/errata_search.php?rfc=9113&presentation=table)).\n\n| Errata ID | Status | Type | Section | Reported by | Date |\n|---|---|---|---|---|---|\n| **7013** | **Verified** | Editorial | **§6.1 (DATA)** | Moto Ishizawa | 2022-07-06 |\n| **9175** | **Reported** | Technical | **§8.3.1 (Request Pseudo-Header Fields)** | Antun Jurkovikj | 2026-09-13 |\n\n- **EID 7013** corrects a §6.1 note from \"close a stream by sending a **STREAM** frame\" to \"close a stream by sending a **DATA** frame\" (STREAM is not an HTTP/2 frame type). The RFC Editor's inline-errata rendering confirms this is the **only verified erratum** incorporated into RFC 9113 ([inline-errata](https://www.rfc-editor.org/rfc/inline-errata/rfc9113.html), [eid7013](https://www.rfc-editor.org/errata/eid7013)).\n- **EID 9175** proposes changing the OPTIONS exception from \"does not include a path component\" to \"does not include a path or query component,\" because `:path` comprises both (cf. RFC 9112 §3.2.4). Its status remains **Reported**; the ietf-http-wg mailing-list record shows it \"currently posted as 'Reported',\" with a participant suggesting it \"might be good to hold for an update\" — no disposition recorded ([eid9175](https://errata.rfc-editor.org/eid9175/), [w3c archive](https://lists.w3.org/Archives/Public/ietf-http-wg/2026JulSep/0300.html)).\n\nCaveats: Verified errata are **not** folded into the canonical TXT/PDF/XML text — they appear only in the inline-errata rendering. Third-party mirror **rfcinfo.com states \"Errata: No Errata\"** for RFC 9113, contradicting the RFC Editor's registry; the primary sources should be preferred ([rfcinfo](https://rfcinfo.com/rfc-9113/)). Counts are as of retrieval, and the Reported erratum can still change disposition. **RFC 9114's errata were not verified** — the RFC Editor errata page for RFC 9114 could not be read this run (see Unverified).\n\n### IANA \"HTTP/2 Parameters\" registry — all three sub-registries now cite RFC 9113\n\nThe registry (\"Hypertext Transfer Protocol version 2 (HTTP/2) Parameters\", created 2015-02-20, **Last Updated 2022-08-17**) contains exactly three sub-registries, and each carries `Reference: [RFC 9113]` ([IANA](https://www.iana.org/assignments/http2-parameters/http2-parameters.xhtml), [IANA txt](https://www.iana.org/assignments/http2-parameters/http2-parameters.txt)):\n- **HTTP/2 Frame Type**: the ten core frames (0x00 DATA … 0x09 CONTINUATION) cite RFC 9113 §6.1–6.10; extensions cite their own specs (0x0a ALTSVC [RFC7838], 0x0c ORIGIN [RFC 8336], 0x10 PRIORITY_UPDATE [RFC 9218]).\n- **HTTP/2 Settings**: the six core settings (0x01–0x06) reference RFC 9113 §6.5.2; extensions cite [RFC 8441] (0x08), [RFC 9218] (0x09), [MS-HTTP2E] (0x10), and draft-beky-httpbis-metadata-02 (0x4d44).\n- **HTTP/2 Error Code**: every code (0x00 NO_ERROR … 0x0d HTTP_1_1_REQUIRED) references RFC 9113 §7.\n\n**Registration-policy caveat / disagreement.** IANA lists Frame Type as \"IETF Review or IESG Approval\" but Settings and Error Code as \"Expert Review\" (experts Martin Thomson, Julian Reschke) ([IANA](https://www.iana.org/assignments/http2-parameters/http2-parameters.xhtml)). The RFCinfo mirror of RFC 9113 §11.2, however, says the *Frame Type* registry \"operates under the 'Expert Review' policy\" ([rfcinfo §11](https://rfcinfo.com/rfc-9113/11/)). If accurate, IANA's Frame Type policy field still reflects the superseded RFC 7540 wording — the Reference was migrated to RFC 9113 but the policy field was not. Treat this as an apparent disagreement rather than settled fact. (RFC 7540 §11.2 did say the Frame Type registry operates \"under either of the 'IETF Review' or 'IESG Approval' policies,\" matching IANA's current field; [info/rfc7540](https://www.rfc-editor.org/info/rfc7540/).) Also, RFC 9113 §5.5 retains the leftover sentence \"Registries… are defined in Section 11 of [RFC7540],\" even though §11.2 of RFC 9113 says \"This document establishes a registry,\" and Appendix B notes IANA changed the policy on the previously Experimental-Use portions of both registries ([datatracker §5.5/Appendix B](https://datatracker.ietf.org/doc/html/rfc9113)).\n\n## Summary table\n\n| Dimension | HTTP/2 | HTTP/3 |\n|---|---|---|\n| Defining RFC | RFC 9113 \"HTTP/2\" (Jun 2022) | RFC 9114 \"HTTP/3\" (Jun 2022) |\n| Status | Standards Track / Proposed Standard | Standards Track |\n| Obsoletes/updates | Obsoletes RFC 7540, RFC 8740 | None declared |\n| Transport | TCP | QUIC (RFC 9000) over UDP |\n| TLS | TLS 1.2+ (RFC 5246) | TLS 1.3, integrated via RFC 9001 |\n| ALPN token | \"h2\" (TLS); \"h2c\" cleartext, deprecated | \"h3\" |\n| Default port | TCP 80 (http) / TCP 443 (https) | UDP 443 (typical for https) |\n| HOL blocking | App-level removed; TCP transport-level remains | Inter-stream transport-level removed; intra-stream + QPACK residual remain |\n| Header compression | HPACK (RFC 7541) | QPACK (RFC 9204) |",
+      "citations": [
+        "https://www.rfc-editor.org/rfc/rfc9113.html",
+        "https://datatracker.ietf.org/doc/rfc9113/",
+        "https://www.rfc-editor.org/info/rfc9113",
+        "https://www.rfc-editor.org/errata/rfc7540",
+        "https://httpd.apache.org/docs/current/howto/http2.html",
+        "https://www.rfc-editor.org/rfc/rfc9114.html",
+        "https://datatracker.ietf.org/doc/rfc9114/",
+        "https://www.rfc-editor.org/info/rfc9114",
+        "https://www.rfc-editor.org/rfc/rfc7301.html",
+        "https://www.iana.org/assignments/tls-extensiontype-values/tls-extensiontype-values.xhtml",
+        "https://www.rfc-editor.org/rfc/rfc9000.html",
+        "https://datatracker.ietf.org/doc/html/rfc9001",
+        "https://datatracker.ietf.org/doc/rfc9110/",
+        "https://rfcinfo.com/rfc-9113/11/",
+        "https://www.rfc-editor.org/rfc/rfc7540.html",
+        "https://http3-explained.haxx.se/en/why-quic/why-tcphol",
+        "https://github.com/rmarx/holblocking-blogpost",
+        "https://en.wikipedia.org/wiki/Head-of-line_blocking",
+        "https://www.rfc-editor.org/rfc/rfc7541.html",
+        "https://www.rfc-editor.org/info/rfc7541",
+        "https://httpwg.org/specs/rfc7541.html",
+        "https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Resources_and_specifications",
+        "https://www.iana.org/assignments/http2-parameters/http2-parameters.xhtml",
+        "https://www.rfc-editor.org/rfc/rfc9204.html",
+        "https://www.rfc-editor.org/info/rfc9204",
+        "https://www.iana.org/assignments/http3-parameters",
+        "https://quic-go.net/docs/http3/qpack/",
+        "https://http3-explained.haxx.se/en/specs",
+        "https://datatracker.ietf.org/doc/html/draft-ietf-quic-qpack-03",
+        "https://www.rfc-editor.org/errata_search.php?rfc=9113&presentation=table",
+        "https://www.rfc-editor.org/errata/eid7013",
+        "https://www.rfc-editor.org/rfc/inline-errata/rfc9113.html",
+        "https://errata.rfc-editor.org/eid9175/",
+        "https://lists.w3.org/Archives/Public/ietf-http-wg/2026JulSep/0300.html",
+        "https://www.iana.org/assignments/http2-parameters/http2-parameters.txt",
+        "https://www.rfc-editor.org/info/rfc7540/",
+        "https://datatracker.ietf.org/doc/html/rfc9113",
+        "https://rfcinfo.com/rfc-9113/"
+      ],
+      "unretrievedCitations": null,
+      "costUsd": 0.410499041,
+      "wallMs": 309952,
+      "error": null
+    },
+    {
+      "index": 21,
+      "id": "sqlite-returning-version",
+      "query": "Which SQLite release first added support for the RETURNING clause on INSERT, UPDATE and DELETE?",
+      "depth": "standard",
+      "pass": true,
+      "matched": "3.35.0",
+      "live": null,
+      "status": "ok",
+      "grounding": {
+        "pagesRetrieved": 12,
+        "pagesFailed": 0,
+        "citationsKept": 18,
+        "citationsDropped": 0,
+        "confidenceCapped": 0,
+        "citationsDegraded": 0
+      },
+      "report": "## Bottom line\n\n- The RETURNING clause was first added in **SQLite 3.35.0, released 2021-03-12**, per the official Release History changelog (`changes.html`) and confirmed by the release chronology (`chronology.html`).\n- The feature landed **identically and simultaneously on DELETE, INSERT and UPDATE** — the changelog's 3.35.0 entry lists all three in a single line, and the RETURNING doc page states it has been \"supported by SQLite since version 3.35.0 (2021-03-12)\".\n- UPSERT (`ON CONFLICT`) is older — added in **3.24.0 (2018-06-04)** — and was generalised in 3.35.0; the combined `ON CONFLICT ... DO UPDATE ... RETURNING` form therefore requires the RETURNING-bearing **3.35.0**.\n- The only post-release RETURNING corrections were **two fixes in 3.35.4 (2021-04-02)**; no other 3.35.x release changed RETURNING.\n\n## Which release introduced RETURNING\n\nThe official SQLite Release History changelog entry headed **\"2021-03-12 (3.35.0)\"** contains the line: *\"Add support for the RETURNING clause on DELETE, INSERT, and UPDATE statements.\"* The matching per-release log page for 3.35.0 (dated 2021-03-12) lists the same sentence. The Release History / chronology table pairs the version string **3.35.0** with the ISO date **2021-03-12**.\n\nBoth official pages use the three-component version string `3.35.0` and the date `2021-03-12`; no disagreement was found across any source, and an independent third party (the Prisma Data Guide) states SQLite added the RETURNING clause, modelled after PostgreSQL, in version 3.35.0.\n\n## Which statements, and did they all arrive together\n\nRETURNING is not a statement itself; the official doc page describes it as *\"a clause that can optionally appear near the end of top-level DELETE, INSERT, and UPDATE statements,\"* causing one result row per deleted, inserted, or updated row. It is a **non-standard extension** (not standard SQL), and *\"SQLite's syntax for RETURNING is modelled after PostgreSQL.\"*\n\nAll three statement forms gained RETURNING in the **same release** — the 3.35.0 changelog carries one combined entry naming DELETE, INSERT and UPDATE, with no separate or follow-up release introducing any one of them. The doc page's own \"since version\" statement is the single version note on the page:\n\n> \"The RETURNING syntax has been supported by SQLite since version 3.35.0 (2021-03-12).\"\n\nThere is no separate formal \"added in version X\" template/tag beyond that sentence. The page was last updated 2025-05-31 13:08:22Z.\n\n## UPSERT / ON CONFLICT ... RETURNING\n\nUPSERT predates RETURNING. The UPSERT documentation's History section states UPSERT syntax was added in **3.24.0 (2018-06-04)**, and that it was **generalised in 3.35.0 (2021-03-12)** to permit multiple `ON CONFLICT` clauses and to allow `DO UPDATE` resolution without a conflict target. Because RETURNING itself only appears in 3.35.0, the combined `ON CONFLICT ... DO UPDATE ... RETURNING` form requires **3.35.0**, whereas plain UPSERT works back to 3.24.0. The RETURNING docs note that *\"A RETURNING clause for an UPSERT reports both inserted and updated rows.\"*\n\n## Post-release corrections to RETURNING\n\n**3.35.4 (2021-04-02)** is the only point release in the 3.35.x series that touches RETURNING, and its entries are fixes, not feature additions: *\"Fix a defect in the new RETURNING syntax\"* (ticket 132994c8b1063bfb), and a fix so RETURNING *\"raises an error if one of the terms in the RETURNING clause references a unknown table, instead of silently ignoring that error.\"* No other 3.35.x release (3.35.1/2/3/5) changes RETURNING.\n\nTwo later changelog entries concern the **3.35.0 UPSERT generalization**, not RETURNING, and should not be confused with RETURNING changes: **3.37.1 (2021-12-30)** fixed *\"a bug introduced by the UPSERT enhancements of version 3.35.0\"* that could cause incorrect byte-code and possibly a NULL-pointer dereference; **3.45.2 (2024-03-12)** fixed *\"an error in UPSERT, introduced by enhancement 3a in version 3.35.0 ... that could cause an index to get out-of-sync with its table.\"*\n\n## Documented limitations of RETURNING\n\nPer the official page's limitations section:\n\n- **Virtual tables:** RETURNING is not available on DELETE/UPDATE against virtual tables (the page says this may be removed in a future version).\n- **Triggers:** only available on top-level DML; cannot be used by statements within triggers. It reports only rows directly modified, not changes caused by foreign keys or triggers, and emits values seen *before* AFTER triggers run, so it does not reflect subsequent trigger changes.\n- **Subqueries/CTEs:** a DML statement with RETURNING cannot be used as a subquery and its output cannot be diverted into another table; unlike PostgreSQL, SQLite cannot use it as a view in a CTE — \"SQLite does not currently have that ability.\"\n- **Ordering:** output rows appear in arbitrary order that may vary by schema, release, or execution, with no way to force it; even where `SQLITE_ENABLE_UPDATE_DELETE_LIMIT` allows ORDER BY on DELETE/UPDATE, those ORDER BYs do not constrain RETURNING output order.\n- **Expressions:** no top-level aggregate or window functions (subqueries may contain them); RETURNING may only reference the table being modified — in `UPDATE FROM`, FROM-clause tables cannot participate.\n- **Processing/ACID:** all DB changes occur during the first `sqlite3_step()`, and RETURNING output is accumulated in memory (can use lots of temp memory) before being emitted; the changes are in the connection's private page cache and are not committed until the statement finishes.\n- No pragma controls RETURNING; only the compile-time option `SQLITE_ENABLE_UPDATE_DELETE_LIMIT` is mentioned in a related context.\n\n**Relationship to prior mechanisms.** The page frames RETURNING as removing the need to issue a separate query to learn auto-generated values. The older mechanisms share the same \"direct changes only\" semantics: `sqlite3_changes()` counts only changes made directly by the INSERT/UPDATE/DELETE statement — auxiliary changes from triggers, foreign-key actions or REPLACE are not counted, and changes to a view intercepted by INSTEAD OF triggers always return zero. `sqlite3_last_insert_rowid()` returns the rowid of the most recent successful INSERT on the connection and is the prior mechanism RETURNING supersedes for learning auto-generated keys (it too reverts after a trigger ends).\n\n## Bindings and wrappers\n\n- **SQLAlchemy** documents that its SQLite dialect supports SQLite 3.35's `INSERT|UPDATE|DELETE..RETURNING` syntax; the changelog note reads \"Added in version 2.0: Added support for SQLite RETURNING.\" INSERT..RETURNING may be used automatically in place of `cursor.lastrowid` for fetching new identifiers, though `cursor.lastrowid` is still preferred for simple single-statement cases for better performance.\n- **EF Core** uses the SQL RETURNING clause for `SaveChanges` and exposes `UseSqlReturningClause(false)` per table, because RETURNING \"cannot be used with virtual tables or tables with certain trigger types\"; disabling it switches EF to an older, less efficient technique.\n- **Django** tracked SQLite RETURNING via ticket #32501 (\"Support for the RETURNING clause on INSERT statements is one of the headline features in SQLite 3.35.0\"), to let `bulk_create()` retrieve primary keys; the ticket is marked fixed, but the ticket page does not state which Django release shipped it.\n- **better-sqlite3**'s API docs document `info.changes` and `info.lastInsertRowid` but do not mention RETURNING or state a minimum SQLite version for it.\n\n## Gaps\n\n- The 3.35.4 per-release log page could not be read directly in this run; its RETURNING-fix contents are instead established from the `changes.html` changelog.\n- Django ticket #32501 does not state which Django release first shipped RETURNING support, so that version is not established here.\n",
+      "citations": [
+        "https://www.sqlite.org/changes.html",
+        "https://www.sqlite.org/chronology.html",
+        "https://www.sqlite.org/lang_returning.html",
+        "https://www.sqlite.org/releaselog/3_35_0.html",
+        "https://sqlite.org/lang_upsert.html",
+        "https://www.sqlite.org/c3ref/changes.html",
+        "https://www.sqlite.org/c3ref/last_insert_rowid.html",
+        "https://docs.sqlalchemy.org/en/20/dialects/sqlite.html",
+        "https://learn.microsoft.com/en-us/ef/core/providers/sqlite/misc",
+        "https://code.djangoproject.com/ticket/32501",
+        "https://github.com/WiseLibs/better-sqlite3/blob/HEAD/docs/api.md",
+        "https://www.prisma.io/dataguide/sqlite/update-data"
+      ],
+      "unretrievedCitations": null,
+      "costUsd": 0.088750938,
+      "wallMs": 79547,
+      "error": null
+    },
+    {
+      "index": 22,
+      "id": "commerce-earbuds-de-prices",
+      "query": "Compare the current price in euros in Germany of the Apple AirPods Pro 2 (USB-C), the Sony WF-1000XM5 and the Bose QuietComfort Ultra Earbuds. Give one price per product with the shop it comes from.",
+      "depth": "standard",
+      "pass": true,
+      "matched": "AirPods Pro 2 (USB-C, MTJV3ZM/A): 199,00 € + WF-1000XM5: 169,99 € + QuietComfort Ultra Earbuds:** the name now covers **two generations sold side-by-side in Germany**. The original 1st Gen is cheapest at **178,00 €",
+      "live": null,
+      "status": "ok",
+      "grounding": {
+        "pagesRetrieved": 29,
+        "pagesFailed": 3,
+        "citationsKept": 16,
+        "citationsDropped": 0,
+        "confidenceCapped": 0,
+        "citationsDegraded": 0
+      },
+      "report": "## Bottom line\n\n- **Apple AirPods Pro 2 (USB-C, MTJV3ZM/A): 199,00 €** — the most cross-verified current new-unit price, listed identically by the German comparison sites **Idealo** and **billiger.de**. **Geizhals** shows the cheapest marketplace offer a little lower at **183,00 € via ebay.de**. Both floors come from marketplace offers whose individual seller is not named.\n- **Sony WF-1000XM5: 169,99 €** — agreed as the cheapest new unit by **Idealo** and **billiger.de**; **Geizhals** lists **164,99 € via ebay.de**; **Sony's own German store (sony.de)** sells it higher, at about **189,00 €**.\n- **Bose QuietComfort Ultra Earbuds:** the name now covers **two generations sold side-by-side in Germany**. The original 1st Gen is cheapest at **178,00 €** (Idealo, white); the current **2nd Gen** is **214,99 €** (Idealo) or **229,00 €** (billiger.de).\n\nPrices seen 8–9 October 2026. Sources disagree in every case, so each figure is a dated snapshot, not a fixed price.\n\n## Apple AirPods Pro 2 (USB-C)\n\nTwo comparison sites converge exactly on a **199,00 €** floor for new units:\n\n- **Idealo** prints \"ab 199,00 €\" with 21 new offers (B-ware/used from 109,00 €); a second Idealo entry for the product also prints \"ab 199,00 €\" across 22 offers.\n- **billiger.de** shows the cheapest new unit at **199,00 € including shipping** (range 199,00 € – 315,31 €).\n\n**Geizhals** sits below both, pricing the cheapest offer at **183,00 € via ebay.de** across 24 offers, with the next tiers at 220,14 €, 227,06 €, 233,90 € and 239,00 €, timestamps dated 08–09.10.2026.\n\n**Disagreement:** the Geizhals marketplace floor (183,00 €) is ~16 € under the Idealo/billiger.de floor (199,00 €). Neither 199 € listing names the seller, so the shop behind the headline figure cannot be pinned down; the cheapest *named* channel is ebay.de (via Geizhals). Live MediaMarkt, Saturn and Amazon.de prices could not be verified this run (below).\n\n## Sony WF-1000XM5\n\nThe comparison sites agree tightly on a **169,99 €** floor:\n\n- **Idealo** prints \"ab 169,99 €\" (black/silver/pink; 28 offers on the black variant, range 169,99 €–260,75 €; 67 offers across the variants on the main page).\n- **billiger.de** shows the cheapest new unit at **169,99 € including shipping** (black/silver/Smoky Pink), 55 offers, range 169,99 €–281,25 €.\n\n**Geizhals** goes a touch lower: **164,99 € via ebay.de** (\"NEU/OVP\", price stamped 08.10.2026) for the black WF1000XM5B.CE7, with several German shops in the €170–190 range (e.g. 170,30 €, 178,53 €, 186,00 €).\n\n**Sony's own store (sony.de)** sells it higher: it appears to list the black WF-1000XM5 (WF1000XM5B.CE7) at a sale price of **189,00 €** (with Smoky Pink likewise at 189,00 €); this figure rests on a search snippet rather than a fully readable price, so treat it as provisional.\n\n**Disagreement:** the effective range is ~**165 € (eBay floor, Geizhals) to ~189 € (Sony's own store)**; the aggregator floors (~165–170 €) sit ~20 € below the manufacturer price.\n\n## Bose QuietComfort Ultra Earbuds\n\nThe single biggest complication: **\"Bose QuietComfort Ultra Earbuds\" now covers two generations sold side-by-side in Germany** — the original 1st Gen and the current **2. Gen.** — at different prices, so a single number is misleading.\n\n- **Original 1st Gen:** cheapest at **178,00 €** on Idealo for the white variant (\"ab 178,00 €\", 17 offers); the black variant is \"ab 197,76 €\" (12 offers); Idealo's collection page shows \"5 Varianten ab 179,85 €\".\n- **Current 2. Gen.:** **214,99 €** is the lowest offer on Idealo (\"ab 214,99 €\", 79 offers; used/B-Ware from 204,99 €). **billiger.de** lists the 2. Gen.'s cheapest offer at **229,00 € including shipping** (43 offers, new range 229,00 €–476,00 €).\n\n**Disagreement:** the gap is generational (1st Gen ~178 €, 2nd Gen ~215 €) plus channel (comparison floor vs. the ~229 € billiger.de offer). Bose's own manufacturer price could not be confirmed from a readable page this run.\n\n## German platforms and retailers that list these\n\nPrice-comparison platforms read live this run: **idealo.de, geizhals.de, billiger.de**; **guenstiger.de** and **Klarna** were seen only in search results. Retailers appearing as offers *inside* the comparison sites' lists include **Amazon.de, Kaufland.de, eBay.de, jacob.de, jb-computer.de, playox.de, office-partner.de, proshop.de, electronis.de, coolshop.de** and **OTTO**, plus the manufacturer stores **sony.de** and **bose.de**.\n\n**Cross-checks (independent second sources):** Sony WF-1000XM5 — Idealo 169,99 € cross-checked against Geizhals 164,99 € (ebay.de) and billiger.de 169,99 €; AirPods Pro 2 — billiger.de 199,00 € cross-checked against Geizhals 183,00 € (ebay.de); Bose 2. Gen. — Idealo 214,99 € cross-checked against billiger.de 229,00 €.\n\n**Promotions:** no \"% off\" banners were captured, but the whole category shows heavy discounting relative to launch pricing, and the AirPods Pro 2, Sony WF-1000XM5 and Bose QC Ultra (1st Gen) are all now the previous generation next to their successors — consistent with the sub-200 € street prices above.\n\n## Could not be verified\n\n- Live product-page prices at **MediaMarkt, Saturn and Amazon.de** for these three products, and the **Bose.de** manufacturer price: those pages returned only legal/navigation text or a price-report form, so no retailer-specific figure is asserted here. If a named big-box price matters to you, it must be checked directly on the retailer's own product page.\n- Individual seller names behind the 199,00 € AirPods floor and the 169,99 € Sony floor (comparison sites list the price but not a readable seller).\n",
+      "citations": [
+        "https://www.idealo.de/preisvergleich/OffersOfProduct/203255713_-airpods-pro-2-mit-usb-c-magsafe-case-apple.html",
+        "https://www.billiger.de/products/4608351568-apple-airpods-pro-usb-c-2-generation",
+        "https://www.idealo.de/preisvergleich/OffersOfProduct/202092559_-airpods-pro-2-apple.html",
+        "https://geizhals.de/apple-airpods-pro-2-generation-usb-c-mtjv3zm-a-a3026713.html",
+        "https://www.guenstiger.de/Produkt/Apple/AirPods_Pro_2_Generation_USB_C.html",
+        "https://www.idealo.de/preisvergleich/OffersOfProduct/203052971_-wf-1000xm5-sony.html",
+        "https://www.idealo.de/preisvergleich/OffersOfProduct/203052995_-wf-1000xm5-black-sony.html",
+        "https://www.billiger.de/baseproducts/104263-sony-wf-1000xm5",
+        "https://geizhals.de/sony-wf-1000xm5-schwarz-wf1000xm5b-ce7-a2991092.html",
+        "https://www.sony.de/store/product/wf1000xm5b.ce7/WF-1000XM5-Kabellose-Noise-Cancelling-Kopfh%C3%B6rer",
+        "https://www.idealo.de/preisvergleich/OffersOfProduct/206785992_-quietcomfort-ultra-earbuds-2-gen-bose.html",
+        "https://www.idealo.de/preisvergleich/OffersOfProduct/203265251_-quietcomfort-ultra-earbuds-white-bose.html",
+        "https://www.idealo.de/preisvergleich/OffersOfProduct/203265225_-quietcomfort-ultra-earbuds-schwarz-bose.html",
+        "https://www.idealo.de/preisvergleich/OffersOfProduct/203265229_-quietcomfort-ultra-earbuds-bose.html",
+        "https://www.billiger.de/baseproducts/114249-bose-quietcomfort-ultra-earbuds-2-gen"
+      ],
+      "unretrievedCitations": null,
+      "costUsd": 0.16726959400000002,
+      "wallMs": 179621,
+      "error": null
+    },
+    {
+      "index": 23,
+      "id": "de-spec-dell-u2723qe",
+      "query": "Welche Bildschirmdiagonale, native Auflösung und welchen Panel-Typ hat der Dell UltraSharp U2723QE laut den technischen Daten auf dem deutschen Dell-Markt?",
+      "depth": "standard",
+      "pass": true,
+      "matched": "27 Zoll + 3840 × 2160 + IPS",
+      "live": null,
+      "status": "ok",
+      "grounding": {
+        "pagesRetrieved": 12,
+        "pagesFailed": 1,
+        "citationsKept": 14,
+        "citationsDropped": 0,
+        "confidenceCapped": 0,
+        "citationsDegraded": 0
+      },
+      "report": "## Bottom line\n\n- **Bildschirmdiagonale:** 27 Zoll (nominal) — Dell weist für den deutschen Markt eine **sichtbare Bildschirmdiagonale von 68,47 cm (27″)** aus.\n- **Native Auflösung:** **3840 × 2160 Pixel** (4K/UHD), Seitenverhältnis 16:9, bei **60 Hz**.\n- **Panel-Typ:** **„IPS Black-Technologie\"** laut Dell — eine IPS-Variante; kein VA und kein TN.\n\n## Bildschirmdiagonale (Zoll und cm)\n\nDer Dell UltraSharp U2723QE ist ein 27-Zoll-4K-Monitor. Dell gibt in den offiziellen deutschen Unterlagen sowohl Zoll als auch den cm-Wert der **sichtbaren** Bildfläche an:\n\n- **Deutsches Dell-Datenblatt:** Zeile „SICHTBARE BILDSCHIRMDIAGONALE: **68,47 cm / 27″**\". Die aktiven Maße sind 596,74 mm × 335,66 mm; daraus ergibt sich per Pythagoras 684,66 mm ≈ 68,47 cm — Dell rundet damit auf die nominalen 27″ auf. — https://www.delltechnologies.com/asset/de-de/products/electronics-and-accessories/technical-support/dell-ultrasharp-27-and-32-usbc-hub-monitors-u2723qe-u3223qe-datasheet.pdf\n- **Deutsche Bedienungsanleitung:** „U2723QX/U2723QE: **68,47 cm (27,0 Zoll)** sichtbarer Anzeigebereich (diagonal gemessen)\". — https://www.lap4worx.de/media/pdf/40/8f/4f/Dell-UltraSharp-U2723QE-Bedienungsanleitung.pdf\n- **Deutsche Dell-Produktseite:** führt als „Diagonalabmessung\" ebenfalls **68.47 cm (27″)**; diese Seite bestätigt diesen Wert. — https://www.dell.com/de-de/shop/monitor-dell-ultrasharp-27-4k-usb-c-hubmonitor-u2723qe/apd/210-bcxk/monitore-und-monitorzubeh%C3%B6r\n\n**Unabhängige Bestätigung (deutscher Markt):**\n\n- **prad.de** (Monitordatenblatt): „Bildschirmdiagonale: **27 Zoll**\". — https://www.prad.de/technische-daten/monitor-datenblatt/dell-u2723qe/\n- Deutscher Händler **Bechtle** nennt „Displaygröße: **68,6 cm (27,0″)**\" und rundet damit die cm-Angabe auf. — https://www.bechtle.com/shop/dell-ultrasharp-27-u2723qe-monitor--4614988--p\n\n**Uneindeutigkeit beim cm-Wert:** Alle Quellen stimmen auf **27 Zoll** überein; die Zoll-Angabe ist eindeutig und konsistent. Lediglich beim cm-Wert gibt es eine kleine Abweichung: Dell offiziell **68,47 cm** (gemessener sichtbarer Aktivbereich) gegenüber der Marketing-/Händlerumrechnung **68,58/68,6 cm** (27″ × 2,54 = 68,58 cm, auf 68,6 gerundet). Die Differenz von ca. 1 mm erklärt sich daraus, dass Dell den gemessenen Aktivbereich angibt, während Händler die nominelle Zoll-Angabe umrechnen — uneindeutig ist der Wert nur in der Nachkommastelle, nicht in der Größenklasse.\n\n## Native Auflösung\n\nDie native Auflösung ist **3840 × 2160 Pixel (4K/UHD)** im Seitenverhältnis 16:9 bei **60 Hz**. Hersteller- und unabhängige Quellen stimmen überein:\n\n- **Deutsches Dell-Datenblatt (de-de):** „MAXIMALE VOREINGESTELLTE AUFLÖSUNG: **3.840 x 2.160 bei 60 Hz**\"; im Text „Auflösung von 4K (3.840 x 2.160)\". — https://www.delltechnologies.com/asset/de-de/products/electronics-and-accessories/technical-support/dell-ultrasharp-27-and-32-usbc-hub-monitors-u2723qe-u3223qe-datasheet.pdf\n- **Deutsches Dell-Datenblatt (de-ch, im Text identisch):** dieselbe Angabe „3.840 x 2.160 bei 60 Hz\". — https://www.delltechnologies.com/asset/de-ch/products/electronics-and-accessories/technical-support/dell-ultrasharp-27-and-32-usbc-hub-monitors-u2723qe-u3223qe-datasheet.pdf\n- **Deutsche Dell-Produktseite:** unter „Allgemein\" „**Native Auflösung: 4K 3840 x 2160 bei 60 Hz**\" (weitere Felder derselben Seite: „Pixelpitch 0.1554 mm\", „Ppi 163.18\", „Seitenverhältnis 16:9\"). — https://www.dell.com/de-de/shop/dell-ultrasharp-27-4k-monitor-mit-usb-c-hub-u2723qe/apd/210-bcxk/monitore-und-monitorzubeh%C3%B6r\n- **Deutsche Bedienungsanleitung:** „Auflösung von **3840 x 2160 (16:9)**\". — https://www.lap4worx.de/media/pdf/40/8f/4f/Dell-UltraSharp-U2723QE-Bedienungsanleitung.pdf\n- **XDA-Developers** (Produkttest): Spec-Tabelle „Resolution: **3840x2160 (UHD)**\", Artikeltext „4K resolution at 27 inches, working out to just a hair more than 163 pixels per inch\". — https://www.xda-developers.com/dell-ultrasharp-u2723qe-monitor-review/\n\n**Abweichungen:** Unter den autoritativen Quellen besteht **kein Widerspruch** — alle nennen 3840 × 2160 (4K/UHD). Eine einzelne, nicht-autoritative Händler-Metadatenangabe weicht ab (Feld „Max Screen Resolution\" mit 1920 × 1080), während dasselbe Händler-Listing an anderer Stelle korrekt 3840 × 2160 führt; dies ist ein fehlerhaftes Retail-Metadatenfeld und nicht die native Auflösung.\n\n## Panel-Typ\n\n**Herstellerangabe (deutscher Dell-Markt, dell.com/de-de):** Das Feld **„Bildschirmtyp\"** lautet exakt **„IPS Black-Technologie\"**. Getrennt davon führt die Seite unter „Allgemein\" den **„Display-Typ\"** als „LED-hintergrundbeleuchteter LCD-Monitor / TFT-Aktivmatrix\". — https://www.dell.com/de-de/shop/dell-ultrasharp-27-4k-usb-c-hub-monitor-u2723qe/apd/210-bcxk/monitore-und-monitorzubeh%C3%B6r\n\n**Deutsches Datenblatt (Dell Technologies):** In der Spalte „BILDSCHIRMTYP – U2723QE\" steht wörtlich **„IPS Black-Technologie\"** (identisch für U3223QE), mit Kontrastverhältnis 2.000:1 (Standard); Dell bewirbt die Serie darin als die „weltweit ersten Monitore mit IPS Black-Technologie\". — https://www.delltechnologies.com/asset/de-de/products/electronics-and-accessories/technical-support/dell-ultrasharp-27-and-32-usbc-hub-monitors-u2723qe-u3223qe-datasheet.pdf\n\n**Deutsche Bedienungsanleitung:** bezeichnet den Bildschirmtyp als „Aktivmatrix – TFT-LCD\" und den **„Paneltyp\"** als **„In-Plane-Switching-Technologie\" (IPS)** — konsistent mit „IPS Black\" als IPS-Variante. — https://www.lap4worx.de/media/pdf/40/8f/4f/Dell-UltraSharp-U2723QE-Bedienungsanleitung.pdf\n\n**Unabhängige Verifikation (rtings.com, eigenes Testlabor):** Review-Tabelle „**Panel Type: IPS Black**\", Datenkopf „Pixel Type: **IPS**\"; Beschreibung: „an IPS Black panel that Dell claims delivers deeper blacks than regular IPS panels\". — https://www.rtings.com/monitor/reviews/dell/u2723qe\n\n**Einordnung / widersprüchliche Angaben:** Es handelt sich um eine **IPS-Variante (IPS Black)**, nicht um VA oder TN. Mehrere Händler-/Testquellen vereinfachen die Bezeichnung zu „IPS\" bzw. „IPS-Type LCD\" (z. B. Newegg: „IPS-Type LCD\"). Das ist kein inhaltlicher Widerspruch zur Herstellerangabe, sondern nur ein geringerer Detaillierungsgrad — keine Quelle nennt VA oder TN. Dells Markenname „IPS Black\" ist eine von Dell geprägte Bezeichnung für diese IPS-Variante mit höherem Kontrast (2.000:1 ggü. typischen IPS-Panels). Auffällig ist lediglich, dass Dell den Oberbegriff (TFT-Aktivmatrix/LCD) und den spezifischen Bildschirmtyp („IPS Black-Technologie\") getrennt ausweist. — https://www.newegg.com/dell-u2723qe-27-uhd/p/N82E16824260825\n\n## Bezeichnung, Modelljahr, Varianten und regionale Abweichungen\n\n**Produktname:** „Dell UltraSharp 27 4K-USB-C-Hub-Monitor – U2723QE\". **Modellnummern** laut Handbuch: U2723QX/U2723QE/U3223QE; regulatorisches Modell **U2723QEt** (bzw. U3223QEt). **Modelljahr 2022** (Handbuch Rev. A00, 2022-01, © 2022; Datenblatt v.2, 02/2022). — https://www.lap4worx.de/media/pdf/40/8f/4f/Dell-UltraSharp-U2723QE-Bedienungsanleitung.pdf\n\n**Varianten / Untermodell-Codes:** **U2723QX** ist eine Schwestervariante derselben Familie (das Handbuch weist das HDMI-Kabel als „nur U2723QX\" im Lieferumfang aus); **U3223QE** ist die 31,5″-Schwester. — https://www.lap4worx.de/media/pdf/40/8f/4f/Dell-UltraSharp-U2723QE-Bedienungsanleitung.pdf\n\n**Regionale Teilenummern-Varianten:** Dell verwendet für denselben Monitor je Region abweichende Teilenummern — die US-amerikanische Dell-Produktseite führt u. a. **210-BDPF**, während für den deutschen/EMEA-Markt eine andere Nummer gilt. — https://www.dell.com/en-us/shop/dell-ultrasharp-27-4k-usb-c-hub-monitor-u2723qe/apd/210-bdpf/monitors-monitor-accessories\n\n**Regionale Abweichungen (DE-Markt):** Inhaltlich sind die drei abgefragten Werte (68,47 cm/27″, 3840 × 2160, IPS Black) über die de-de- und de-ch-Fassungen des Datenblatts identisch — es gibt keine marktspezifische Abweichung bei Diagonale, Auflösung oder Panel-Typ. Abweichend sind nur Service-/Energieangaben (DE: Klasse F (SDR) / Klasse G (HDR) laut de-de-Produktseite; Servicepaket „3 Jahre Advanced Exchange Service und Premium Panel Exchange\"). Die exakte Energieeffizienzklasse ließ sich aus dem extrahierten Datenblatt-Text nicht sicher verifizieren (siehe unten).\n\n## Fazit\n\nLaut den technischen Daten für den deutschen Dell-Markt hat der Dell UltraSharp U2723QE eine **sichtbare Bildschirmdiagonale von 68,47 cm (27″)**, eine **native Auflösung von 3840 × 2160 Pixeln (4K/UHD) bei 60 Hz (16:9)** und den **Panel-Typ „IPS Black-Technologie\"** (IPS-Variante). Alle drei Werte sind durch Dell (de-de/de-ch-Datenblatt, deutsche Produktseite, deutsche Bedienungsanleitung) und unabhängig (prad.de, rtings.com, XDA-Developers) belegt; die einzige nennenswerte Uneindeutigkeit betrifft die cm-Rundung der Diagonale (Dell 68,47 cm vs. Händler 68,6 cm) bei identischer Zoll-Angabe von 27″.",
+      "citations": [
+        "https://www.delltechnologies.com/asset/de-de/products/electronics-and-accessories/technical-support/dell-ultrasharp-27-and-32-usbc-hub-monitors-u2723qe-u3223qe-datasheet.pdf",
+        "https://www.delltechnologies.com/asset/de-ch/products/electronics-and-accessories/technical-support/dell-ultrasharp-27-and-32-usbc-hub-monitors-u2723qe-u3223qe-datasheet.pdf",
+        "https://www.lap4worx.de/media/pdf/40/8f/4f/Dell-UltraSharp-U2723QE-Bedienungsanleitung.pdf",
+        "https://www.dell.com/de-de/shop/dell-ultrasharp-27-4k-monitor-mit-usb-c-hub-u2723qe/apd/210-bcxk/monitore-und-monitorzubeh%C3%B6r",
+        "https://www.dell.com/de-de/shop/dell-ultrasharp-27-4k-usb-c-hub-monitor-u2723qe/apd/210-bcxk/monitore-und-monitorzubeh%C3%B6r",
+        "https://www.dell.com/de-de/shop/monitor-dell-ultrasharp-27-4k-usb-c-hubmonitor-u2723qe/apd/210-bcxk/monitore-und-monitorzubeh%C3%B6r",
+        "https://www.prad.de/technische-daten/monitor-datenblatt/dell-u2723qe/",
+        "https://www.bechtle.com/shop/dell-ultrasharp-27-u2723qe-monitor--4614988--p",
+        "https://www.xda-developers.com/dell-ultrasharp-u2723qe-monitor-review/",
+        "https://www.rtings.com/monitor/reviews/dell/u2723qe",
+        "https://www.newegg.com/dell-u2723qe-27-uhd/p/N82E16824260825",
+        "https://www.dell.com/en-us/shop/dell-ultrasharp-27-4k-usb-c-hub-monitor-u2723qe/apd/210-bdpf/monitors-monitor-accessories"
+      ],
+      "unretrievedCitations": null,
+      "costUsd": 0.13282933600000002,
+      "wallMs": 171766,
+      "error": null
+    },
+    {
+      "index": 24,
+      "id": "multipart-protocol-facts",
+      "query": "Answer all four: (1) which RFC currently defines HTTP semantics, (2) what is the default TCP port of MongoDB, (3) in which year was Go 1.0 released, (4) which HTTP response header makes browsers enforce HTTPS-only access (HSTS)?",
+      "depth": "standard",
+      "pass": true,
+      "matched": "9110 + 27017 + 2012 + Strict-Transport-Security",
+      "live": null,
+      "status": "ok",
+      "grounding": {
+        "pagesRetrieved": 10,
+        "pagesFailed": 0,
+        "citationsKept": 19,
+        "citationsDropped": 0,
+        "confidenceCapped": 1,
+        "citationsDegraded": 0
+      },
+      "report": "## Bottom line\n\n1. **HTTP semantics** are currently defined by **RFC 9110, \"HTTP Semantics\"**, published **June 2022** as an Internet Standard (**STD 97**); it obsoletes RFCs 2818, 7231, 7232, 7233, 7235, 7538, 7615, 7694 and portions of 7230, and updates RFC 3864.\n2. The default TCP port for a MongoDB server (`mongod`) serving client connections is **27017**.\n3. **Go 1.0 was released on 28 March 2012** (the GA release is tagged **`go1`** / \"Go 1\").\n4. The response header that makes browsers enforce HTTPS-only access is **`Strict-Transport-Security`**, defined by **RFC 6797 \"HTTP Strict Transport Security (HSTS)\"** (November 2012).\n\n---\n\n## 1. Current HTTP semantics specification: RFC 9110\n\n**RFC 9110, \"HTTP Semantics\"**, published **June 2022**, is the core document that defines HTTP semantics — the parts of HTTP shared by all versions. Its document header carries the designations **STD: 97**, **Category: Standards Track**, and editors **R. Fielding (Ed.), M. Nottingham (Ed.), J. Reschke (Ed.)**.\n\nIt defines the shared semantics: architecture and terminology, request **methods** (Section 9), **status codes** (Section 15), and **header field semantics**, plus the `http` and `https` URI schemes. This separation lets the major protocol versions (HTTP/1.1, HTTP/2, HTTP/3) progress independently while sharing one set of core semantics.\n\n**Obsoletes / updates.** The document header lists:\n\n- Obsolesces: **2818, 7230, 7231, 7232, 7233, 7235, 7538, 7615, 7694**\n- Updates: **3864**\n\nThe obsoletion is split: RFC 9110 covers only the **portions of RFC 7230 that are independent of the HTTP/1.1 messaging syntax and connection management**; the remaining HTTP/1.1 messaging/connection layer is carried by the separate HTTP/1.1 specification in the same 911x series. This semantics-vs-messaging split is the structural change that replaced RFC 7230–7235.\n\nCross-verified across four independent views that all agree: the IETF Datatracker page, the RFC Editor's summary page (which reproduces the abstract and the obsoletes/updates statement and the Section 1.4 obsoletion table from the RFC text), the IETF HTTP WG announcement of STD 97, and the RFC Editor's HTTP subject listing (\"RFC 9110 : STD 97 : HTTP Semantics, Internet Standard, June 2022\").\n\n---\n\n## 2. MongoDB default TCP port: 27017\n\nThe default TCP port on which a MongoDB server (`mongod`) listens for **client connections** is **27017**.\n\nMongoDB's official \"Default MongoDB Port\" reference states: \"27017 — Default port for mongod and mongos. Change this port with `port` or `--port`.\" The same page documents the related role-specific defaults: **27018** for a `mongod` started with `--shardsvr`, **27019** with `--configsvr`, and **27020** for the Enterprise-only `mongocryptd` listener. The `mongod` program reference documents `--port <port>` as \"the TCP port on which the MongoDB instance listens for client connections,\" defaulting to 27017 when the instance is not a shard member or a config-server member.\n\n**Independent confirmation.** The Debian `mongod(1)` man page — packaged from MongoDB's own `mongod` documentation but independent of the live MongoDB website — states under `--port`: \"By default mongod listens for connections on port **27017**,\" and independently confirms the variants at 27018 (`--shardsvr`) and 27019 (`--configsvr`).\n\n**Default vs. only.** 27017 is the default for a standard, non-sharded, non-config-server `mongod`; it is configurable per instance, and the shard-server and config-server roles have distinct defaults. No source gave a conflicting figure.\n\n---\n\n## 3. Go 1.0 release year: March 2012\n\n**Go 1.0 was released on 28 March 2012.**\n\n- The Go team's official announcement post, **\"Go version 1 is released\"** (go.dev/blog, bylined **28 March 2012**, author Andrew Gerrand), announces \"Go version 1, or Go 1 for short.\" The release string as published is **\"Go 1\"**.\n- The official **Release History** page lists the entry **`go1 (released 2012-03-28)`** — i.e. the published tag is **`go1`** — notes the release corresponds to `weekly.2012-03-27`, and lists the subsequent point releases `go1.0.1` (2012-04-25), `go1.0.2` (2012-06-13) and `go1.0.3` (2012-09-21).\n- The **Google Developers Blog** post \"The Go project reaches a major milestone: Go 1\" is dated **March 28, 2012**.\n- **Wikipedia** (\"Go (programming language)\") states version 1.0 was released in **March 2012**, and records the language's first public appearance as November 10, 2009.\n\n**Naming note.** The project's own materials call the GA release **\"Go 1\"** / tag **`go1`**; the dotted name **\"Go 1.0\"** is the community/Wikipedia convention for the same release, and the dotted `1.0.x` form appears only on the follow-up bug-fix point releases. All sources agree on the date: **28 March 2012**.\n\n---\n\n## 4. HTTPS-only enforcement header: `Strict-Transport-Security`\n\nThe response header field that makes browsers enforce HTTPS-only access is **`Strict-Transport-Security`**.\n\n**Defining RFC:** **RFC 6797, \"HTTP Strict Transport Security (HSTS)\"**, Standards Track, **November 2012** (authors J. Hodges, C. Jackson, A. Barth). RFC 6797 is the specification that defines both the header field and the HSTS mechanism.\n\n**Purpose.** The RFC abbreviates it the \"STS header field.\" RFC 6797 §6.1 states the header \"indicates to a UA that it MUST enforce the HSTS Policy in regards to the host emitting the response message containing this header field.\" In effect, the browser rewrites insecure `http://` URI references to the host into `https://` before dereferencing them, and terminates connection attempts on transport errors rather than allowing the user to \"click through.\"\n\n**Syntax / directives (RFC 6797 §6.1).** ABNF:\n\n```\nStrict-Transport-Security = \"Strict-Transport-Security\" \":\" [ directive ] *( \";\" [ directive ] )\n```\n\nTwo directives are defined: the **REQUIRED `max-age`** (seconds the host is remembered as a Known HSTS Host; `max-age=0` deletes the policy) and the **OPTIONAL valueless `includeSubDomains`** (applies the policy to subdomains). Example: `Strict-Transport-Security: max-age=31536000; includeSubDomains`.\n\n**Cross-verification.** MDN's HTTP Headers reference independently confirms the header name `Strict-Transport-Security`, states it \"informs the browser that all connections to the host must use HTTPS,\" notes the host must send it **over HTTPS only** (browsers ignore it over plain HTTP, to prevent a MITM altering it), and that it affects future requests rather than the current response. Both sources agree on the name, purpose, and RFC 6797.\n\n**Preload.** The `preload` directive seen in practice is **not part of RFC 6797** — MDN notes it is a browser preload-list mechanism, \"not part of the HSTS specification.\"\n\n---\n\n## Sourcing note\n\nThe only document that could not be read directly was the full plain-text/HTML rendering of RFC 9110; the same content (abstract, obsoletes/updates statement, and the Section 1.4 obsoletion table) was captured from the RFC Editor summary page and the IETF Datatracker page, so the obsoletes/updates facts remain supported. All other claims rest on at least two independent sources as described above.\n",
+      "citations": [
+        "https://datatracker.ietf.org/doc/rfc9110/",
+        "https://www.rfc-editor.org/info/rfc9110",
+        "https://lists.w3.org/Archives/Public/ietf-http-wg/2022AprJun/0132.html",
+        "https://www.rfc-editor.org/subjects/http/",
+        "https://www.mongodb.com/docs/manual/reference/default-mongodb-port/",
+        "https://manpages.debian.org/unstable/mongodb-server/mongod.1.en.html",
+        "https://www.mongodb.com/docs/manual/reference/program/mongod/",
+        "https://go.dev/blog/go1",
+        "https://go.dev/doc/devel/release",
+        "https://developers.googleblog.com/the-go-project-reaches-a-major-milestone-go-1/",
+        "https://en.wikipedia.org/wiki/Go_(programming_language)",
+        "https://www.rfc-editor.org/rfc/rfc6797.txt",
+        "https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Strict-Transport-Security"
+      ],
+      "unretrievedCitations": null,
+      "costUsd": 0.067901442,
+      "wallMs": 83288,
+      "error": null
+    },
+    {
+      "index": 25,
+      "id": "notfound-npm-package",
+      "query": "What does the npm package zxqv-hono-flux-router-9k3 do and who maintains it?",
+      "depth": "standard",
+      "pass": false,
+      "matched": "no listing",
+      "live": null,
+      "status": "ok",
+      "grounding": {
+        "pagesRetrieved": 5,
+        "pagesFailed": 4,
+        "citationsKept": 6,
+        "citationsDropped": 0,
+        "confidenceCapped": 0,
+        "citationsDegraded": 0
+      },
+      "report": "## Bottom line\n\n- **What it does:** `zxqv-hono-flux-router-9k3` is not a published npm package, so it does nothing — it does not exist. The npm registry returns **HTTP 404 Not Found** for the exact name, so there is no description, README, keywords, entry points (`main`/`exports`), or API to report.\n- **Who maintains it:** No one. With no registry record there is no `author`, `maintainers` array, `publisher`, `repository`, or `homepage` field, and no maintainer identity should be inferred or attributed.\n\n## Evidence of absence\n\nThe name fails at every endpoint that would carry a package record:\n\n- The npm registry lookup (`packageInfo`, npm ecosystem) returned **HTTP 404 Not Found** for `zxqv-hono-flux-router-9k3` — the registry stating the package is not published.\n- The raw registry document `https://registry.npmjs.org/zxqv-hono-flux-router-9k3` returned **HTTP 404** (\"the resource does not exist at this URL\").\n- The public package page `https://www.npmjs.com/package/zxqv-hono-flux-router-9k3` returned **HTTP 404**.\n- The npm site search for the exact name returns no listing of the package.\n\nThis is a positive \"not found\" from the registry, not a failure to look: a registry 404 is evidence that the name is unregistered. Consequently there is no latest version or publish date, no version history, no download count, no unpacked size, no dependency list, no license, and no deprecation or security-advisory record to retrieve — none of these can exist for an unregistered name, and none have been invented here.\n\n## Related names checked\n\nThe string combines two real, independent packages, but is neither of them, and neither is a component of a package by that name:\n\n- `hono` **exists** — latestVersion `4.13.13`, dist-tags `{v4: \"4.0.0-rc.4\", next: \"5.0.0-rc.0\", latest: \"4.13.13\"}`, description \"Web framework built on Web Standards\", license MIT, repository `git+https://github.com/honojs/hono.git`.\n- `flux-router` **exists** and is unrelated (React/Flux) — latestVersion `0.0.1-alpha3`, description \"Router for use with Flux and React\", license MIT, repository `https://github.com/rynclark/flux-router.git`.\n\nWeb searches on the exact string returned only pages about the real `hono` framework and no mention of `zxqv-hono-flux-router-9k3`; no repository, README, documentation, blog post, forum thread, or review referencing the name surfaced. The name looks synthetic (random prefix + `hono` + `flux` + `router` + random suffix), distinct from an obscure-but-real package, which would still have some registry entry.\n\n## Unverified\n\n- Whether the near-name variants `zxqv-hono-flux-router` (the name minus the `-9k3` suffix) and `hono-flux-router` are registered: one digest reported 404s for both, but that lookup's URL was not retained, so the variant checks could not be independently confirmed.\n- A definitive GitHub/GitLab \"not found\" for a repository under this name: no host-side 404 could be retrieved, so repository absence rests on negative search evidence only, not on a host confirmation.",
+      "citations": [
+        "https://registry.npmjs.org/zxqv-hono-flux-router-9k3",
+        "https://www.npmjs.com/package/zxqv-hono-flux-router-9k3",
+        "https://www.npmjs.com/search?q=zxqv-hono-flux-router-9k3",
+        "https://www.npmjs.com/package/hono",
+        "https://www.npmjs.com/package/flux-router",
+        "https://github.com/honojs/hono"
+      ],
+      "unretrievedCitations": [
+        "https://registry.npmjs.org/zxqv-hono-flux-router-9k3",
+        "https://www.npmjs.com/package/zxqv-hono-flux-router-9k3",
+        "https://github.com/honojs/hono"
+      ],
+      "costUsd": 0.040776848,
+      "wallMs": 51501,
+      "error": null
+    },
+    {
+      "index": 26,
+      "id": "notfound-rfc-99999",
+      "query": "What does RFC 99999 specify?",
+      "depth": "quick",
+      "pass": false,
+      "matched": "does not exist",
+      "live": null,
+      "status": "ok",
+      "grounding": {
+        "pagesRetrieved": 2,
+        "pagesFailed": 0,
+        "citationsKept": 3,
+        "citationsDropped": 0,
+        "confidenceCapped": 0,
+        "citationsDegraded": 0
+      },
+      "report": "## Bottom line\n**RFC 99999 does not exist**, so it specifies nothing: the RFC Editor's canonical info page for that number returns HTTP 404. The document the number was most likely confused with is **RFC 9999** (four nines), *Remote ATtestation procedureS (RATS) Conceptual Message Wrapper (CMW)*.\n\n## Evidence that RFC 99999 does not exist\n- `https://www.rfc-editor.org/info/rfc99999/` returns **HTTP 404 — resource does not exist** (https://www.rfc-editor.org/info/rfc99999/).\n- The RFC series has only recently crossed the 10,000 mark. One source suggests the RFC Editor's search index lists the newest publications as RFC 10065 (October 2026), then 10054, 10053, 10052, 10050, 10049, with roughly 9,847 published RFCs in total — placing 99999 far beyond the current end of the assigned number space (https://www.rfc-editor.org/search/rfc_search_detail.php?page=All&pub_date_type=any&sortkey=Date&sorting=DESC). This specific ordinal claim is provisional; the direct 404 above is what establishes non-existence.\n\n## If the intent was RFC 9999\nRFC 9999 *does* exist, an Internet Standards Track (Proposed Standard) titled **Remote ATtestation procedureS (RATS) Conceptual Message Wrapper (CMW)** by H. Birkholz, N. Smith, T. Fossati, and H. Tschöenig. It specifies a common wrapper for encapsulating RATS conceptual messages — Evidence, Attestation Results, Endorsements, Reference Values, and Appraisal Policies — in Record, Tag, and Collection CMW forms. It also defines a CBOR tag, corresponding JWT/CWT `cmw` claims, an X.509 extension, and registers the media types `application/cmw+cbor`, `application/cmw+json`, `application/cmw+cose`, and `application/cmw+jws`, plus CoAP Content-Formats 273–276 (https://www.rfc-editor.org/info/rfc9999/).\n\n## Unverified\nNo blocked sources were reported. Note the RFC Editor pages consulted carried publication dates into October 2026; the series is continuously growing, but nothing indicates an RFC 99999 is assigned or planned.",
+      "citations": [
+        "https://www.rfc-editor.org/info/rfc99999/",
+        "https://www.rfc-editor.org/info/rfc9999/",
+        "https://www.rfc-editor.org/search/rfc_search_detail.php?page=All&pub_date_type=any&sortkey=Date&sorting=DESC"
+      ],
+      "unretrievedCitations": [
+        "https://www.rfc-editor.org/info/rfc99999/"
+      ],
+      "costUsd": 0.015941474,
+      "wallMs": 28078,
+      "error": null
+    },
+    {
+      "index": 27,
+      "id": "crates-tokio-latest",
+      "query": "What is the latest stable version of the Rust crate tokio, and when was it published?",
+      "depth": "standard",
+      "pass": true,
+      "matched": "1.53.2",
+      "live": {
+        "resolver": "crates:tokio",
+        "value": "1.53.2"
+      },
+      "status": "partial",
+      "grounding": {
+        "pagesRetrieved": 11,
+        "pagesFailed": 0,
+        "citationsKept": 9,
+        "citationsDropped": 1,
+        "confidenceCapped": 0,
+        "citationsDegraded": 0
+      },
+      "report": "> **Partial result — evidence was lost during this run.** 1 claim(s) were dropped because the pages backing them could not be retrieved. Anything below that is not backed by an entry in `citations` is unconfirmed; see `unverified` for what could not be checked.\n\n## Bottom line\n\nThe latest stable version of the `tokio` crate is **`1.53.2`**, published **October 3rd, 2026** (crates.io publish timestamp `2026-10-03T11:18:32.487780Z` UTC). No prerelease is newer than it, and the crate is currently on the **1.x** line (the 1.53 minor series).\n\n## Latest stable version\n\nThe authoritative crates.io registry reports `latestVersion = 1.53.2` and `newestVersion = 1.53.2` for `tokio` — the two fields agree, which means the newest published release is itself stable, and there is no newer alpha/beta/rc tagged above it. The crate is **not yanked**, is **MIT** licensed, and has **197 published versions** ([crates.io/crates/tokio](https://crates.io/crates/tokio)). The exact version string as published is `1.53.2`.\n\nCross-checks: [docs.rs/tokio](https://docs.rs/tokio) documents the tokio 1.x API (`#[tokio::main]`, `tokio = { version = \"1\", features = [\"full\"] }`, feature flags), consistent with the 1.x line — though docs.rs does not print the exact patch number. The GitHub repository's latest-release metadata gives tag `tokio-1.53.2`, name \"Tokio v1.53.2\", `prerelease: false` ([github.com/tokio-rs/tokio](https://github.com/tokio-rs/tokio)).\n\n## Publication date and time\n\n- **Registry timestamp:** the crates.io record for the version gives the exact publish moment as **`2026-10-03T11:18:32.487780Z` (UTC)**, with `created_at = updated_at`, published by Alice Ryhl (login `Darksonn`) ([crates.io/api/v1/crates/tokio/1.53.2](https://crates.io/api/v1/crates/tokio/1.53.2)).\n- **CHANGELOG (verbatim):** the top entry reads **`# 1.53.2 (October 3rd, 2026)`** ([docs.rs/crate/tokio/latest/source/CHANGELOG.md](https://docs.rs/crate/tokio/latest/source/CHANGELOG.md), also [github.com/tokio-rs/tokio/blob/HEAD/tokio/CHANGELOG.md](https://github.com/tokio-rs/tokio/blob/HEAD/tokio/CHANGELOG.md)).\n- **Releases page:** the most recent entry is \"Tokio v1.53.2 — 1.53.2 (October 3rd, 2026)\" ([github.com/tokio-rs/tokio/releases](https://github.com/tokio-rs/tokio/releases)).\n- **GitHub release page for the tag:** headed \"1.53.2 (October 3rd, 2026)\", listing the 1.53.2 fixes ([github.com/tokio-rs/tokio/releases/tag/tokio-1.53.2](https://github.com/tokio-rs/tokio/releases/tag/tokio-1.53.2)).\n\nSo the date is **October 3rd, 2026**. Note one sub-source nuance: the GitHub API's release `publishedAt` is **`2026-10-04T06:26:02Z`** while the human-readable CHANGELOG and release notes say October 3rd — the same release dated one calendar day apart, most likely a local-time-vs-UTC difference. The CHANGELOG and the crates.io `created_at` both say October 3rd. crates.io's own web pages print release dates only in relative form (\"4 days ago\"), never an absolute date or clock time; the exact time above comes from the registry API record, not from a rendered crates.io HTML page.\n\n## Prereleases and active line\n\nThere is **no prerelease (alpha / beta / release-candidate) more recent than the latest stable**. The crates.io versions listing places **`1.53.2`** (`created_at: 2026-10-03T11:18:32.487780Z`, `yanked: false`) at the top of descending semver order; below it are `1.53.1` (2026-07-20), `1.53.0` (2026-07-17), `1.52.4` (2026-07-16), `1.52.3` (2026-05-08), and so on. No version string in the listing carries an `-alpha`/`-beta`/`-rc` suffix, so no prerelease sorts above the stable release ([crates.io/api/v1/crates/tokio/versions](https://crates.io/api/v1/crates/tokio/versions)). This is confirmed independently by GitHub, whose latest release is `tokio-1.53.2` with `prerelease: false` ([github.com/tokio-rs/tokio](https://github.com/tokio-rs/tokio)).\n\nThe **active version line is `1.x`** — specifically the **1.53** minor line, currently at patch `1.53.2`; the recent series runs 1.44 → 1.53 ([crates.io/crates/tokio](https://crates.io/crates/tokio)).\n\nOne unrelated maintenance note: the releases page also lists a backport **\"Tokio v1.51.5 — 1.51.5 (October 3rd, 2026)\"** carrying the same fix set, indicating the October 3rd batch covered both the current 1.53.x and the older 1.51.x lines ([github.com/tokio-rs/tokio/releases](https://github.com/tokio-rs/tokio/releases)).\n\n## Disagreements and gaps\n\n- The only discrepancy across sources is the one-day date nuance for the *same* release (`October 3rd, 2026` in the CHANGELOG/notes vs `2026-10-04T06:26:02Z` from the GitHub API). The version string `1.53.2` matches exactly across all sources.\n- Tokio's prerelease history (the `0.2.0-alpha.*` series from 2019) is far older than current stable and is not a newer prerelease; only a search-result snippet was seen for that historical context, so treat it as provisional.",
+      "citations": [
+        "https://crates.io/crates/tokio",
+        "https://crates.io/api/v1/crates/tokio/1.53.2",
+        "https://crates.io/api/v1/crates/tokio/versions",
+        "https://docs.rs/crate/tokio/latest/source/CHANGELOG.md",
+        "https://github.com/tokio-rs/tokio/blob/HEAD/tokio/CHANGELOG.md",
+        "https://github.com/tokio-rs/tokio",
+        "https://github.com/tokio-rs/tokio/releases",
+        "https://github.com/tokio-rs/tokio/releases/tag/tokio-1.53.2",
+        "https://docs.rs/tokio"
+      ],
+      "unretrievedCitations": null,
+      "costUsd": 0.042723328,
+      "wallMs": 45283,
+      "error": null
+    }
+  ]
+}

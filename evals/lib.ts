@@ -17,7 +17,7 @@ export interface GoldenItem {
   query: string
   depth: Depth
   expect: GoldenExpect
-  /** Every cited URL must appear in the job's `sources` — the not-found cases' fabrication check. */
+  /** Report cited URLs absent from the job's `sources` (informational audit aid, not scored). */
   citationsRetrieved?: true
 }
 

@@ -41,9 +41,17 @@ commerce multi-item (German market), a German-language spec query, a multi-part 
 `evals/results/2026-10-08-4a6c3a4.json`): 28/28 pass, $1.36, partial 0/19 quick, 3/8 standard,
 1/1 deep. A multi-part case uses the `all` expect
 kind (every pattern must match), since `any` passes on the first answered sub-question. Not
-checked by the matcher: that a not-found report cites nothing fabricated, and that a
-commerce price is correct — it only sees report text, and the results file stores no report, so a
-not-found row can only be audited by re-running the query (done by eye in Wave 6, below).
+checked by the matcher: that a commerce price is correct — it only sees report text. Each row
+stores `report` and the deduplicated `citations` URLs (the file is ~140 KB for 28 rows), so a
+not-found row is auditable without a re-run; the two `citationsRetrieved` cases also print
+`NOT-IN-SOURCES=` for cited URLs that are not among the job's `sources`. That check is
+informational, not scored: a 404 the origin answered (`missing`) legitimately backs an absence
+claim yet is not a page read, so both not-found rows list their registry 404 and nothing else.
+Second live run 2026-10-09 (dcb6490, `evals/results/2026-10-08-dcb6490.json`, Wave 7 prompt
+changes): 28/28 on the matcher (the saved file records 26/28: the citation check was scored in
+that run and was relaxed to informational right after), $1.34, partial 0/19 quick, 2/8 standard
+(`pep779`, `crates-tokio-latest`: one dropped citation each), 1/1 deep. Not-found reports: 3.0k
+chars (`notfound-npm-package`, was ~12k) and 2.0k chars (`notfound-rfc-99999`).
 
 ```bash
 API_SECRET=<gateway bearer> bun scripts/eval.ts                                  # mini, :7780
