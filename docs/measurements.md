@@ -37,10 +37,13 @@ a per-depth table (completed, partial rate, p50 and max wall) and stores it as
 `summary.byDepth` — the numbers Wave 6 compares against the 2026-10-08 audit. The set was
 saturated (20 cases, 18 quick lookups, all passing 2026-09-25); Wave 5 added 8: a deep, a
 commerce multi-item (German market), a German-language spec query, a multi-part query, two
-"must say not found" cases and two standard lookups. A multi-part case uses the `all` expect
+"must say not found" cases and two standard lookups. First live run 2026-10-09 (4a6c3a4,
+`evals/results/2026-10-08-4a6c3a4.json`): 28/28 pass, $1.36, partial 0/19 quick, 3/8 standard,
+1/1 deep. A multi-part case uses the `all` expect
 kind (every pattern must match), since `any` passes on the first answered sub-question. Not
 checked by the matcher: that a not-found report cites nothing fabricated, and that a
-commerce price is correct — it only sees report text. Not yet run against the live gateway.
+commerce price is correct — it only sees report text, and the results file stores no report, so a
+not-found row can only be audited by re-running the query (done by eye in Wave 6, below).
 
 ```bash
 API_SECRET=<gateway bearer> bun scripts/eval.ts                                  # mini, :7780
@@ -124,9 +127,9 @@ below that) to pay for as little discarded generation as possible.
 
 ## Job duration, by depth — the 30-day span record
 
-> Superseded for current numbers by the 2026-10-08 audit (quick 100s / standard 362s / deep 770s
-> p50, consistency pass 54-65% of quick/standard wall time) — see the consistency section below.
-> To re-measure in Wave 6.
+> Superseded for current numbers by the Wave 6 live verification (2026-10-09) — see
+> § Live verification, before and after, at the end of this file. The 2026-10-08 audit (quick 100s
+> / standard 362s / deep 770s p50) was the pre-hardening state.
 
 Production spans, `research.done` in ClickStack, 2026-08-09 to 2026-09-08. 159 jobs over 17
 active days (13 days had none), so treat the deep tail as a low-sample estimate.
@@ -715,20 +718,70 @@ and the paid fallback exactly as designed.
 
 ## Grounding signal accuracy (Wave 3, 2026-10-09)
 
-Expected, not yet measured — re-measure in Wave 6 against the 2026-10-08 audit baseline
-(partial 22% overall / deep 65% / standard 24%; 22 of 35 partials were scrub-only; unverified
-up to 91 entries). Read `partialCause` on `research.done` to split the new partial rate by
-cause, and compare `confidenceCapped` on the jobs that were 9/52 and 15/61 capped.
+Measured in Wave 6, see § Live verification. Partial rate fell from 22% overall to 6 of 35
+post-gate jobs (17%) — standard 5 of 11, deep 1 of 2, quick 0 of 22. Causes (`partialCause`):
+`dropped` 4, `scrubbed` 2. Scrub-only partials were 22 of 35 before and are 2 of 6 now.
 
 ## Fetch efficiency (Wave 4, 2026-10-09)
 
-Expected, not yet measured — re-measure in Wave 6 against the 2026-10-08 audit baseline
-(1,037 repeated (job, url) pairs against 6,204 unique; 11% of fetches `via:"missing"` with
-specialized.com 47, bike-discount.de 42, github.com 38; one URL 11x in 7s). New signals:
-`tool.fetchPage` `via:"joined"` (shared an in-flight run) and `via:"replayed"` (job memory);
-count them against `via:"missing"` per job. Cross-market caps show up in `confidenceCapped`.
+Measured in Wave 6, see § Live verification. `via:"missing"` fell from 11% of fetches to 27 of
+~560 (4.8%). A (job, url) pair still repeats 92 times in 431, but 94 of the repeats are
+`replayed` (79) or `joined` (15) — served from job memory or a shared in-flight run, not a new
+chain walk.
 
 yt-dlp `Broken pipe` (12 events, 2026-09-25/26, one video): ours. `-J` for SZfmz97LbdU is 11.3 MB
 (re-measured 2026-10-09) against an 8 MB stdout cap, so the reader closed the pipe mid-write.
-Cap raised to 32 MB, and a cut now reports `output exceeded N bytes`. `githubRepo` failures now
-log `status` and `error`; the 39% failure rate has not been broken down yet.
+Cap raised to 32 MB, and a cut now reports `output exceeded N bytes`.
+
+`githubRepo` failure breakdown (read from the logs, 2026-10-09): the 39% was an incident, not a
+steady rate. 123 of the 131 failures in 2026-09-23..10-08 fell on 2026-09-24/25 (81 failed vs 45
+ok, then 42 failed vs 32 ok); every day after that is 8 failures in about 140 calls (6%). Those
+logs predate the `status`/`error` fields, so the cause of the incident is not recoverable. Since
+the final deploy: 11 calls, 10 ok, 1 `HTTP 404 Not Found` (a legitimate absence). Nothing to fix.
+
+## Live verification, before and after (Wave 6, 2026-10-09)
+
+Deployed 4a6c3a4 (all of Waves 1-5), the final deploy at 22:51Z 2026-10-08. After-numbers are
+`research.done` since then on the mini (35 jobs: the 28-case eval, 5 fresh jobs, 2 re-runs); the
+before column is the 2026-10-08 audit (161 jobs). Deep has n=2, so its row is an anecdote.
+
+| metric | before | after |
+|-|-|-|
+| quick p50 wall | 100s | 11s (n=22, max 41s) |
+| standard p50 wall | 362s | 152s (n=11, max 258s) |
+| deep wall | p50 770s | 442s and 538s (n=2) |
+| consistency pass p50 | 119s (max 682s) | 59s (n=12, max 132s); skipped 23 times, 0 failed |
+| `consistency.failed` | 16 in 161 jobs | 0 in 35 |
+| `synthesis.rejected` | 6 in 161 (5 of 17 deep) | 0 in 35 (2 deep) |
+| partial rate | 22% | 17% (6 of 35); causes: dropped 4, scrubbed 2 |
+| `via:"missing"` share | 11% | 4.8% |
+| unverified entries per job | up to 91 | 0-5 quick/standard, 33 on the deep commerce job |
+
+Fresh jobs (concurrent, so wall times include contention):
+
+| job | depth | wall | cost | status | citations | unverified |
+|-|-|-|-|-|-|-|
+| Hono bodyLimit | quick | 21s | $0.008 | ok | 5 | 0 |
+| Bosch GSR 12V-35 prices (de) | quick | 41s | $0.017 | ok | 3 | 3 |
+| Bun vs ws WebSocket backpressure | standard | 152s | $0.171 | ok | 36 | 5 |
+| Node LTS multi-part | standard | 175s | $0.101 | partial (scrubbed) | 20 | 4 |
+| Gravel bikes under 2000 EUR (de) | deep | 538s | $0.700 | ok | 82 | 33 |
+
+Every report opens with a Bottom line. The Node multi-part job was partial because the report
+body named two docs URLs (`latest-v8.x`, `latest-v11.x`) it never fetched, plus a 404ing
+`RELEASES.md` — a correct flag, but the model should not name pages it never opened. The
+consistency pass found one real error on that job (6 months corrected to 12) and one wording
+fix on the deep job, 21-32k tokens of reasoning for one edit each.
+
+Not-found rows read by eye (re-run, full reports and citation lists): `notfound-rfc-99999` says
+RFC 99999 does not exist on the strength of the rfc-editor 404 (`high`), names RFC 9999 as the
+likely intent and cites its info page (`high`); the claim that the index has nothing at five
+digits is `low` and flagged because 9999 is absent from the retrieved text. `notfound-npm-package`
+says the package does not exist on the strength of three checks (registry 404, npmjs.com 404,
+zero search hits for `zxqv`), cites only URLs the run fetched (the Microsoft typosquat post is in
+the fetch log), and the one dropped citation is a guessed registry URL. No fabricated citation
+in either. The npm report is ~12k chars for a "does not exist" answer, over the 10k standard
+target — the negatives are collapsed but the tangents (what hono/flux/router are) are not.
+
+**Still unproven:** the deep tail (n=2) against `SHUTDOWN_DRAIN_MS`, deep synthesis output tokens
+(not logged on success), and whether 64k synthesis budget worsens it.
