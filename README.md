@@ -30,8 +30,8 @@ talk to — and plain bearer HTTP for everything else (Hermes, scripts, curl).
   both** the lead (plan + synthesis) and the workers, `reasoning_effort: "high"` (2026-09-13
   estate-wide model decision, superseding the earlier `gpt-5.6-luna` pick — `src/env.ts` and
   `docs/decisions.md` carry the history). Effort and the per-call-role output budget (plan
-  16000 / worker step 16000 / synthesis 32000 — synthesis writes the whole report inside its
-  tool call) are applied in one place, `src/lib/llm.ts`, via `wrapLanguageModel` +
+  16000 / worker step 16000 / synthesis 64000 — synthesis writes the whole report inside its
+  tool call; a `length` stop retries once at double) are applied in one place, `src/lib/llm.ts`, via `wrapLanguageModel` +
   `defaultSettingsMiddleware`. Override the model with `IU_LEAD_MODEL` / `IU_WORKER_MODEL`;
   prod sets neither.
 - **Tools:** two kinds, and the split is the point.

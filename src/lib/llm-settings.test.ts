@@ -32,7 +32,7 @@ describe('roleProviderSettings', () => {
     // workerStep's floor rather than getting its own distinct number.
     expect(ROLE_BUDGETS.plan).toBe(16_000)
     expect(ROLE_BUDGETS.workerStep).toBe(16_000)
-    expect(ROLE_BUDGETS.synthesis).toBe(32_000)
+    expect(ROLE_BUDGETS.synthesis).toBe(64_000)
     expect(ROLE_BUDGETS.consistency).toBe(64_000)
   })
 
@@ -42,7 +42,7 @@ describe('roleProviderSettings', () => {
       modelId: 'deepseek-v4.1-flash',
       maxCompletionTokens: ROLE_BUDGETS.synthesis * 2,
     })
-    expect(doubled.providerOptions.iu.max_completion_tokens).toBe(64_000)
+    expect(doubled.providerOptions.iu.max_completion_tokens).toBe(128_000)
     expect(doubled.providerOptions.iu.reasoningEffort).toBe(REASONING_EFFORT)
   })
 

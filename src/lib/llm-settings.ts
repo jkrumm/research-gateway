@@ -39,7 +39,10 @@ export function submitToolChoice<T extends string>(
 export const ROLE_BUDGETS = {
   plan: 16_000,
   workerStep: 16_000,
-  synthesis: 32_000,
+  // Deep reports measured 36-65k output tokens (reasoning + the report inside the tool call,
+  // audit 2026-10-08), so the old 32k starved most of them into the doubled retry. The base
+  // sits at the observed top; the length retry doubles it.
+  synthesis: 64_000,
   // The reviewer's output is reasoning, not text: p50 29k / p90 49k / max 57k tokens (149
   // passes, 2026-10-08) to emit ~230 chars of edits. A pass cut off by `length` drops its
   // correction, so this sits above the observed max and only stops a pathological loop;

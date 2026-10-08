@@ -3,7 +3,7 @@ import { describe, it, expect } from 'bun:test'
 // compatibility but its own import graph (worker.ts/synthesize.ts/plan.ts -> llm.ts)
 // pulls in `env.ts`, which parses `process.env` at import time and throws without secrets.
 // `assemble.ts` has no such chain, so these pure helpers are testable with zero env vars.
-import { assembleReport, headingFor, nextRoundQuestions } from './assemble.js'
+import { assembleReport, headingFor, nextRoundQuestions, stripNarration } from './assemble.js'
 import type { WorkerDigest } from './schema.js'
 
 function digest(overrides: Partial<WorkerDigest> = {}): WorkerDigest {
@@ -18,6 +18,38 @@ function digest(overrides: Partial<WorkerDigest> = {}): WorkerDigest {
   }
 }
 
+describe('assembleReport bottom line and narration', () => {
+  it('opens with a Bottom line holding each section\'s first sentence', () => {
+    const { report } = assembleReport([
+      digest({ subQuestion: 'Q1: detail', summary: 'X costs 5 EUR. More detail follows.' }),
+      digest({ subQuestion: 'Q2', summary: 'Y is stable.' }),
+    ])
+    expect(report.startsWith('## Bottom line\n\n- **Q1** — X costs 5 EUR.\n- **Q2** — Y is stable.')).toBe(true)
+  })
+
+  it('drops first-person process sentences but keeps findings', () => {
+    expect(stripNarration("I searched the docs. The limit is 10. Let me check the changelog.")).toBe('The limit is 10.')
+  })
+
+  it('keeps I/O and i.e. content, drops only first-person narration', () => {
+    expect(stripNarration('I/O is 5 GB/s. i.e. it is fast.')).toBe('I/O is 5 GB/s. i.e. it is fast.')
+  })
+
+  it('omits the Bottom line when no section has a usable sentence', () => {
+    const { report } = assembleReport([digest({ summary: '- a\n- b' }), digest({ summary: 'I found nothing.' })])
+    expect(report.startsWith('## Bottom line')).toBe(false)
+  })
+
+  it('clips a long first sentence in the Bottom line', () => {
+    const { report } = assembleReport([digest({ subQuestion: 'Q', summary: `${'w'.repeat(400)}.` })])
+    expect(report.split('\n')[2]?.length).toBeLessThanOrEqual('- **Q** — '.length + 280)
+  })
+
+  it('keeps the original summary when every sentence is narration', () => {
+    expect(stripNarration('I could not find anything.')).toBe('I could not find anything.')
+  })
+})
+
 describe('assembleReport', () => {
   it('is total: empty input returns empty strings/arrays without throwing', () => {
     const report = assembleReport([])
@@ -31,7 +63,7 @@ describe('assembleReport', () => {
       digest({ subQuestion: 'Q1', summary: 'A1' }),
       digest({ subQuestion: 'Q2', summary: 'A2' }),
     ])
-    expect(report.report).toBe('## Q1\n\nA1\n\n## Q2\n\nA2')
+    expect(report.report).toContain('## Q1\n\nA1\n\n## Q2\n\nA2')
   })
 
   it('flattens every digest finding into a { claim, url, confidence } citation', () => {
@@ -98,7 +130,7 @@ describe('assembleReport', () => {
     const long =
       'Research DBOS Transact for TypeScript/Node.js: (a) which durable-execution primitives it exposes; (b) how it compares to Temporal'
     const report = assembleReport([digest({ subQuestion: long, summary: 'A1' })])
-    expect(report.report).toBe('## Research DBOS Transact for TypeScript/Node.js\n\nA1')
+    expect(report.report).toContain('\n\n## Research DBOS Transact for TypeScript/Node.js\n\nA1')
   })
 })
 

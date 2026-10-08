@@ -5,6 +5,8 @@ import type { IuLanguageModel } from '../lib/llm.js'
 import { synthesisPrompt, backgroundSection, ownerNoteTag } from './prompt.js'
 import { resolveSynthesisReport } from './extract.js'
 import { SubmittedReport, WorkerDigest } from './schema.js'
+import { classifySynthesisReply, isCompactRetryable, trySalvage } from './synthesis-outcome.js'
+import type { ReplyShape, SynthesisReply } from './synthesis-outcome.js'
 import type { Depth } from './schema.js'
 import { log } from '../lib/log.js'
 import { withSpan } from '../lib/otel.js'
@@ -16,13 +18,6 @@ import type { IdleWatchdog } from '../lib/idle-watchdog.js'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyTool = Tool<any, any>
-
-function extractReport(toolCalls: ReadonlyArray<{ toolName: string; input: unknown }>): SubmittedReport | null {
-  const submitCall = toolCalls.find((c) => c.toolName === 'submit_report')
-  if (!submitCall) return null
-  const parsed = SubmittedReport.safeParse(submitCall.input)
-  return parsed.success ? parsed.data : null
-}
 
 // Worded against the exact fabrication it replaces: a missing digest is a worker that did not
 // report, which says nothing about the pages it was sent to read.
@@ -49,6 +44,32 @@ function renderDigests(
   return `## Original query\n\n${query}${backgroundSection(context)}\n\n## Researched sub-questions\n\n${sections.join('\n\n')}${undigestedSection(undigested)}`
 }
 
+// Appended on the one retry after a malformed or text-only reply, so the second attempt is
+// smaller and cannot fail the same way by running long.
+const COMPACT_RETRY_NOTE =
+  'RETRY: your previous reply was not a valid `submit_report` call. Call `submit_report` now. Keep the report compact: open with the Bottom line, then only the detail the sub-questions need, and no more than the length target above.'
+
+function logRejection(
+  jobId: string,
+  reply: Exclude<SynthesisReply, { kind: 'submitted' }>,
+  result: ReplyShape,
+  outputTokens: number,
+  next: 'retrying' | 'assembled',
+): void {
+  // `synthesis.rejected` means the job fell back to the assembled report; an intermediate
+  // rejection that gets a compact retry is `synthesis.retry`, so the rejected rate stays clean.
+  log(next === 'assembled' ? 'synthesis.rejected' : 'synthesis.retry', {
+    jobId,
+    reason: reply.kind,
+    finishReason: result.finishReason,
+    outputTokens,
+    textChars: result.text.length,
+    toolCalls: result.toolCalls.length,
+    ...(reply.kind === 'malformed-call' ? { issues: reply.issues } : {}),
+    next,
+  })
+}
+
 export async function synthesize(args: {
   query: string
   context?: string | undefined
@@ -67,10 +88,10 @@ export async function synthesize(args: {
     inputSchema: SubmittedReport,
   }) as AnyTool
 
-  const callSynthesis = (model: IuLanguageModel, idle: IdleWatchdog) =>
+  const callSynthesis = (model: IuLanguageModel, idle: IdleWatchdog, compact = false) =>
     generateText({
       model,
-      instructions: synthesisPrompt(depth),
+      instructions: compact ? `${synthesisPrompt(depth)}\n\n${COMPACT_RETRY_NOTE}` : synthesisPrompt(depth),
       prompt: renderDigests(query, context, digests, args.undigested ?? []),
       tools: { submit_report: submitReportTool },
       toolChoice: leadSubmitChoice('submit_report'),
@@ -92,41 +113,52 @@ export async function synthesize(args: {
       const idle = createIdleWatchdog(env.RESEARCH_IDLE_TIMEOUT_MS, args.signal)
       idle.arm()
       try {
-        let result = await callSynthesis(synthesisModel, idle)
-        let usage = toUsageStats(result.usage, 0, result.steps)
+        let usage = emptyUsage()
+        // One call, fully classified: salvage of a prose reply and the report guard run here so
+        // every attempt (first, doubled-budget, compact) gets the same recovery.
+        const attempt = async (model: IuLanguageModel, compact = false) => {
+          const result = await callSynthesis(model, idle, compact)
+          usage = addUsage(usage, toUsageStats(result.usage, 0, result.steps))
+          let reply = trySalvage(classifySynthesisReply(result), digests)
+          let resolved: ReturnType<typeof resolveSynthesisReport> | null = null
+          if (reply.kind === 'submitted') {
+            resolved = resolveSynthesisReport(reply.report, digests)
+            if (!resolved.report) reply = { kind: 'guard' }
+          }
+          return { result, reply, resolved }
+        }
 
         // The report is written entirely inside the tool call's arguments, so a starved call
         // (finishReason: 'length') looks exactly like "no valid submit_report call" unless
-        // checked explicitly — log it distinctly and give the budget one more shot doubled
-        // before falling through to the digest-assembled fallback in run.ts.
-        if (result.finishReason === 'length') {
+        // classified explicitly. Each failure gets one recovery before the digest-assembled
+        // fallback in run.ts: a doubled budget for `length`, otherwise one retry told to write
+        // a compact report (a prose reply is kept as the report when it is long enough).
+        let out = await attempt(synthesisModel)
+        if (out.reply.kind === 'length') {
           log('synthesis.length', { jobId, outputTokens: usage.outputTokens, budget: ROLE_BUDGETS.synthesis })
-          result = await callSynthesis(leadModelWithDoubledBudget('synthesis'), idle)
-          usage = addUsage(usage, toUsageStats(result.usage, 0, result.steps))
-          if (result.finishReason === 'length') {
+          out = await attempt(leadModelWithDoubledBudget('synthesis'))
+          if (out.reply.kind === 'length') {
             log('synthesis.length', { jobId, outputTokens: usage.outputTokens, retried: true })
           }
+        } else if (isCompactRetryable(out.reply)) {
+          logRejection(jobId, out.reply, out.result, usage.outputTokens, 'retrying')
+          out = await attempt(synthesisModel, true)
         }
         usage = { ...usage, durationMs: Date.now() - start }
 
-        span.setAttributes({ 'llm.output_tokens': usage.outputTokens, 'llm.finish_reason': result.finishReason })
+        span.setAttributes({ 'llm.output_tokens': usage.outputTokens, 'llm.finish_reason': out.result.finishReason })
         log('synthesis.done', {
           jobId,
           ms: Date.now() - start,
           outputTokens: usage.outputTokens,
           digests: digests.length,
         })
-        const report = extractReport(result.toolCalls)
-        if (!report) {
-          span.setAttributes({ 'synthesis.outcome': 'rejected_no_call' })
-          log('synthesis.rejected', {
-            jobId,
-            reason: result.finishReason === 'length' ? 'starved: finishReason=length' : 'no valid submit_report call',
-          })
+        const { reply, resolved } = out
+        if (reply.kind !== 'submitted' || !resolved?.report) {
+          span.setAttributes({ 'synthesis.outcome': `rejected_${reply.kind}` })
+          if (reply.kind !== 'submitted') logRejection(jobId, reply, out.result, usage.outputTokens, 'assembled')
           return { report: null, usage }
         }
-
-        const resolved = resolveSynthesisReport(report, digests)
         if (resolved.salvaged) {
           // Loud and distinct on purpose: how often this fires is the signal for whether the
           // prompt or the forced-toolChoice arm needs work — see extract.ts for the failure
@@ -135,11 +167,6 @@ export async function synthesize(args: {
             jobId,
             reason: 'report.report was double-encoded JSON of the whole submission; unwrapped inner markdown',
           })
-        }
-        if (!resolved.report) {
-          span.setAttributes({ 'synthesis.outcome': 'rejected_guard' })
-          log('synthesis.rejected', { jobId, reason: 'schema-echo or empty-citations guard' })
-          return { report: null, usage }
         }
         span.setAttributes({ 'synthesis.outcome': resolved.salvaged ? 'salvaged' : 'submitted' })
         return { report: resolved.report, usage }

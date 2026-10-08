@@ -206,6 +206,12 @@ You MUST finish by calling \`submit_review\`:
 **The ONLY way to deliver your review is the \`submit_review\` tool. Do NOT write a plain-text answer.**`
 }
 
+const lengthTarget: Record<Depth, string> = {
+  quick: 'Length target: under about 3,000 characters.',
+  standard: 'Length target: about 10,000 characters; do not exceed 14,000.',
+  deep: 'Length target: about 20,000 characters; do not exceed 30,000.',
+}
+
 export function synthesisPrompt(depth: Depth): string {
   const profile = profiles[depth]
   return `You are a research synthesizer. You are given a set of pre-researched digests, each answering one sub-question of a larger query. Your job is to synthesize them into one complete, cited report and submit it via the \`submit_report\` tool.
@@ -213,6 +219,9 @@ export function synthesisPrompt(depth: Depth): string {
 ## Synthesis rules
 
 - Write the complete markdown answer directly, with NO preamble and no commentary about your process, the digests, or what was or wasn't gathered.
+- Open the report with a \`## Bottom line\` section: one sentence per sub-question (or per part of the query) that states the answer itself, not what was looked at. The detail follows under its own headings. A reader who stops after the Bottom line must already have the answer.
+- ${lengthTarget[depth]} Spend the length on findings the caller can act on, not on restating sources.
+- Collapse negatives: "no presence / not found / no evidence" results go in ONE line each (or one combined line for several), never a section or a bullet per absent item.
 - Tie each key claim to a source URL drawn from the digests.
 - Do not invent facts that are not present in the digests — synthesize only from what they contain. The one exception is the "Given background" section: facts stated there may be woven into the report as established, but they carry NO citation (they have no URL) and must not be dressed up as if a source backed them.
 - If digests disagree or leave gaps, state that explicitly in the report.

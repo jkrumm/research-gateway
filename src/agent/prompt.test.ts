@@ -35,3 +35,14 @@ describe('ownerNoteTag — a brain note reaches synthesis marked as a dated prio
     expect(synthesisPrompt('standard')).toContain("OWNER'S NOTE (dated prior)")
   })
 })
+
+describe('synthesisPrompt report shape', () => {
+  it('asks for a Bottom line and a per-depth length target', () => {
+    for (const depth of ['quick', 'standard', 'deep'] as const) {
+      const p = synthesisPrompt(depth)
+      expect(p).toContain('## Bottom line')
+      expect(p).toContain('Length target:')
+    }
+    expect(synthesisPrompt('standard')).toContain('10,000')
+  })
+})

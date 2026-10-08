@@ -137,6 +137,21 @@ mistakes have the same shape — a number quoted from one run. Re-read this tabl
 either, and re-derive it after any change to depth routing, since deep wall time tracks
 `rounds` x `workers`.
 
+### Synthesis rejections and the assembled fallback (audit 2026-10-08, Wave 2)
+
+6 `synthesis.rejected: no valid submit_report call` events in 161 jobs: 5 of 17 deep, 1 standard.
+The log line could not say why, so the cause was inferred: deep synthesis outputs run 36-65k
+tokens (reasoning plus the report inside the tool call) against a 32k `ROLE_BUDGETS.synthesis`,
+and `reasoning_effort` above `none` forces `tool_choice: auto`, so a text-only reply is possible
+too. Not yet confirmed per cause: the new `synthesis.rejected` line carries `reason`
+(`length` | `malformed-call` | `text-only` | `no-output` | `guard`), `finishReason`,
+`outputTokens`, `textChars`, `toolCalls` and `next`; it fires only when the job falls back to `assembled` (an intermediate rejection that gets a compact retry logs `synthesis.retry`). Recovery: budget 32k to 64k (length retry
+doubles it); a text reply of 1.5k+ chars is kept as the report with the digests' citations
+(`synthesis.text_salvaged`); any other failure (malformed call, empty reply, schema-echo/no-citation guard) gets one compact-target retry, and a prose reply from that retry is salvaged too; only then does
+`assembled` run, now with a deterministic Bottom line and first-person narration stripped.
+**Re-measure in Wave 6:** rejected rate by `reason`, deep synthesis output tokens, report chars
+per depth against the new length targets (quick 3k / standard 10k / deep 20k).
+
 ### Consistency-review pass — where the time goes (audit 2026-10-08)
 
 The 2026-09-23 smoke numbers (2-7s, gpt-6-luna at effort `none`) did not survive the move back
