@@ -67,7 +67,11 @@ export function solverBudgetMs(waitMs: number, elapsedMs: number): number {
 // other than the human cancelling it) all map to the same
 // 'local-unavailable' bucket — none of them are evidence about any PARTICULAR host, so they
 // short-suppress every host globally the same way an unreachable MacBook does, never the 6h
-// per-host suppression 'declined'/'unanswered'/'timeout' get.
+// per-host suppression 'declined'/'unanswered'/'timeout' get. `auth_required`/`no_challenge`
+// (fetch mode never settled, with no positive evidence of an interactive challenge) are left
+// out on purpose: no existing outcome fits, and 'error' suppresses nothing — a login wall or an
+// empty page says nothing about whether a LATER request for that host meets a real challenge.
+// Only 'challenge' ever escalates to the dialog (runBrowser below).
 const REASON_TO_OUTCOME: Partial<Record<HumanSolveReason, SolveOutcome>> = {
   challenge: 'cleared-challenge',
   declined: 'declined',
@@ -80,7 +84,12 @@ const REASON_TO_OUTCOME: Partial<Record<HumanSolveReason, SolveOutcome>> = {
 }
 
 function outcomeForResult(mode: 'solve' | 'fetch', result: HumanSolveResult): SolveOutcome | null {
-  if (result.ok) return mode === 'solve' ? 'solved' : 'cleared-ok'
+  if (result.ok) {
+    // A fetch-mode page the browser reached but that answered 4xx/5xx (a 404, a 401) is a miss,
+    // not a clearance — recording 'cleared-ok' would claim the host's challenge was passed.
+    if (mode === 'fetch' && result.status !== undefined && result.status >= 400) return null
+    return mode === 'solve' ? 'solved' : 'cleared-ok'
+  }
   if (result.reason === 'aborted') return null // a cancellation says nothing about the host
   return REASON_TO_OUTCOME[result.reason as HumanSolveReason] ?? 'error'
 }

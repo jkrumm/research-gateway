@@ -60,6 +60,11 @@ export const HUMAN_SOLVE_REASONS = [
   'proxy_unavailable',
   'open_tab_failed',
   'challenge',
+  // Fetch mode, never escalated to the dialog: a thin page settled at a sign-in URL
+  // (auth_required), or the page never became usable with no positive evidence of an
+  // interactive challenge (no_challenge) — nothing a human captcha click would fix.
+  'auth_required',
+  'no_challenge',
   'unsafe-redirect',
   'timeout',
   // Dialog-level (JXA over ssh)

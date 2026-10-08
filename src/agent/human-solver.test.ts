@@ -145,6 +145,51 @@ describe('createHumanSolver — browser-first', () => {
   })
 })
 
+describe('createHumanSolver — non-challenge outcomes never reach the human', () => {
+  for (const reason of ['no_challenge', 'auth_required'] as const) {
+    it(`a '${reason}' browser result never prompts, and suppresses nothing`, async () => {
+      const h = makeHarness()
+      h.setRunSolverResult(async () => ({ ok: false, reason }))
+      const solver = createHumanSolver(h.ports)
+
+      expect(await solver(makeRequest())).toEqual({ ok: false, reason })
+      expect(h.promptCalls.length).toBe(0)
+      expect(h.runSolverCalls.map((c) => c.mode)).toEqual(['fetch'])
+      // 'error' outcome is a no-op in state.record — the same host is still admitted next time.
+      expect(h.ports.state.plan('example.com', h.clock.now).action).toBe('browser')
+      expect(h.ports.state.planDialog('example.com', h.clock.now).action).toBe('solve')
+    })
+  }
+
+  it('an ok browser result carrying status 404 is passed through but recorded as no cleared outcome', async () => {
+    const h = makeHarness()
+    const recorded: string[] = []
+    const realRecord = h.ports.state.record.bind(h.ports.state)
+    h.ports.state.record = (host, outcome, now) => {
+      recorded.push(outcome)
+      realRecord(host, outcome, now)
+    }
+    h.setRunSolverResult(async () => ({ ok: true, html: '<html>gone</html>', finalUrl: 'https://example.com/page', mode: 'cleared', status: 404 }))
+    const solver = createHumanSolver(h.ports)
+
+    const result = await solver(makeRequest())
+    expect(result).toEqual({ ok: true, html: '<html>gone</html>', finalUrl: 'https://example.com/page', mode: 'browser', status: 404 })
+    expect(recorded).toEqual([])
+    expect(h.promptCalls.length).toBe(0)
+  })
+
+  it('an ok browser result with status 200 still records cleared-ok', async () => {
+    const h = makeHarness()
+    const recorded: string[] = []
+    h.ports.state.record = (_host, outcome) => {
+      recorded.push(outcome)
+    }
+    h.setRunSolverResult(async () => ({ ok: true, html: '<html>ok</html>', finalUrl: 'https://example.com/page', mode: 'cleared', status: 200 }))
+    await createHumanSolver(h.ports)(makeRequest())
+    expect(recorded).toEqual(['cleared-ok'])
+  })
+})
+
 describe('createHumanSolver — browser-then-solve escalation', () => {
   it('releases the browser slot BEFORE escalating to the dialog on a challenge result', async () => {
     const h = makeHarness()

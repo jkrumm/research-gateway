@@ -37,7 +37,7 @@ const CHALLENGE_HEADERS = /^(?:server|cf-mitigated|cf-chl-[\w-]+|x-datadome[\w-]
 // a bare `cf-chl-bypass: 1` on a normal 200 would satisfy the exact-value check below and read
 // as decisive on its own.
 const DECISIVE_HEADERS = /^(?:cf-mitigated|cf-chl-(?!bypass)[\w-]+)$/i
-const DECISIVE_BODY_MARKERS =
+export const DECISIVE_BODY_MARKERS =
   /cf-chl|cf-mitigated|just a moment|verify you are human|checking your browser|enable javascript and cookies/i
 
 // Markers that appear constantly on healthy pages: a CDN name in `server:`, or a reCAPTCHA
@@ -45,7 +45,7 @@ const DECISIVE_BODY_MARKERS =
 // looks like a block, never decide alone (webcmd #283).
 const CORROBORATING_MARKERS = /cloudflare|datadome|perimeterx|px-captcha|akamai|captcha|__cf_bm/i
 
-const BLOCKED_STATUSES = new Set([403, 429, 503])
+export const BLOCKED_STATUSES: ReadonlySet<number> = new Set([403, 429, 503])
 
 // Scan only the first 20,000 chars of a body — same bound webcmd uses, since a challenge
 // marker (if present at all) is always near the top of the document.

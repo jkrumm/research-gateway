@@ -1,5 +1,17 @@
 import { describe, it, expect } from 'bun:test'
-import { capHtml, checkUrlSafety, decideStaleChromeAction, isChallengeTitle, looksChallenged, validateRequest } from './solver.js'
+import {
+  capHtml,
+  checkUrlSafety,
+  classifyFetchOutcome,
+  decideStaleChromeAction,
+  hasChallengeEvidence,
+  isAuthWallUrl,
+  isChallengeTitle,
+  looksChallenged,
+  resolveFetchOutcome,
+  validateRequest,
+  type FetchObservation,
+} from './solver.js'
 
 describe('checkUrlSafety', () => {
   it('accepts a plain https URL', async () => {
@@ -185,5 +197,162 @@ describe('decideStaleChromeAction', () => {
 
   it('only kills when the lock is held AND the mismatch is still there', () => {
     expect(decideStaleChromeAction({ lockAcquired: true, stillMismatched: true })).toBe('kill')
+  })
+})
+
+const CF_HTML = '<html><head><title>Just a moment...</title></head><body>Checking your browser <div id="cf-chl-widget"></div></body></html>'
+const DATADOME_HTML = '<html><body><iframe src="https://geo.captcha-delivery.com/captcha/?initialCid=abc"></iframe></body></html>'
+const NOT_FOUND_HTML = `<html><head><title>Not found</title></head><body>${'Page not found. '.repeat(8)}</body></html>`
+const LONG_PAGE_HTML = `<html><head><title>Docs</title></head><body>${'content '.repeat(60)}</body></html>`
+
+function obs(over: Partial<FetchObservation>): FetchObservation {
+  return { title: 'Docs', html: LONG_PAGE_HTML, textLen: 480, url: 'https://example.com/page', status: 200, ...over }
+}
+const FETCH = { requestedUrl: 'https://example.com/page', atDeadline: false }
+const DEADLINE = { requestedUrl: 'https://example.com/page', atDeadline: true }
+
+describe('hasChallengeEvidence', () => {
+  it('a challenge title is evidence, an empty title is not', () => {
+    expect(hasChallengeEvidence({ title: 'Just a moment...', html: '', status: 200 })).toBe(true)
+    expect(hasChallengeEvidence({ title: '', html: '', status: 200 })).toBe(false)
+  })
+
+  it('Cloudflare managed-challenge html is evidence at any status', () => {
+    expect(hasChallengeEvidence({ title: '', html: CF_HTML, status: 403 })).toBe(true)
+    expect(hasChallengeEvidence({ title: '', html: CF_HTML, status: 200 })).toBe(true)
+  })
+
+  it('DataDome captcha-delivery is evidence even without a block status', () => {
+    expect(hasChallengeEvidence({ title: '', html: DATADOME_HTML, status: 403 })).toBe(true)
+    expect(hasChallengeEvidence({ title: '', html: DATADOME_HTML })).toBe(true)
+  })
+
+  it('PerimeterX px-captcha is evidence', () => {
+    expect(hasChallengeEvidence({ title: '', html: '<div id="px-captcha"></div>', status: 200 })).toBe(true)
+  })
+
+  it('a reCAPTCHA/Turnstile widget only counts on a block status', () => {
+    const widget = '<form><div class="g-recaptcha"></div><div class="cf-turnstile"></div></form>'
+    expect(hasChallengeEvidence({ title: '', html: widget, status: 200 })).toBe(false)
+    expect(hasChallengeEvidence({ title: '', html: widget, status: 404 })).toBe(false)
+    expect(hasChallengeEvidence({ title: '', html: widget, status: 403 })).toBe(true)
+    expect(hasChallengeEvidence({ title: '', html: '<div class="cf-turnstile"></div>', status: 403 })).toBe(true)
+  })
+
+  it('a plain 404 / 401 / empty shell carries no evidence', () => {
+    expect(hasChallengeEvidence({ title: 'Not found', html: NOT_FOUND_HTML, status: 404 })).toBe(false)
+    expect(hasChallengeEvidence({ title: 'Sign in', html: '<html><body>Sign in</body></html>', status: 401 })).toBe(false)
+    expect(hasChallengeEvidence({ title: '', html: '<html><body><div id="root"></div></body></html>', status: 200 })).toBe(false)
+  })
+})
+
+describe('isAuthWallUrl', () => {
+  it('flags sign-in paths and hosts', () => {
+    for (const u of [
+      'https://example.com/login',
+      'https://example.com/users/sign-in?next=/x',
+      'https://example.com/signin',
+      'https://example.com/sso/start',
+      'https://example.com/oauth2/authorize',
+      'https://example.com/auth/callback',
+      'https://accounts.example.com/',
+      'https://login.example.com/x',
+    ]) {
+      expect(isAuthWallUrl(u)).toBe(true)
+    }
+  })
+
+  it('leaves content URLs and garbage alone', () => {
+    for (const u of ['https://example.com/authors/jane', 'https://example.com/login-tips', 'https://example.com/docs', 'not a url']) {
+      expect(isAuthWallUrl(u)).toBe(false)
+    }
+  })
+})
+
+describe('classifyFetchOutcome', () => {
+  it('Cloudflare "Just a moment" 403 is a challenge at the deadline, a wait before it', () => {
+    const cf = obs({ title: 'Just a moment...', html: CF_HTML, textLen: 60, status: 403 })
+    expect(classifyFetchOutcome(cf, FETCH)).toBe('wait')
+    expect(classifyFetchOutcome(cf, DEADLINE)).toBe('challenge')
+  })
+
+  it('DataDome 403 with a captcha-delivery iframe is a challenge', () => {
+    const dd = obs({ title: '', html: DATADOME_HTML, textLen: 0, status: 403 })
+    expect(classifyFetchOutcome(dd, FETCH)).toBe('wait')
+    expect(classifyFetchOutcome(dd, DEADLINE)).toBe('challenge')
+  })
+
+  it('a thin 404 returns at once as an http_status passthrough, no deadline needed', () => {
+    const nf = obs({ title: 'Not found', html: NOT_FOUND_HTML, textLen: 120, status: 404 })
+    expect(classifyFetchOutcome(nf, FETCH)).toBe('http_status')
+    expect(classifyFetchOutcome(obs({ status: 410, textLen: 40 }), FETCH)).toBe('http_status')
+  })
+
+  it('401 and other >=400 statuses without markers pass through', () => {
+    expect(classifyFetchOutcome(obs({ status: 401, textLen: 30, html: '<html><body>Unauthorized</body></html>' }), FETCH)).toBe('http_status')
+    expect(classifyFetchOutcome(obs({ status: 500, textLen: 30 }), FETCH)).toBe('http_status')
+    expect(classifyFetchOutcome(obs({ status: 403, textLen: 30, html: '<html><body>Forbidden</body></html>' }), FETCH)).toBe('http_status')
+  })
+
+  it('a redirect to a login URL is auth_required, but a requested login URL is not', () => {
+    const redirected = obs({ url: 'https://example.com/login?next=%2Fpage', textLen: 90, html: '<html><body>Please sign in</body></html>' })
+    expect(classifyFetchOutcome(redirected, FETCH)).toBe('auth_required')
+    expect(classifyFetchOutcome(redirected, { requestedUrl: 'https://example.com/login', atDeadline: false })).toBe('wait')
+  })
+
+  it('an empty SPA shell with no markers is no_challenge at the deadline, a wait before it', () => {
+    const shell = obs({ title: '', html: '<html><body><div id="root"></div></body></html>', textLen: 0 })
+    expect(classifyFetchOutcome(shell, FETCH)).toBe('wait')
+    expect(classifyFetchOutcome(shell, DEADLINE)).toBe('no_challenge')
+  })
+
+  it('a healthy page is returned as page', () => {
+    expect(classifyFetchOutcome(obs({}), FETCH)).toBe('page')
+    expect(classifyFetchOutcome(obs({ status: undefined }), FETCH)).toBe('page')
+  })
+})
+
+describe('hasChallengeEvidence — hard blocks are not human-solvable', () => {
+  const waf = '<html><body><h1>Sorry, you have been blocked</h1><p>Cloudflare Ray ID: abc</p>' + 'x'.repeat(300) + '</body></html>'
+  it('Cloudflare WAF 403 ("Attention Required!" + "you have been blocked") is not escalation evidence', () => {
+    expect(hasChallengeEvidence({ title: 'Attention Required! | Cloudflare', html: waf, status: 403 })).toBe(false)
+  })
+  it('Akamai "Access Denied" 403 variants are not escalation evidence', () => {
+    const html = '<html><body><h1>Access Denied</h1>Reference #18.abc akamai</body></html>'
+    expect(hasChallengeEvidence({ title: 'Access Denied', html, status: 403 })).toBe(false)
+    expect(hasChallengeEvidence({ title: 'Access Denied - example.com', html, status: 403 })).toBe(false)
+  })
+  it('a captcha widget on a block status still counts, even with Cloudflare named first', () => {
+    const html = '<html><body>Protected by Cloudflare<div class="g-recaptcha"></div></body></html>'
+    expect(hasChallengeEvidence({ title: 'Blocked', html, status: 403 })).toBe(true)
+  })
+  it('Turnstile on a 429 counts; Turnstile in a 200 login form does not', () => {
+    const html = '<html><body><div class="cf-turnstile"></div></body></html>'
+    expect(hasChallengeEvidence({ title: 'x', html, status: 429 })).toBe(true)
+    expect(hasChallengeEvidence({ title: 'Sign in', html, status: 200 })).toBe(false)
+  })
+})
+
+describe('resolveFetchOutcome', () => {
+  const clean = { title: 'x', html: '<html></html>', textLen: 10, url: 'https://e.com/' }
+  it('passes an observed outcome through', () => {
+    expect(resolveFetchOutcome({ outcome: 'page' }, null, true)).toBe('page')
+  })
+  it('keeps waiting before the deadline without a read', () => {
+    expect(resolveFetchOutcome(null, null, false)).toBe('wait')
+  })
+  it('never calls a deadline with no read ever made "no_challenge"', () => {
+    expect(resolveFetchOutcome(null, null, true)).toBe('observation_failed')
+  })
+  it('falls back on the last read at the deadline', () => {
+    expect(resolveFetchOutcome(null, clean, true)).toBe('no_challenge')
+    expect(resolveFetchOutcome(null, { ...clean, html: '<title>Just a moment...</title>' }, true)).toBe('challenge')
+  })
+})
+
+describe('classifyFetchOutcome — auth wall needs a thin page', () => {
+  it('a full content page under /auth is a page, not an auth wall', () => {
+    const obs = { title: 'Auth docs', html: '<html></html>', textLen: 5000, url: 'https://e.com/docs/auth' }
+    expect(classifyFetchOutcome(obs, { requestedUrl: 'https://e.com/docs', atDeadline: false })).toBe('page')
   })
 })

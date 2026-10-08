@@ -1,9 +1,10 @@
 #!/usr/bin/env bun
 // Runs LOCALLY ON THE MINI, spawned directly by src/agent/human-solve.ts
 // (`Bun.spawn([process.execPath, <abs path to this file>], ...)` — no ssh, this process IS
-// the browser automation). The one repo import below (`../src/lib/ssrf.js`, env-free — see its
-// own header) is deliberate: it runs from the repo checkout, so there is no reason to keep a
-// second, weaker copy of the SSRF guard here.
+// the browser automation). The two repo imports below are deliberate and both env-free: it runs
+// from the repo checkout, so there is no reason to keep a second, weaker copy of the SSRF guard
+// (`../src/lib/ssrf.js`) or of the block markers (`../src/agent/challenge.js`, pure, no
+// imports) here.
 //
 // Why local, not the MacBook: cf_clearance must be issued to the IP that later fetches also
 // use — the mini's — and the MacBook is an IU-managed device on a corporate network the fetch
@@ -22,6 +23,7 @@
 
 import { unlinkSync, readFileSync, writeFileSync, linkSync, statSync, renameSync } from 'node:fs'
 import { assertPublicHttpUrl } from '../src/lib/ssrf.js'
+import { BLOCKED_STATUSES, DECISIVE_BODY_MARKERS } from '../src/agent/challenge.js'
 
 export interface SolverRequest {
   v: 1
@@ -172,12 +174,100 @@ export function isChallengeTitle(title: string, elapsedMs = 0): boolean {
   return CHALLENGE_TITLE_RE.test(trimmed)
 }
 
-const CHALLENGE_HTML_RE =
-  /cf-chl|cf-mitigated|just a moment|verify you are human|checking your browser|enable javascript and cookies/i
+const CHALLENGE_HTML_RE = DECISIVE_BODY_MARKERS
 
 export function looksChallenged(html: string, textLen: number): boolean {
   if (textLen < MIN_TEXT_LEN) return true
   return CHALLENGE_HTML_RE.test(html.slice(0, 20_000))
+}
+
+// DataDome's captcha-delivery.com and PerimeterX's px-captcha only ever appear on an actual
+// mitigation, so they decide at any status.
+const INTERACTIVE_VENDOR_RE = /captcha-delivery\.com|px-captcha/i
+// A captcha widget (hCaptcha, reCAPTCHA, Turnstile) also sits in ordinary login forms, so it
+// only counts on a block status.
+const CAPTCHA_WIDGET_RE = /captcha|turnstile|datadome|perimeterx/i
+// A hard block — Cloudflare's WAF page ("Attention Required!" + "Sorry, you have been blocked"),
+// Akamai's "Access Denied … Reference #" — refuses the requester outright: worth waiting out
+// while polling, but nothing a human click clears, unless a captcha widget sits on it.
+const HARD_BLOCK_RE = /you have been blocked|access denied|error code:?\s*1020|reference\s*#\s*\d/i
+
+function hasChallengeTitle(title: string): boolean {
+  const trimmed = title.trim()
+  return trimmed !== '' && CHALLENGE_TITLE_RE.test(trimmed)
+}
+
+/** Positive evidence that a page is an interactive anti-bot challenge a human could clear — as
+ * opposed to a 404 stub, a login wall, an empty SPA shell or a hard block. There are no response
+ * headers over CDP's page-side evaluate, so the title, body and status carry the verdict. */
+export function hasChallengeEvidence(input: { title: string; html: string; status?: number | undefined }): boolean {
+  const { title, html, status } = input
+  const head = html.slice(0, 20_000)
+  if (CHALLENGE_HTML_RE.test(head) || INTERACTIVE_VENDOR_RE.test(head)) return true
+  const blockedStatus = status !== undefined && BLOCKED_STATUSES.has(status)
+  const widget = blockedStatus && CAPTCHA_WIDGET_RE.test(head)
+  if (HARD_BLOCK_RE.test(title) || HARD_BLOCK_RE.test(head)) return widget
+  return hasChallengeTitle(title) || widget
+}
+
+// A settled URL that is a sign-in page. Host prefixes are the accounts./login./auth./sso. convention;
+// the path match needs a segment boundary on both sides so /authors and /login-help stay content.
+const AUTH_HOST_RE = /^(?:accounts|login|auth|sso)\./i
+const AUTH_PATH_RE = /(?:^|\/)(?:log-?in|sign-?in|sign_in|signon|sso|oauth2?|authorize|auth)(?:\/|$|\.)/i
+
+export function isAuthWallUrl(raw: string): boolean {
+  try {
+    const u = new URL(raw)
+    return AUTH_HOST_RE.test(u.hostname) || AUTH_PATH_RE.test(u.pathname)
+  } catch {
+    return false
+  }
+}
+
+export interface FetchObservation {
+  title: string
+  html: string
+  textLen: number
+  url: string
+  status?: number | undefined
+}
+
+/** What a fetch-mode observation means. `page`/`http_status` hand the html back (the gateway's
+ * fetch-chain reads `status` to record a 404/410 as `missing`); `auth_required` and (at the
+ * deadline) `no_challenge` end the attempt without a human; `challenge` is the ONLY verdict that
+ * escalates to the consent dialog; `wait` keeps polling. */
+export type FetchOutcome = 'wait' | 'page' | 'http_status' | 'auth_required' | 'challenge' | 'no_challenge'
+
+/** Pure decision for one settled-or-not observation in fetch mode. The status check runs BEFORE
+ * the thin-page check on purpose: a 404 stub is a few hundred chars and would otherwise read as
+ * "still loading a challenge" until the deadline. Evidence of a challenge always wins over a
+ * status or URL (a Cloudflare 403 is a challenge, not an http_status miss). */
+export function classifyFetchOutcome(obs: FetchObservation, opts: { requestedUrl: string; atDeadline: boolean }): FetchOutcome {
+  const evidence = hasChallengeEvidence(obs)
+  if (!evidence) {
+    if (obs.status !== undefined && obs.status >= 400) return 'http_status'
+    if (!looksChallenged(obs.html, obs.textLen)) return 'page'
+    // Only a THIN page at a sign-in URL — a content page that merely lives under /auth or /sso
+    // (docs, a wiki article) already returned 'page' above.
+    if (isAuthWallUrl(obs.url) && !isAuthWallUrl(opts.requestedUrl)) return 'auth_required'
+  }
+  if (!opts.atDeadline) return 'wait'
+  return evidence ? 'challenge' : 'no_challenge'
+}
+
+/** The loop's verdict for one poll: `observed` is this poll's read (null when CDP produced
+ * none), `lastObs` the latest read any earlier poll made. A deadline with NO read ever made is a
+ * local CDP failure, not evidence about the page — 'observation_failed', never 'no_challenge'
+ * (which would claim a page was seen and found clean). */
+export function resolveFetchOutcome(
+  observed: { outcome: FetchOutcome } | null,
+  lastObs: FetchObservation | null,
+  atDeadline: boolean,
+): FetchOutcome | 'observation_failed' {
+  if (observed) return observed.outcome
+  if (!atDeadline) return 'wait'
+  if (!lastObs) return 'observation_failed'
+  return hasChallengeEvidence(lastObs) ? 'challenge' : 'no_challenge'
 }
 
 export function capHtml(html: string): string {
@@ -756,6 +846,33 @@ async function readSettledPage(tab: { id: string; wsUrl: string }, deadline: num
   }
 }
 
+// Fetch-mode sibling of readSettledPage: reads the page and lets classifyFetchOutcome decide,
+// instead of treating every unsettled page as "challenged". A terminal verdict is confirmed by a
+// second sample (same url + text length across SETTLE_GAP_MS) unless `atDeadline`, where one
+// observation is all the budget allows. Always returns the observation too, so the caller can
+// keep the latest one for its deadline decision.
+async function observeFetchPage(
+  tab: { id: string; wsUrl: string },
+  deadline: number,
+  opts: { requestedUrl: string; atDeadline: boolean },
+): Promise<{ outcome: FetchOutcome; obs: EvalResult } | null> {
+  const session = openCdpSession(tab.wsUrl)
+  try {
+    const first = await session.evaluate()
+    if (!first) return null
+    const firstOutcome = classifyFetchOutcome(first, opts)
+    if (opts.atDeadline || firstOutcome === 'wait') return { outcome: firstOutcome, obs: first }
+    const gapMs = Math.min(SETTLE_GAP_MS, Math.max(0, deadline - Date.now()))
+    await sleep(gapMs)
+    const second = await session.evaluate()
+    if (!second) return { outcome: 'wait', obs: first }
+    if (second.url !== first.url || second.textLen !== first.textLen) return { outcome: 'wait', obs: second }
+    return { outcome: classifyFetchOutcome(second, opts), obs: second }
+  } finally {
+    session.close()
+  }
+}
+
 async function processRequest(req: SolverRequest): Promise<SolverOutput> {
   const startedAt = Date.now()
   const overallDeadline = startedAt + req.timeoutMs
@@ -799,26 +916,49 @@ async function processRequest(req: SolverRequest): Promise<SolverOutput> {
     }
 
     let stableCount = 0
+    // The latest page observation fetch mode made — what the deadline decision falls back on if
+    // its own final read fails.
+    let lastObs: EvalResult | null = null
     while (Date.now() < overallDeadline) {
-      if (challengeDeadline !== undefined && Date.now() > challengeDeadline) {
-        return { ok: false, reason: 'challenge' }
-      }
-
       const targets = await listTargets()
       const target = targets.find((t) => t.id === tab.id)
       const title = target?.title ?? ''
-      if (isChallengeTitle(title, Date.now() - startedAt)) {
-        stableCount = 0
-        await sleep(STABLE_POLL_MS)
-        continue
-      }
-      stableCount++
-      if (stableCount < STABLE_CHECKS_REQUIRED) {
-        await sleep(STABLE_POLL_MS)
-        continue
+      const atDeadline = challengeDeadline !== undefined && Date.now() > challengeDeadline
+
+      // A title that STILL matches a challenge at the deadline is positive evidence on its own —
+      // and the only case decided without attaching CDP (see openCdpSession's anti-fingerprint rule).
+      if (atDeadline && hasChallengeTitle(title)) return { ok: false, reason: 'challenge' }
+
+      if (!atDeadline) {
+        if (isChallengeTitle(title, Date.now() - startedAt)) {
+          stableCount = 0
+          await sleep(STABLE_POLL_MS)
+          continue
+        }
+        stableCount++
+        if (stableCount < STABLE_CHECKS_REQUIRED) {
+          await sleep(STABLE_POLL_MS)
+          continue
+        }
       }
 
-      const settled = await readSettledPage(tab, overallDeadline)
+      let settled: EvalResult | null
+      if (req.mode === 'fetch') {
+        // Only 'challenge' escalates to a human (human-solver.ts) — "never settled" alone is not
+        // evidence of one: a 404 stub, a login wall and an empty SPA shell all stay thin forever.
+        const observed = await observeFetchPage(tab, overallDeadline, { requestedUrl: req.url, atDeadline })
+        if (observed) lastObs = observed.obs
+        const obs = observed?.obs ?? lastObs
+        const outcome = resolveFetchOutcome(observed, lastObs, atDeadline)
+        if (outcome !== 'wait') logErr('fetch_outcome', { outcome, status: obs?.status, url: obs?.url, textLen: obs?.textLen })
+        if (outcome === 'observation_failed') return { ok: false, reason: 'error' }
+        if (outcome === 'challenge' || outcome === 'no_challenge' || outcome === 'auth_required') {
+          return { ok: false, reason: outcome }
+        }
+        settled = outcome === 'page' || outcome === 'http_status' ? obs : null
+      } else {
+        settled = await readSettledPage(tab, overallDeadline)
+      }
       if (!settled) {
         stableCount = 0
         await sleep(STABLE_POLL_MS)
