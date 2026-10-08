@@ -47,6 +47,10 @@ export function stripNarration(summary: string): string {
 // sentence (a bare list, a table) is left out rather than quoted mid-structure.
 const MAX_BOTTOM_LINE_CHARS = 280
 
+// The heading the synthesis prompt (prompt.ts) asks the model to open with and the fallback
+// assembly below opens with — one constant so the two cannot drift apart.
+export const BOTTOM_LINE_HEADING = '## Bottom line'
+
 function bottomLine(sections: ReadonlyArray<{ heading: string; body: string }>): string {
   const lines = sections.flatMap(({ heading, body }) => {
     const first = body
@@ -59,7 +63,7 @@ function bottomLine(sections: ReadonlyArray<{ heading: string; body: string }>):
       sentence.length > MAX_BOTTOM_LINE_CHARS ? `${sentence.slice(0, MAX_BOTTOM_LINE_CHARS - 1).trimEnd()}…` : sentence
     return [`- **${heading}** — ${clipped}`]
   })
-  return lines.length > 0 ? `## Bottom line\n\n${lines.join('\n')}` : ''
+  return lines.length > 0 ? `${BOTTOM_LINE_HEADING}\n\n${lines.join('\n')}` : ''
 }
 
 // A worker's `subQuestion` is the full research prompt, not a title: "(a) how does X work;

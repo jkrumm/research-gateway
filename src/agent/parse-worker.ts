@@ -17,11 +17,11 @@ import { stripConsentOverlays } from './consent.js'
 import { resolveSite } from './site-adapters.js'
 import { normalizeText } from './extract.js'
 
-export type ParseRequest =
+type ParseRequest =
   | { kind: 'extract'; url: string; body: string }
   | { kind: 'readability'; body: string }
 
-export type ParseResponse =
+type ParseResponse =
   | { ok: true; via: 'site-adapter' | 'readability'; text: string | null }
   | { ok: false; error: string }
 

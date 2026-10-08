@@ -99,18 +99,6 @@ export const PARSE_INPUT_CAP = 2_000_000
 // the parse decision, and PARSE_INPUT_CAP stays the single number that decides parsing.
 export const MAX_BODY_BYTES = PARSE_INPUT_CAP * 4
 
-// A response body as the fetch chain holds it: raw bytes, plus whether the byte bound cut it
-// short. `readBoundedBody` (fetch-chain.ts) produces these; it is the only thing that ever
-// touches a socket. Bytes rather than decoded text so a caller that must hand a body
-// elsewhere unmodified (a binary format) is never forced through a UTF-8 decode that would
-// corrupt it — decoding is each call site's own choice, for the bodies that need it as text.
-export interface BoundedBody {
-  /** The raw body: the whole of it, unless `truncated`. */
-  bytes: Uint8Array
-  /** True when the body was CUT at MAX_BODY_BYTES rather than read to the end. */
-  truncated: boolean
-}
-
 /**
  * Why this decoded body may not be handed to the synchronous parser, or null when it may.
  *
@@ -148,9 +136,9 @@ export function isDefinitivelyMissing(status: number): boolean {
 // Content-Type, and arXiv's own header is correct but that is not something to depend on.
 const PDF_MAGIC = new TextEncoder().encode('%PDF-')
 
-// Exported separately from isPdf() below: the fetch chain's truncated-body branch has a
+// Separate from isPdf() below: the fetch chain's truncated-body branch has a
 // Content-Type but no complete bytes to run the magic-byte check against.
-export function isPdfContentType(contentType: string | null | undefined): boolean {
+function isPdfContentType(contentType: string | null | undefined): boolean {
   if (!contentType) return false
   return contentType.toLowerCase().includes('application/pdf')
 }

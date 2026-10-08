@@ -8,44 +8,20 @@ import type { JobStore, Job } from './job-store-core.js'
 import { HandedOffError, MAX_JOB_ATTEMPTS } from './job-store-core.js'
 import { FencedError } from '../agent/fenced-error.js'
 import { parseCheckpoint, serializeCheckpoint, type ResearchCheckpoint } from '../agent/checkpoint.js'
-import type { Depth, JobProgress, ResearchReport } from '../agent/schema.js'
+import type { JobProgress } from '../agent/schema.js'
+import type { JobUsage, RunResearchFn } from '../agent/run-contract.js'
 import type { UsageStats } from './usage.js'
 
-// Mirrors `agent/run.ts`'s `JobUsage` — declared locally rather than imported so this module
-// pulls in no part of run.ts's own env/LLM import chain (a type-only import would be erased
-// and cost nothing either way, but this keeps the dependency direction explicit).
-export interface JobUsage extends UsageStats {
-  lead: UsageStats
-  worker: UsageStats
-}
+export type { RunResearchFn }
 
 // Mirrors the shape `lib/usage.ts`'s `reportUsage` takes, minus `model`/`subTool`/`outcome`
-// (which the caller fills in per model role) — declared locally for the same reason as
-// `JobUsage` above.
+// (which the caller fills in per model role) — declared locally so this module pulls in no part
+// of `usage.ts`'s env chain beyond its erased types.
 export type UsageReport = UsageStats & {
   jobId: string
   model: string
   subTool: 'lead' | 'worker'
   outcome?: 'ok' | 'error'
-}
-
-export interface RunResearchFn {
-  (
-    input: {
-      query: string
-      context?: string | undefined
-      depth?: Depth
-      jobId?: string
-      signal?: AbortSignal | undefined
-      onProgress?: ((progress: JobProgress) => void) | undefined
-    },
-    onUsage?: (stats: JobUsage) => void,
-    opts?: {
-      checkpoint?: ResearchCheckpoint | null
-      onCheckpoint?: (checkpoint: ResearchCheckpoint) => void
-      isFenced?: () => boolean
-    },
-  ): Promise<ResearchReport>
 }
 
 export interface JobRunnerDeps {

@@ -3,7 +3,7 @@ import { planResearch } from './plan.js'
 import { runWorker } from './worker.js'
 import { synthesize } from './synthesize.js'
 import { reviewConsistency } from './consistency.js'
-import { consistencySkipReason } from './consistency-gate.js'
+import { consistencySkipReason, noopConsistencyReview } from './consistency-gate.js'
 import { applyConsistencyGate, CONSISTENCY_WARNING, stripInlineConfidenceTags } from './extract.js'
 import { assembleReport, nextRoundQuestions } from './assemble.js'
 import { mergeLedgers, type LedgerSnapshot } from './ledger.js'
@@ -14,24 +14,12 @@ import type { Depth, JobProgress, ResearchReport, SubmittedReport, SubQuestion, 
 import { log } from '../lib/log.js'
 import { chooseCost, emptyUsage, addUsage } from '../lib/usage.js'
 import { readSearchSpend, readRenderStats, clearFetchFlights } from './tools.js'
-import type { UsageStats } from '../lib/usage.js'
 import { env } from '../env.js'
 import { traceIdFromJobId, withRootSpan, withSpan } from '../lib/otel.js'
 import { describeFailures, collectRoundOutcome, type RoundResult, type WorkerOutcome } from './round.js'
 import { runRounds } from './rounds.js'
 import { FencedError } from './fenced-error.js'
-
-// Re-exported for compatibility and direct unit-testing — the implementation lives in
-// `assemble.ts` because it has no `env.js` import chain (schema.js only), so it can be
-// tested without booting the env-parsing/llm.ts chain that `run.ts` itself drags in.
-export { assembleReport, nextRoundQuestions } from './assemble.js'
-
-// Combined job usage handed to onUsage: the flat total plus the per-model split, since
-// the lead model (plan + synthesis) and worker model (fan-out) are billed separately.
-export interface JobUsage extends UsageStats {
-  lead: UsageStats
-  worker: UsageStats
-}
+import type { JobUsage, ResearchRunInput, ResearchRunOpts } from './run-contract.js'
 
 // Tiny local concurrency gate — bounds how many workers run at once within one job.
 // No dependency added; Promise.allSettled still drives the actual parallel dispatch.
@@ -136,34 +124,9 @@ function tracedRound(args: {
 }
 
 export async function runResearch(
-  input: {
-    query: string
-    context?: string | undefined
-    depth?: Depth
-    jobId?: string
-    // Job-level cancel. Every LLM call's idle watchdog follows it (so the in-flight request
-    // aborts at once), and the phase boundaries below re-check it: plan, worker, synthesis and
-    // consistency all degrade instead of throwing, so without these checks an aborted job would
-    // fall through to the fallback plan / assembled report and "finish".
-    signal?: AbortSignal | undefined
-    // Live phase for status reads (job-store.ts holds the latest). Worker counts are cumulative
-    // across rounds and the retry, so a caller sees the job's whole fan-out, not one round's.
-    onProgress?: ((progress: JobProgress) => void) | undefined
-  },
+  input: ResearchRunInput,
   onUsage?: (stats: JobUsage) => void,
-  opts?: {
-    checkpoint?: ResearchCheckpoint | null
-    onCheckpoint?: (checkpoint: ResearchCheckpoint) => void
-    /**
-     * True once this process no longer owns the job's lease (job-store.ts's `ownsLease`) —
-     * checked at every round/retry/synthesis boundary (rounds.ts's `runRounds`, plus once more
-     * here before synthesis), and a positive check aborts the run with `FencedError` rather
-     * than continuing to spend LLM/pdftotext work a fenced-off adopter will discard anyway.
-     * Defaults to "never fenced", which is what every caller outside run-job.ts's live lease
-     * machinery (tests, scripts/smoke.ts) wants.
-     */
-    isFenced?: () => boolean
-  },
+  opts?: ResearchRunOpts,
 ): Promise<ResearchReport> {
   const depth = input.depth ?? 'standard'
   const jobId = input.jobId ?? '-'
@@ -435,7 +398,7 @@ export async function runResearch(
             gateSpan.setAttributes({ 'consistency.skipped': skip })
           }
           const review = skip
-            ? { report: submitted.report, corrected: false, appliedEdits: [], vetoed: false, usage: emptyUsage() }
+            ? noopConsistencyReview(submitted.report, emptyUsage())
             : await reviewConsistency({ report: submitted.report, jobId, signal })
           const merged = applyConsistencyGate({ review, leadUsage })
           leadUsage = merged.leadUsage

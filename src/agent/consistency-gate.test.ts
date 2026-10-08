@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'bun:test'
-import { consistencySkipReason, CONSISTENCY_MIN_REPORT_CHARS } from './consistency-gate.js'
+import { consistencySkipReason, noopConsistencyReview, CONSISTENCY_MIN_REPORT_CHARS } from './consistency-gate.js'
+import type { UsageStats } from '../lib/usage.js'
 
 const base = { depth: 'standard', digestCount: 3, reportChars: 15_000 } as const
 
@@ -17,5 +18,27 @@ describe('consistencySkipReason', () => {
   it('skips below the size floor, runs at it', () => {
     expect(consistencySkipReason({ ...base, reportChars: CONSISTENCY_MIN_REPORT_CHARS - 1 })).toBe('short-report')
     expect(consistencySkipReason({ ...base, reportChars: CONSISTENCY_MIN_REPORT_CHARS })).toBeNull()
+  })
+})
+
+describe('noopConsistencyReview', () => {
+  it('returns the original report untouched, with no edits and no veto', () => {
+    const usage: UsageStats = {
+      inputTokens: 1,
+      outputTokens: 2,
+      totalTokens: 3,
+      reasoningTokens: 0,
+      cachedInputTokens: 0,
+      durationMs: 4,
+      reportedCostUsd: 0,
+      unreportedCalls: 0,
+    }
+    expect(noopConsistencyReview('the report', usage)).toEqual({
+      report: 'the report',
+      corrected: false,
+      appliedEdits: [],
+      vetoed: false,
+      usage,
+    })
   })
 })

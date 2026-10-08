@@ -129,18 +129,24 @@ export function createHumanSolveState(): HumanSolveState {
     return true
   }
 
+  // The two guards both plan() and planDialog() open with: the local solver being down, then a
+  // host-level suppression. Returns the 'suppressed' decision, or null to carry on.
+  function suppressedGuard(host: string, now: number): Extract<PlanAction, { action: 'suppressed' }> | null {
+    if (now < localUnavailableUntil) return { action: 'suppressed', reason: 'solver unavailable' }
+    const state = hosts.get(host)
+    if (state?.suppressedUntil !== undefined && now < state.suppressedUntil) {
+      return { action: 'suppressed', reason: state.suppressReason ?? 'suppressed' }
+    }
+    return null
+  }
+
   return {
     plan(host, now) {
       // The local-unavailable (Chrome/proxy down) guard stays ahead of EVERYTHING else — a
       // browser-only attempt runs bin/solver.ts locally on the mini exactly like a solve does,
       // so it needs the same Chrome/proxy.
-      if (now < localUnavailableUntil) {
-        return { action: 'suppressed', reason: 'solver unavailable' }
-      }
-      const state = hosts.get(host)
-      if (state?.suppressedUntil !== undefined && now < state.suppressedUntil) {
-        return { action: 'suppressed', reason: state.suppressReason ?? 'suppressed' }
-      }
+      const suppressed = suppressedGuard(host, now)
+      if (suppressed) return suppressed
       // No MacBook/dialog-rate-limit check here on purpose — a browser-only ('fetch' mode)
       // attempt never touches the MacBook or the dialog, for an unknown host exactly as much as
       // a previously-cleared one (measured 2026-09-26: MPB's Cloudflare managed challenge was
@@ -150,13 +156,8 @@ export function createHumanSolveState(): HumanSolveState {
       return { action: 'browser' }
     },
     planDialog(host, now) {
-      if (now < localUnavailableUntil) {
-        return { action: 'suppressed', reason: 'solver unavailable' }
-      }
-      const state = hosts.get(host)
-      if (state?.suppressedUntil !== undefined && now < state.suppressedUntil) {
-        return { action: 'suppressed', reason: state.suppressReason ?? 'suppressed' }
-      }
+      const suppressed = suppressedGuard(host, now)
+      if (suppressed) return suppressed
       if (now < macbookUnreachableUntil) {
         return { action: 'suppressed', reason: 'macbook unreachable' }
       }

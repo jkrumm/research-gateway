@@ -13,10 +13,9 @@ import { TYPICAL_DURATION_MS } from '../agent/depth.js'
 import type { z } from 'zod'
 import { openJobDb } from './job-db.js'
 import { log } from './log.js'
-import { createJobStore, MAX_JOB_ATTEMPTS, HandedOffError, type Job, type JobStatus, type JobStore } from './job-store-core.js'
+import { createJobStore, type Job, type JobStore } from './job-store-core.js'
 
-export type { JobStatus, Job }
-export { MAX_JOB_ATTEMPTS, HandedOffError }
+export type { Job }
 
 // Kept as its own reference (not just handed to `createJobStore`) so `findActiveJobByIdempotencyKey`
 // below can query it directly — the dedupe lookup is a plain read-through the core has no
@@ -39,15 +38,8 @@ const store: JobStore = createJobStore({
 // outside this pair of files changes.
 export const jobStoreInstance: JobStore = store
 
-export const INSTANCE_ID = store.instanceId
 export const createJob = store.createJob
 export const getJob = store.getJob
-export const updateJob = store.updateJob
-export const saveJobCheckpoint = store.saveJobCheckpoint
-export const ownsLease = store.ownsLease
-export const startHeartbeat = store.startHeartbeat
-export const claimStaleJobs = store.claimStaleJobs
-export const withSlot = store.withSlot
 export const admission = store.admission
 export const isDraining = store.isDraining
 export const setMemoryPressure = store.setMemoryPressure
@@ -57,8 +49,6 @@ export const beginDraining = store.beginDraining
 export const releaseAllOwnedLeases = store.releaseAllOwnedLeases
 export const waitForDrain = store.waitForDrain
 export const restartStats = store.restartStats
-export const notifyJobResumed = store.notifyJobResumed
-export const notifyJobFailedAfterRestarts = store.notifyJobFailedAfterRestarts
 
 // The submit dedupe lookup: the most recent job created with this key that has not yet aged
 // out of retention. Never consults the in-memory map — the job a retried submit wants back may
@@ -76,7 +66,7 @@ const CANCELLED_MESSAGE = 'Cancelled by the caller before it finished.'
 // The abort reason a cancel hands to a running job's controller and a queued job's semaphore
 // waiter. run-job.ts tells a cancel apart from a real failure by the job's own signal, not by
 // this type — but a typed reason keeps the unwinding error readable in a trace.
-export class JobCancelledError extends Error {
+class JobCancelledError extends Error {
   constructor() {
     super(CANCELLED_MESSAGE)
     this.name = 'JobCancelledError'

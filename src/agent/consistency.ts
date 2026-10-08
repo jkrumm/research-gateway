@@ -6,6 +6,7 @@ import { consistencyPrompt } from './prompt.js'
 // import carries an inline type-only rename rather than a second import statement.
 import { ConsistencyReview, type ConsistencyReview as ConsistencyReviewInput } from './schema.js'
 import { resolveConsistencyReview } from './extract.js'
+import { noopConsistencyReview } from './consistency-gate.js'
 import type { ConsistencyResolution } from './extract.js'
 import { log } from '../lib/log.js'
 import { withSpan } from '../lib/otel.js'
@@ -137,13 +138,7 @@ export async function reviewConsistency(args: {
         span.setAttributes({ 'consistency.outcome': 'failed' })
         span.setStatus('error', String(err).slice(0, 300))
         log('consistency.failed', { jobId, error: String(err) })
-        return {
-          report,
-          corrected: false,
-          appliedEdits: [],
-          vetoed: false,
-          usage: { ...emptyUsage(), durationMs: Date.now() - start },
-        }
+        return noopConsistencyReview(report, { ...emptyUsage(), durationMs: Date.now() - start })
       } finally {
         idle.clear()
       }

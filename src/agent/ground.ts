@@ -320,13 +320,14 @@ function countShared(subject: ReadonlySet<string>, words: ReadonlySet<string>): 
 // `backed(url)`: the run actually read that URL. A claim citing a page the run read is backed by
 // that page, so an unverified entry about some OTHER document cannot cap it — only a claim
 // citing a copy of the unread document itself (`isCopy`) or one with no read page behind it can.
-function restsOn(
-  claim: Finding,
-  words: ReadonlySet<string>,
-  subject: Subject,
-  isVocabulary: (t: string) => boolean,
-  backed: (url: string) => boolean,
-): boolean {
+function restsOn(args: {
+  claim: Finding
+  words: ReadonlySet<string>
+  subject: Subject
+  isVocabulary: (t: string) => boolean
+  backed: (url: string) => boolean
+}): boolean {
+  const { claim, words, subject, isVocabulary, backed } = args
   const tokens = new Set([...subject.tokens].filter((t) => !isVocabulary(t)))
   if (tokens.size < 2) return false
   const shared = countShared(tokens, words)
@@ -367,7 +368,7 @@ export function degradeClaimsOnUnverifiedSources(
   const kept = claims.map((claim, index) => {
     if (claim.confidence === 'low') return claim
     const words = claimWords[index] ?? new Set<string>()
-    if (!subjects.some((subject) => restsOn(claim, words, subject, isVocabulary, backed))) return claim
+    if (!subjects.some((subject) => restsOn({ claim, words, subject, isVocabulary, backed }))) return claim
     degraded.add(index)
     return { ...claim, confidence: 'low' as const }
   })
@@ -433,7 +434,9 @@ export function partialCauseOf(
 ): NonNullable<Grounding['partialCause']> | null {
   if (grounding.citationsDropped > 0) return 'dropped'
   if (annotated > 0) return 'scrubbed'
-  if (grounding.pagesRetrieved === 0 && grounding.pagesMissing === 0) return 'no-pages'
+  // Nothing was read: no page at all, or only 404s alongside failures. The failures are then a
+  // symptom of the same thing — a run with 404s and no failures still holds absence evidence.
+  if (grounding.pagesRetrieved === 0 && (grounding.pagesMissing === 0 || grounding.pagesFailed > 0)) return 'no-pages'
   if (grounding.pagesFailed > grounding.pagesRetrieved) return 'failures'
   return null
 }

@@ -737,6 +737,8 @@ describe('groundReport — the job boundary', () => {
       expect(partialCauseOf(base, 1)).toBe('scrubbed')
       expect(partialCauseOf({ ...base, pagesRetrieved: 0 }, 0)).toBe('no-pages')
       expect(partialCauseOf({ ...base, pagesFailed: 4 }, 0)).toBe('failures')
+      expect(partialCauseOf({ ...base, pagesRetrieved: 0, pagesMissing: 2, pagesFailed: 3 }, 0)).toBe('no-pages')
+      expect(partialCauseOf({ ...base, pagesRetrieved: 0, pagesMissing: 2 }, 0)).toBeNull()
     })
 
     it('does NOT degrade a claim about a document the ledger says was retrieved anyway (issue #1 direction)', () => {

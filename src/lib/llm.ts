@@ -4,10 +4,9 @@ import { env } from '../env.js'
 import { ROLE_BUDGETS, roleProviderSettings, submitToolChoice } from './llm-settings.js'
 import type { LlmRole } from './llm-settings.js'
 
-export { ROLE_BUDGETS, REASONING_EFFORT } from './llm-settings.js'
-export type { LlmRole } from './llm-settings.js'
+export { ROLE_BUDGETS } from './llm-settings.js'
 
-export const iu = createOpenAICompatible({
+const iu = createOpenAICompatible({
   name: 'iu',
   baseURL: env.IU_BASE_URL,
   apiKey: env.IU_API_KEY,

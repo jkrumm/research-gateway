@@ -47,7 +47,7 @@ export interface JobRecord {
   finishedAt?: number
   heartbeatAt?: number
   /**
-   * The process instance currently leasing this job — see job-store.ts's `INSTANCE_ID`.
+   * The process instance currently leasing this job — see job-store.ts's `instanceId`.
    * Undefined only for a legacy row written before this column existed, which is claimable
    * immediately (the same treatment a NULL heartbeat always got).
    */

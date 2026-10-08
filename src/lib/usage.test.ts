@@ -2,7 +2,7 @@ import { describe, it, expect } from 'bun:test'
 // Imported from `cost.ts` directly, NOT `usage.ts` — `usage.ts` imports `env.ts` (for
 // `reportUsage`'s ARGO_* gate), which parses `process.env` at import time and throws
 // without secrets. `cost.ts` has no such chain, so `computeCost` is testable with zero
-// env vars. `usage.ts` re-exports the same `computeCost` binding for compatibility.
+// env vars.
 import {
   computeCost,
   buildLlmUsageRecord,

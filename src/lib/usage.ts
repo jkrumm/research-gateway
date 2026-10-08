@@ -13,10 +13,10 @@ import {
   formatUsageJsonlLine,
 } from './cost.js'
 
-// Re-exported for compatibility — callers importing `computeCost`/`chooseCost` from `usage.ts`
-// keep working; the implementation lives in `cost.ts` because it has no `env.js` import and
-// so can be unit-tested without booting the env-parsing chain.
-export { computeCost, chooseCost } from './cost.js'
+// Re-exported so callers importing `chooseCost` from `usage.ts` keep working; the
+// implementation lives in `cost.ts` because it has no `env.js` import and so can be
+// unit-tested without booting the env-parsing chain.
+export { chooseCost } from './cost.js'
 
 // Shared sink, used by every reporter in this file — reportUsage (LLM/token records),
 // reportTavilyUsage/reportSonarUsage/reportRenderUsage (credit/cost/render records) — same

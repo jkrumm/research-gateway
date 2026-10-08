@@ -1,7 +1,7 @@
 // Dependency-free by design (no `env.js` import) so `computeCost` can be unit-tested
 // without booting the env-parsing chain.
 
-export function normalizeModel(raw: string): string {
+function normalizeModel(raw: string): string {
   let m = raw.toLowerCase().trim()
   if (m.includes('/')) m = m.split('/').pop() ?? m
   return m.replace(/-eu$/, '').replace(/-\d{8}$/, '')
@@ -19,7 +19,7 @@ const OFF_PEAK: Record<string, { fromMin: number; toMin: number; rate: Rate }> =
   'deepseek-v4.1-flash': { fromMin: 16 * 60 + 30, toMin: 30, rate: { input: 0.15, cachedInput: 0.003, output: 0.6 } },
 }
 
-export function isOffPeak(at: Date, fromMin: number, toMin: number): boolean {
+function isOffPeak(at: Date, fromMin: number, toMin: number): boolean {
   const t = at.getUTCHours() * 60 + at.getUTCMinutes()
   return fromMin <= toMin ? t >= fromMin && t < toMin : t >= fromMin || t < toMin
 }

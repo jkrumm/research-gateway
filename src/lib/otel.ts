@@ -33,10 +33,6 @@ import { toLogAttributes, severityFor, parseOtlpHeadersEnv, type LogSeverity } f
 // (10m x 3, container-local) had already rotated the rest away — a deep job runs ~28min, so
 // even one job's logs don't reliably survive a redeploy.
 
-// Re-exported so a caller only ever needs one import path for the telemetry surface — same
-// convention as usage.ts re-exporting `computeCost` from cost.ts.
-export { toLogAttributes, severityFor } from './otel-format.js'
-
 const ENDPOINT = env.OTEL_EXPORTER_OTLP_ENDPOINT
 const ENABLED = Boolean(ENDPOINT)
 
@@ -252,11 +248,6 @@ function toPublicSpan(data: InternalSpanData): Span {
       exportSpan(data)
     },
   }
-}
-
-/** Start a span. Parent is whatever span is active on the AsyncLocalStorage; a root has none. */
-export function startSpan(name: string, attrs?: SpanAttributes, kind: SpanKind = 'internal'): Span {
-  return toPublicSpan(createSpanData(name, kind, attrs))
 }
 
 /** The currently active span (via `withSpan`/`withRootSpan`), or a no-op span if none. */

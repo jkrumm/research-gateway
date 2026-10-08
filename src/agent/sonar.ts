@@ -37,8 +37,7 @@ import {
 // Also deliberately NOT used: `search_context_size` above `low`. It buys longer snippets,
 // not more or different sources — see the measurement in depth.ts.
 
-export type { SonarContextSize, SonarResult, SonarUsage, SonarSearchOutcome } from './sonar-parse.js'
-export { parseSonarResponse } from './sonar-parse.js'
+export type { SonarContextSize, SonarSearchOutcome } from './sonar-parse.js'
 
 // Upper bound on how long a 429 may park a worker step. Perplexity's `Retry-After` is
 // advisory and can be tens of seconds; a worker has a step budget to protect, so past this

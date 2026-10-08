@@ -1,6 +1,7 @@
 import type { Depth } from './schema.js'
 import { profiles } from './depth.js'
 import { isNoteRef } from './brain.js'
+import { BOTTOM_LINE_HEADING } from './assemble.js'
 
 // The static prompts below carry the CONTEXT RULES (what "Given background" means and what
 // may not be done with it) as byte-identical text — prompt-cache hits depend on that. The
@@ -222,7 +223,7 @@ export function synthesisPrompt(depth: Depth): string {
 ## Synthesis rules
 
 - Write the complete markdown answer directly, with NO preamble and no commentary about your process, the digests, or what was or wasn't gathered.
-- Open the report with a \`## Bottom line\` section: one sentence per sub-question (or per part of the query) that states the answer itself, not what was looked at. The detail follows under its own headings. A reader who stops after the Bottom line must already have the answer.
+- Open the report with a \`${BOTTOM_LINE_HEADING}\` section: one sentence per sub-question (or per part of the query) that states the answer itself, not what was looked at. The detail follows under its own headings. A reader who stops after the Bottom line must already have the answer.
 - ${lengthTarget[depth]} Spend the length on findings the caller can act on, not on restating sources.
 - Collapse negatives: "no presence / not found / no evidence" results go in ONE line each (or one combined line for several), never a section or a bullet per absent item.
 - Tie each key claim to a source URL drawn from the digests.

@@ -66,7 +66,7 @@ export type UnverifiedEntry = SubmittedReport['unverified'][number]
 // jobs — which is only correct while no two jobs overlap (i.e. not at
 // RESEARCH_MAX_CONCURRENCY > 1) and was never available to a caller at all. Telemetry to
 // argo is unchanged; this is the same numbers, delivered with the result.
-export const RunCost = z.object({
+const RunCost = z.object({
   wallMs: z.number().describe('End-to-end duration of the run in milliseconds.'),
   totalUsd: z
     .number()
@@ -89,7 +89,6 @@ export const RunCost = z.object({
       'Tavily Extract calls made by fetchPage. Measured fact: a one-URL extract call reports usage.credits = 0, so this call count — not tavilyCredits — is the actual extraction-volume signal.',
     ),
 })
-export type RunCost = z.infer<typeof RunCost>
 
 // Machine-checked evidence accounting for the run. Every number here is counted in code
 // from what the fetch tools actually returned, so a caller can weigh the report without
