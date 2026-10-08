@@ -19,6 +19,12 @@ export interface GoldenItem {
   expect: GoldenExpect
   /** Report cited URLs absent from the job's `sources` (informational audit aid, not scored). */
   citationsRetrieved?: true
+  /**
+   * A hard ceiling on the report length in characters. The synthesizer prompt caps a "does not
+   * exist" answer at ~3,000 chars whatever the depth (prompt.ts); this asserts it in code so the
+   * cap can regress, rather than riding on the prompt alone.
+   */
+  maxChars?: number
 }
 
 export interface MatchResult {
@@ -50,6 +56,11 @@ export function matchExpect(text: string, expect: GoldenExpect, liveValue: strin
     if (match) return { pass: true, matched: match[0] }
   }
   return { pass: false, matched: null }
+}
+
+/** Whether a report satisfies the item's character cap; no cap means it always does. */
+export function withinMaxChars(report: string, maxChars: number | undefined): boolean {
+  return maxChars === undefined || report.length <= maxChars
 }
 
 /** Cited URLs that are not among the job's sources — a citation the run never read. */
@@ -172,6 +183,13 @@ function validateItem(raw: unknown, line: number): GoldenItem {
   }
   const golden: GoldenItem = { id, query, depth: depth as Depth, expect: validateExpect(item['expect'], line) }
   if (item['citationsRetrieved'] === true) golden.citationsRetrieved = true
+  const maxChars = item['maxChars']
+  if (maxChars !== undefined) {
+    if (typeof maxChars !== 'number' || !Number.isInteger(maxChars) || maxChars <= 0) {
+      throw new Error(`golden line ${line}: maxChars must be a positive integer`)
+    }
+    golden.maxChars = maxChars
+  }
   return golden
 }
 
