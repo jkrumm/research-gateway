@@ -183,7 +183,7 @@ matters more at `deep` than anywhere else.
 
 ### Ranked, if only some get built
 
-Filed as issues, ranked by severity — the first two are the same bug wearing two
+Filed as issues, ranked by severity (all five closed 2026-10-09 by Waves 1-3 of the hardening plan) — the first two are the same bug wearing two
 hats: **the pipeline treats "we couldn't get it" as "it isn't there."** Fixing
 that one idea fixes both.
 
@@ -215,9 +215,6 @@ tracked home. Status as of the retirement, with the numbers that were true then.
 
 ### Known-open, with numbers
 
-- **`readCapped` in `ytdlp.ts` breaks out of the stream at 8 MB without draining**, then awaits
-  `proc.exited`. A process still writing could block on a full pipe. The cap is far above the
-  measured 642 KB so it has never fired; kill the process on cap instead if it ever does.
 - **techempower returns 4,626 chars of nav.** The real data is a 143 KB JS chunk on the same
   host (`/benchmarks/assets/index-<hash>.js` → `round-23-<hash>.js`). A 3-GET site adapter
   would fix it. The hash changes on rebuild — walk the chain, never pin it.
@@ -234,8 +231,8 @@ tracked home. Status as of the retirement, with the numbers that were true then.
   synthesis, not research. The SSRF DNS-rebinding TOCTOU gap remains (the redirect-hop gap
   is closed).
 - **If yt-dlp starts returning `Sign in to confirm you're not a bot` across the board, the
-  VPS IP got flagged.** Independent research says YouTube blocks whole cloud ASNs at the
-  edge; this VPS is currently not in that state. Levers, in order: `--cookies` from a
+  egress IP got flagged.** Independent research says YouTube blocks whole cloud ASNs at the
+  edge; the mini's residential egress is not in that state. Levers, in order: `--cookies` from a
   logged-in export, a residential proxy, a paid transcript API. Nothing in the code needs
   redesigning for that.
 
@@ -253,11 +250,7 @@ tracked home. Status as of the retirement, with the numbers that were true then.
 
 ### Traps that are not obvious from the code
 
-- **Pushing to master deploys and kills running jobs.** Check `/health/render` shows `active: 0`.
-- **`make research-gateway-down && up` rolls code back** (recreates from `:latest`, which
-  RollHook never updates). Use `make research-gateway-redeploy`.
-- **The VPS's own `~/vps` checkout has no git credential** — commit from the mini, pull there.
-- **From the mini, `.github/workflows/` pushes need a credential override.**
+- **Pushing to master deploys, but waits for idle.** The poller defers while `/health` reports a running or queued job, and SIGTERM drains (`deploy/MINI.md`).
 - **`lightpanda/Dockerfile` copies `*.ts` as a glob**; `boundary.test.ts` guards it.
 - **`--extractor-args "youtube:player_skip=webpage,configs"` triggers the bot wall on every
   video; `--sub-langs "en.*"` expands to ~157 tracks and 429s.** Both measured; never add

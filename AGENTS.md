@@ -169,12 +169,14 @@ bun test           # pure-function tests only — needs no secrets
   and exit-code mapping, only fetch (plus the Keychain read) is I/O — see `bin/research.test.ts`
 - `src/agent/{plan,worker,synthesize,run}.ts` — the fan-out: lead plans → workers dig →
   lead synthesizes
+  (`run-contract.ts` holds `runResearch`'s env-free input/opts/`RunResearchFn` types, shared
+  with `lib/job-runner-core.ts`)
 - `src/agent/ledger.ts` + `ground.ts` — the grounding invariant above; `body-mentions.ts` extends
   it to the report PROSE (a blocked source named in the body, not just cited — a bare
   homepage with no claim, or a sentence that says the source was unreadable, is exempt);
   `unverified-hygiene.ts` drops guessed-URL 404s and budget housekeeping from `unverified`; `markdown.ts` +
   `report-text.ts` render the model-controlled fields that invariant produces
-- `src/agent/tools.ts` — the ten tools (source-of-truth lookups + `searchWeb`/`fetchPage`);
+- `src/agent/tools.ts` — the ten tools on the mini, nine elsewhere (source-of-truth lookups + `searchWeb`/`fetchPage`);
   adding a source to an existing tool is cheap, a new tool definition is not (README §
   Source-of-truth lookups)
 - `src/agent/brain.ts` + `brain-search.ts` — `brainNotes`, mini-only (`BRAIN_DIR` +
@@ -231,7 +233,7 @@ bun test           # pure-function tests only — needs no secrets
 
 ## Gotchas
 
-- **Nine tools, not twelve.** New ecosystem support goes on an existing tool
+- **Ten tools on the mini, nine elsewhere — not twelve.** New ecosystem support goes on an existing tool
   (`packageInfo`, `academicSearch`), not a new tool definition — definitions are re-sent
   every step, every worker, every job.
 - **`SEARCH_PROVIDER=sonar` is the default, Tavily is the fallback** — `TAVILY_API_KEY` is
@@ -240,5 +242,5 @@ bun test           # pure-function tests only — needs no secrets
   behind a `#` in a `.env.tpl`, it fails the whole injection.
 - **The renderer sidecar deploys separately** (own workflow) so a browser bump doesn't
   restart the gateway mid-job. `LIGHTPANDA_URL` unset takes it out of the chain cleanly.
-- **`docs/field-notes.md`'s ranked backlog is filed as GitHub issues** (#3-#7) — check
-  there before re-discovering the same failure mode from a fresh session.
+- **Open failure modes live in GitHub issues** (the field-notes backlog #3-#7 is all closed) —
+  check there before re-discovering one from a fresh session.

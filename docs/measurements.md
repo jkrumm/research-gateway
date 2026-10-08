@@ -32,7 +32,15 @@ effects** (`pagesFailed` moved 10.8% → 11.3% at cv 1.00). Use `fetch-bench.ts`
 is deterministic — `evals/golden.jsonl`: static facts checked with a regex, and moving
 versions resolved live from npm / PyPI / crates.io / GitHub at run time — and reports, per
 item, whether the report text actually contains the expected value, alongside the report
-`status` (`ok` / `partial`), the grounding counters, cost and wall time.
+`status` (`ok` / `partial`), the grounding counters, cost and wall time. It also prints
+a per-depth table (completed, partial rate, p50 and max wall) and stores it as
+`summary.byDepth` — the numbers Wave 6 compares against the 2026-10-08 audit. The set was
+saturated (20 cases, 18 quick lookups, all passing 2026-09-25); Wave 5 added 8: a deep, a
+commerce multi-item (German market), a German-language spec query, a multi-part query, two
+"must say not found" cases and two standard lookups. A multi-part case uses the `all` expect
+kind (every pattern must match), since `any` passes on the first answered sub-question. Not
+checked by the matcher: that a not-found report cites nothing fabricated, and that a
+commerce price is correct — it only sees report text. Not yet run against the live gateway.
 
 ```bash
 API_SECRET=<gateway bearer> bun scripts/eval.ts                                  # mini, :7780

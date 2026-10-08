@@ -74,7 +74,7 @@ in the order they bit:
 ## Standing rules that came out of it
 
 - **Adding a source-of-truth API is cheap; adding a *tool* is not.** Definitions are re-sent
-  every step, every worker, every job, against `workerMaxSteps` 5/7/9. Nine tools.
+  every step, every worker, every job, against `workerMaxSteps` 5/7/9. Ten tools on the mini (`brainNotes`), nine elsewhere.
 - **A new lookup is not done until a live worker's citations survive the ledger.** Run a real
   job, read `worker.ungrounded` and `grounding.citationsDropped`, and read the cited URLs.
 - **`mem_limit` and `RESEARCH_MAX_CONCURRENCY` are one decision** (wedged at 512 MiB
