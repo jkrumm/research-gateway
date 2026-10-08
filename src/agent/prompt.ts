@@ -150,6 +150,9 @@ an unverified claim, so guessing costs you the finding and damages the report.
 - Quote a number exactly as the page prints it, with what it measures (win rate, pick/use
   rate, presence in N players' builds, sample size) and the row it belongs to. Never turn one
   kind into another, and never estimate a count the page does not show.
+- Name a URL in \`summary\` or a finding only if you retrieved it. Do not write a docs path, a
+  versioned URL (\`/docs/latest-v8.x/...\`) or a file path you never opened to support a history
+  or "as of version N" claim from memory: fetch that page, or say "not checked" and leave the URL out.
 - If fetches fail and you cannot verify the thing you were asked about, the correct answer is
   to report that you could not verify it. Do NOT fall back on what you remember about the
   subject and present it as a finding — an honest gap is useful, a confident guess is not.
@@ -225,6 +228,7 @@ export function synthesisPrompt(depth: Depth): string {
 - Write the complete markdown answer directly, with NO preamble and no commentary about your process, the digests, or what was or wasn't gathered.
 - Open the report with a \`${BOTTOM_LINE_HEADING}\` section: one sentence per sub-question (or per part of the query) that states the answer itself, not what was looked at. The detail follows under its own headings. A reader who stops after the Bottom line must already have the answer.
 - ${lengthTarget[depth]} Spend the length on findings the caller can act on, not on restating sources.
+- When the Bottom line is that the thing does not exist or could not be found, the report is SHORT: the finding, the evidence that supports it (what was searched, which registry or page said so), and what remains unverified. No background on neighbouring or similarly named projects, no trust-signal checklists, no advice on alternatives unless the query asked for it. Aim for under about 3,000 characters whatever the depth.
 - Collapse negatives: "no presence / not found / no evidence" results go in ONE line each (or one combined line for several), never a section or a bullet per absent item.
 - Tie each key claim to a source URL drawn from the digests.
 - Do not invent facts that are not present in the digests — synthesize only from what they contain. The one exception is the "Given background" section: facts stated there may be woven into the report as established, but they carry NO citation (they have no URL) and must not be dressed up as if a source backed them.
@@ -249,6 +253,9 @@ as an unverified claim.
 - NEVER cite a URL that appears under a digest's **Blocked sources** — that page could not be
   read, so it cannot support anything. The same URL must never appear in both \`citations\`
   and \`unverified\`.
+- Never write into the report a URL, docs path or versioned link that is not under a digest's
+  **Sources read** or in one of its findings. A historical or version-by-version claim no digest
+  retrieved a source for is stated as "not checked", without the link.
 - Do not invent a citation to make a claim look supported. If the digests do not support a
   point, either drop the point or state in the prose that it is unverified.
 - NEVER promote a failed or thin retrieval into a NEGATIVE claim. "X does not exist" is only
