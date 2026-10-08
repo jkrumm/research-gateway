@@ -81,8 +81,9 @@ tavilyExtractCalls }` — read from the same per-job meters that feed argo, so t
 dashboard report one number. `tavilyCredits` counts **search only**; extraction is billed but
 invisible at this call shape ([measurements](./docs/measurements.md#what-tavilycredits-cannot-see)).
 
-Runs are **async**: submit returns a `jobId` immediately (measured p50: quick 38s, standard
-111s, deep 366s —
+Runs are **async**: submit returns a `jobId` immediately (p50 audited 2026-10-08: quick 100s, standard
+362s, deep 770s, before the consistency-pass gate; expected ~45s / ~300s / ~700s, re-measured in the
+hardening plan's Wave 6 —
 [full distribution](./docs/measurements.md#job-duration-by-depth--the-30-day-span-record)).
 `RESEARCH_MAX_CONCURRENCY` caps concurrent jobs and `RESEARCH_MAX_QUEUE` the backlog.
 

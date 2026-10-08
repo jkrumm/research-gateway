@@ -1,6 +1,6 @@
 import { generateText, tool } from 'ai'
 import type { Tool } from 'ai'
-import { leadModel, leadSubmitChoice } from '../lib/llm.js'
+import { consistencyModel, leadSubmitChoice } from '../lib/llm.js'
 import { consistencyPrompt } from './prompt.js'
 // The schema (runtime validator) and its inferred shape (type) share a name, so the value
 // import carries an inline type-only rename rather than a second import statement.
@@ -74,18 +74,22 @@ export async function reviewConsistency(args: {
       idle.arm()
       try {
         const result = await generateText({
-          model: leadModel,
+          model: consistencyModel,
           instructions: consistencyPrompt(),
           prompt: report,
           tools: { submit_review: submitReviewTool },
           toolChoice: leadSubmitChoice('submit_review'),
-          maxRetries: 2,
+          // A failed review is a no-op by contract, so a 5xx is not worth three attempts of
+          // multi-minute generation (16 failed after 3 attempts, 2026-09-23..10-08). Tradeoff:
+          // a one-off transient blip now also ships the uncorrected report.
+          maxRetries: 0,
           abortSignal: idle.signal,
           onStepEnd: () => idle.arm(),
           onToolExecutionStart: () => idle.arm(),
           onToolExecutionEnd: () => idle.arm(),
         })
 
+        const truncated = result.finishReason === 'length'
         const usage = toUsageStats(result.usage, Date.now() - start, result.steps)
         const resolution = resolveConsistencyReview(report, extractReview(result.toolCalls))
         // An accepted edit is never silent: the spans land on the span and the done log,
@@ -101,11 +105,15 @@ export async function reviewConsistency(args: {
           // clean review ('consistent') and a clean correction ('corrected'): a trace can
           // then show the reviewer overstepped onto citations rather than merely finding
           // nothing to fix.
-          'consistency.outcome': resolution.vetoed
-            ? 'vetoed'
-            : resolution.corrected
-              ? 'corrected'
-              : 'consistent',
+          // 'truncated' — the output budget ran out before submit_review — is a no-op that
+          // must not be counted as a clean pass.
+          'consistency.outcome': truncated
+            ? 'truncated'
+            : resolution.vetoed
+              ? 'vetoed'
+              : resolution.corrected
+                ? 'corrected'
+                : 'consistent',
           'consistency.edits': resolution.appliedEdits.length,
           // Span attributes are scalar-only (SpanAttributes in otel.ts), so the list goes
           // out JSON-encoded; the log path stringifies arrays itself.
@@ -115,6 +123,7 @@ export async function reviewConsistency(args: {
           jobId,
           ms: Date.now() - start,
           outputTokens: usage.outputTokens,
+          truncated,
           corrected: resolution.corrected,
           vetoed: resolution.vetoed,
           edits: resolution.appliedEdits.length,

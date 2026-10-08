@@ -50,13 +50,15 @@ export interface DepthProfile {
   directive: string
 }
 
-// Measured wall time per depth — docs/measurements.md § Job duration (the 30-day span record,
-// 2026-08-09..09-08). Surfaced on every status read so a caller can tell slow from stuck;
-// re-derive it together with that table, never from one run.
+// Wall time per depth, surfaced on every status read so a caller can tell slow from stuck.
+// ESTIMATE since 2026-10-08: the audit measured quick 100s / standard 362s / deep 770s p50, and
+// the consistency gate (skipped at quick; capped at 32k tokens elsewhere) is expected to remove
+// most of the 119s p50 it added. Re-measure in Wave 6 (docs/measurements.md § Job duration)
+// and replace these — never tune them from one run.
 export const TYPICAL_DURATION_MS: Record<Depth, { p50: number; p90: number }> = {
-  quick: { p50: 38_000, p90: 55_000 },
-  standard: { p50: 111_000, p90: 259_000 },
-  deep: { p50: 366_000, p90: 1_133_000 },
+  quick: { p50: 45_000, p90: 90_000 },
+  standard: { p50: 300_000, p90: 500_000 },
+  deep: { p50: 700_000, p90: 1_200_000 },
 }
 
 // Depth is a BREADTH setting only: how many workers fan out, how many search hits and

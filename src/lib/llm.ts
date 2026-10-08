@@ -1,7 +1,7 @@
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible'
 import { wrapLanguageModel, defaultSettingsMiddleware } from 'ai'
 import { env } from '../env.js'
-import { ROLE_BUDGETS, effortProviderSettings, roleProviderSettings, submitToolChoice } from './llm-settings.js'
+import { ROLE_BUDGETS, roleProviderSettings, submitToolChoice } from './llm-settings.js'
 import type { LlmRole } from './llm-settings.js'
 
 export { ROLE_BUDGETS, REASONING_EFFORT } from './llm-settings.js'
@@ -32,13 +32,9 @@ function withRoleSettings(model: IuLanguageModel, role: LlmRole, maxCompletionTo
 const rawLeadModel = iu(env.IU_LEAD_MODEL)
 const rawWorkerModel = iu(env.IU_WORKER_MODEL)
 
-// Lead model for callers with no role budget yet (consistency review) — effort only.
-export const leadModel = wrapLanguageModel({
-  model: rawLeadModel,
-  middleware: defaultSettingsMiddleware({ settings: effortProviderSettings(rawLeadModel.modelId) }),
-})
 export const planModel = withRoleSettings(rawLeadModel, 'plan')
 export const synthesisModel = withRoleSettings(rawLeadModel, 'synthesis')
+export const consistencyModel = withRoleSettings(rawLeadModel, 'consistency')
 export const workerModel = withRoleSettings(rawWorkerModel, 'workerStep')
 
 // The length-retry path (plan.ts/synthesize.ts: finishReason === 'length' retries once with a

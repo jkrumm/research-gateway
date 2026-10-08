@@ -2,7 +2,6 @@ import { describe, it, expect } from 'bun:test'
 import {
   ROLE_BUDGETS,
   REASONING_EFFORT,
-  effortProviderSettings,
   reasoningEffortFor,
   roleProviderSettings,
   submitToolChoice,
@@ -34,6 +33,7 @@ describe('roleProviderSettings', () => {
     expect(ROLE_BUDGETS.plan).toBe(16_000)
     expect(ROLE_BUDGETS.workerStep).toBe(16_000)
     expect(ROLE_BUDGETS.synthesis).toBe(32_000)
+    expect(ROLE_BUDGETS.consistency).toBe(64_000)
   })
 
   it('accepts an override budget for the length-retry path without changing effort', () => {
@@ -62,7 +62,6 @@ describe('roleProviderSettings', () => {
       reasoningEffort: 'none',
       max_completion_tokens: ROLE_BUDGETS.synthesis,
     })
-    expect(effortProviderSettings('gpt-6-luna')).toEqual({ providerOptions: { iu: { reasoningEffort: 'none' } } })
   })
 
   it('forces the submit tool only at effort none — DeepSeek thinking mode rejects a forced tool_choice', () => {

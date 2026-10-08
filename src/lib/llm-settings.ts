@@ -35,11 +35,16 @@ export function submitToolChoice<T extends string>(
 // Plan and synthesis both run on IU_LEAD_MODEL but need very different output budgets — the
 // synthesis report is written entirely inside the `submit_report` tool call, plan's tool call
 // is a handful of sub-questions, and a worker step is a normal tool-use turn. So budget is
-// keyed per CALL ROLE, not per model env var — this is the one place all three live.
+// keyed per CALL ROLE, not per model env var — this is the one place all four live.
 export const ROLE_BUDGETS = {
   plan: 16_000,
   workerStep: 16_000,
   synthesis: 32_000,
+  // The reviewer's output is reasoning, not text: p50 29k / p90 49k / max 57k tokens (149
+  // passes, 2026-10-08) to emit ~230 chars of edits. A pass cut off by `length` drops its
+  // correction, so this sits above the observed max and only stops a pathological loop;
+  // the saving comes from the gate and prompt, not this cap.
+  consistency: 64_000,
 } as const
 
 export type LlmRole = keyof typeof ROLE_BUDGETS
@@ -64,10 +69,4 @@ export function roleProviderSettings(args: {
       },
     },
   }
-}
-
-// Effort without a role budget — the consistency pass has no budget of its own yet, but its
-// tool call still needs the Luna effort rule above or gpt-6-luna rejects it outright.
-export function effortProviderSettings(modelId: string): { providerOptions: { iu: { reasoningEffort: string } } } {
-  return { providerOptions: { iu: { reasoningEffort: reasoningEffortFor(modelId) } } }
 }

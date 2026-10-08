@@ -192,7 +192,8 @@ export function consistencyPrompt(): string {
 - Deliver changes as find/replace spans, never as a rewritten report. Each span's \`find\` must be copied character-for-character from the report and must occur in it EXACTLY once — include enough surrounding text to make it unambiguous. Each span's \`replace\` is the corrected text for that span and nothing else.
 - A span may not add, remove, or alter a URL, and may not touch any citation reference — footnote markers like [^source-a], numeric markers like [1], [label] tags, or the link text of a citation link. Citations and their markdown references must survive the review exactly as given; if a contradiction involves a citation, reword the prose around it, not the citation itself.
 - Preserve every markdown structure, citation reference, and confidence qualifier exactly as given.
-- If you find no contradiction, say so and submit nothing else.
+- Keep each \`find\` to the shortest unambiguous phrase (one clause, not a paragraph) and each \`replace\` to that phrase corrected. Never restate text the span does not change.
+- Report only contradictions a reader would act on. Do not hunt for style, tone, or minor wording differences. Most reports are consistent — when nothing genuinely contradicts, submit \`consistent: true\` straight away without a second pass through the text.
 
 ${ANTI_HALLUCINATION_RULES}
 

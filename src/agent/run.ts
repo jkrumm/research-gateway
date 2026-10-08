@@ -3,6 +3,7 @@ import { planResearch } from './plan.js'
 import { runWorker } from './worker.js'
 import { synthesize } from './synthesize.js'
 import { reviewConsistency } from './consistency.js'
+import { consistencySkipReason } from './consistency-gate.js'
 import { applyConsistencyGate, CONSISTENCY_WARNING, stripInlineConfidenceTags } from './extract.js'
 import { assembleReport, nextRoundQuestions } from './assemble.js'
 import { mergeLedgers, type LedgerSnapshot } from './ledger.js'
@@ -415,6 +416,7 @@ export async function runResearch(
       // may return a corrected body. On any failure the ORIGINAL report continues: this pass
       // degrades to a no-op rather than risking the whole job's output. `reason` is reported
       // unchanged — it records how the report was PRODUCED, which the review does not alter.
+      // consistencySkipReason bypasses the call for quick, single-digest and short reports.
       // The gate's bookkeeping (lead-usage fold, applied/vetoed counts) lives in extract.ts's
       // env-free applyConsistencyGate, unit-testable outside run.ts's env-chained import
       // graph (run.test.ts's convention imports such helpers directly). The warning merge
@@ -426,7 +428,14 @@ export async function runResearch(
         'research.consistency_gate',
         { 'report.reason': reason },
         async (gateSpan) => {
-          const review = await reviewConsistency({ report: submitted.report, jobId, signal })
+          const skip = consistencySkipReason({ depth, digestCount: allDigests.length, reportChars: submitted.report.length })
+          if (skip) {
+            log('consistency.skipped', { jobId, skip, depth, digests: allDigests.length, chars: submitted.report.length })
+            gateSpan.setAttributes({ 'consistency.skipped': skip })
+          }
+          const review = skip
+            ? { report: submitted.report, corrected: false, appliedEdits: [], vetoed: false, usage: emptyUsage() }
+            : await reviewConsistency({ report: submitted.report, jobId, signal })
           const merged = applyConsistencyGate({ review, leadUsage })
           leadUsage = merged.leadUsage
           gateSpan.setAttributes({

@@ -116,6 +116,10 @@ below that) to pay for as little discarded generation as possible.
 
 ## Job duration, by depth — the 30-day span record
 
+> Superseded for current numbers by the 2026-10-08 audit (quick 100s / standard 362s / deep 770s
+> p50, consistency pass 54-65% of quick/standard wall time) — see the consistency section below.
+> To re-measure in Wave 6.
+
 Production spans, `research.done` in ClickStack, 2026-08-09 to 2026-09-08. 159 jobs over 17
 active days (13 days had none), so treat the deep tail as a low-sample estimate.
 
@@ -133,25 +137,29 @@ mistakes have the same shape — a number quoted from one run. Re-read this tabl
 either, and re-derive it after any change to depth routing, since deep wall time tracks
 `rounds` x `workers`.
 
-### Consistency-review pass — added latency (2026-09-23)
+### Consistency-review pass — where the time goes (audit 2026-10-08)
 
-The post-synthesis internal-consistency pass adds one unconditional lead-model call per job
-(`reviewConsistency()`, after synthesis/assembly and before `groundReport`). Measured from the
-`consistency.done` span of two real `scripts/smoke.ts` runs against the live IU endpoint + Tavily
-(one query each, n=1 per depth — treat as an order-of-magnitude estimate, not a distribution; see
-the caution at the top of this file):
+The 2026-09-23 smoke numbers (2-7s, gpt-6-luna at effort `none`) did not survive the move back
+to deepseek-v4.1-flash at `reasoning_effort: high`. 149 `consistency.done` events,
+2026-09-23..10-08, `~/Library/Logs/research-gateway.log`:
 
-| depth | report size | consistency pass | job wall clock | added share |
-|-|-:|-:|-:|-:|
-| quick | 1.8k chars, 5 citations | 2.1s | 23.4s | ~9% |
-| deep | 29.3k chars, 33 citations | 6.9s | 154.3s | ~4.5% |
+| verdict | n | output tokens p50 / p90 / max | wall p50 |
+|-|-:|-:|-:|
+| edits applied | 86 | 29k / 49k / 57k | 138s |
+| consistent (no edits) | 63 | 21k / 43k / 54k | 88s |
 
-Against the 30-day p50s above (quick 38s, deep 366s), the pass adds roughly 2s / 5.5% at quick
-and roughly 7s / 1.9% at deep — small relative to both the existing run-to-run spread (this file's
-own warning: deep wall clock alone has been seen to span 671s–1137s on identical config) and the
-`SHUTDOWN_DRAIN_MS` margin. **No change to the 1800s drain window**: even doubling the deep-tail
-estimate (~14s) leaves it two orders of magnitude under the 1237s measured max and nowhere near
-the 1800s budget.
+The applied spans are ~230 chars at p50, and the 15 jobs still in sqlite show 5k-char reports
+producing 22k output tokens: the output is **reasoning, not an echoed report**. The reviewer
+does not copy the body into `replace`; it spends the tokens deciding there is little to fix, and
+a clean "consistent" verdict costs two thirds of a correction. 16 passes failed (500/503 after
+3 attempts, ~2-3 minutes of generation each, for a no-op). `reasoning_effort` `none`/`low` still
+reason on this route (probe 2026-10-08), so effort is not the lever; work removed is.
+
+Changes (Wave 1): skip at `quick`, for a single-digest report and below 6k chars
+(`consistency-gate.ts`, logged as `consistency.skipped`); its own `ROLE_BUDGETS.consistency`
+(64k, above the 57k observed max — a tighter cap silently drops corrections; truncated passes log `consistency.outcome: truncated`); `maxRetries: 0`; a prompt that asks for minimal spans and an early
+`consistent: true`. Expected: quick sheds the pass entirely (~45s), standard/deep still run it
+but with a bounded tail. Numbers in `TYPICAL_DURATION_MS` are estimates; **re-measure in Wave 6**.
 
 ## Measured baseline
 
