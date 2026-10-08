@@ -196,13 +196,10 @@ const Env = z.object({
   // Result retention. A finished job's status and result stay readable from sqlite for this
   // long, so the `jobId` is a durable handle: a client whose wait was cut (a closed session, a
   // restart, a dropped stream) can still fetch the result later. The in-memory map holds only
-  // queued/running jobs (plus a terminal one for the ~60s until the next sweep), so this costs
-  // no memory; the sweep deletes rows older than this. 240, not a multi-day default: a fan-out
-  // caller submits many jobs and reads them one by one, and its reader is slower than the
-  // writers — at 30 minutes (the previous default) finished reports expired before they were
-  // read; SQLite growth is roughly 50-100 KB per finished job, so the floor is read-latency, not
-  // storage.
-  JOB_TTL_MINUTES: z.coerce.number().default(240),
+  // queued/running jobs (plus a terminal one for the ~60s until the next sweep), so a week of
+  // finished jobs costs no memory; the sweep deletes rows older than this. Default 10080
+  // (7 days). SQLite growth is roughly 50-100 KB per finished job — trivial.
+  JOB_TTL_MINUTES: z.coerce.number().default(10080),
   // How long index.ts's shutdown path waits for RUNNING jobs to finish before force-exiting
   // (see `drainThenExit`, `waitForDrain`).
   //
