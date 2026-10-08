@@ -17,7 +17,7 @@
 // the default base URL. Do NOT run the full set against production as part of a change
 // review: it costs money and competes with real jobs (docs/architecture-review-2026-09.md § 2b).
 
-import { matchExpect, median, parseGolden, resolverFor, summarizeByDepth, type GoldenItem } from '../evals/lib.js'
+import { matchExpect, median, parseGolden, resolverFor, summarizeByDepth, unretrievedCitations, type GoldenItem } from '../evals/lib.js'
 import type { Depth } from '../src/agent/schema.js'
 import { flagGetter, runJob, runPool } from './gateway-client.js'
 
@@ -59,6 +59,12 @@ interface EvalRow {
   /** Report status ('ok'/'partial'), or null when the job did not produce one. */
   status: string | null
   grounding: GroundingRow | null
+  /** Report text, so a row (a not-found one above all) can be audited without a re-run. */
+  report: string | null
+  /** Cited URLs, deduplicated. */
+  citations: string[]
+  /** Cited URLs missing from the job's sources; only computed for `citationsRetrieved` items. */
+  unretrievedCitations: string[] | null
   costUsd: number | null
   wallMs: number | null
   /** Job or resolver failure; a row with an error is not scored. */
@@ -68,6 +74,8 @@ interface EvalRow {
 interface JobResult {
   report: string
   status: string
+  citations: { url: string }[]
+  sources: string[]
   grounding: {
     pagesRetrieved: number
     pagesFailed: number
@@ -94,6 +102,9 @@ function baseRow(index: number, item: GoldenItem): EvalRow {
     live: null,
     status: null,
     grounding: null,
+    report: null,
+    citations: [],
+    unretrievedCitations: null,
     costUsd: null,
     wallMs: null,
     error: null,
@@ -131,9 +142,14 @@ async function runOne(args: Args, secret: string, item: GoldenItem, index: numbe
   const result = outcome.result
   const grounding = result.grounding
   const match = matchExpect(result.report, item.expect, liveValue)
+  const citations = [...new Set(result.citations.map((c) => c.url))]
+  const unretrieved = item.citationsRetrieved ? unretrievedCitations(citations, result.sources) : null
   return {
     ...base,
-    pass: match.pass,
+    pass: match.pass && (unretrieved === null || unretrieved.length === 0),
+    report: result.report,
+    citations,
+    unretrievedCitations: unretrieved,
     matched: match.matched,
     status: result.status,
     grounding: {
@@ -218,6 +234,7 @@ await runPool(items.length, args.concurrency, async (index) => {
       (row.matched === null ? '' : ` matched=${row.matched}`) +
       (g === null ? '' : ` cit=${g.citationsKept} drop=${g.citationsDropped} cap=${g.confidenceCapped} degr=${g.citationsDegraded ?? 'n/a'}`) +
       (row.costUsd === null ? '' : ` $${row.costUsd.toFixed(4)}`) +
+      (row.unretrievedCitations?.length ? ` UNRETRIEVED=${row.unretrievedCitations.join(',')}` : '') +
       (row.error === null ? '' : ` err=${row.error.slice(0, 100)}`),
   )
 })

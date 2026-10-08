@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'bun:test'
 import { readFileSync } from 'node:fs'
-import { matchExpect, median, parseGolden, resolverFor, summarizeByDepth } from './lib.js'
+import { matchExpect, median, parseGolden, resolverFor, summarizeByDepth, unretrievedCitations } from './lib.js'
 
 describe('matchExpect', () => {
   it('passes when any static pattern matches, case-insensitively', () => {
@@ -180,5 +180,19 @@ describe('evals/golden.jsonl', () => {
   it('parses cleanly and holds the expected row count', () => {
     const items = parseGolden(readFileSync(new URL('./golden.jsonl', import.meta.url), 'utf8'))
     expect(items).toHaveLength(28)
+  })
+})
+
+describe('unretrievedCitations', () => {
+  it('returns cited URLs missing from the sources, deduplicated', () => {
+    expect(unretrievedCitations(['https://a.dev/x', 'https://b.dev/y', 'https://b.dev/y'], ['https://a.dev/x'])).toEqual([
+      'https://b.dev/y',
+    ])
+    expect(unretrievedCitations([], ['https://a.dev/x'])).toEqual([])
+  })
+
+  it('parses the citationsRetrieved flag', () => {
+    const [item] = parseGolden('{"id":"a","query":"q?","depth":"quick","expect":{"any":["x"]},"citationsRetrieved":true}')
+    expect(item?.citationsRetrieved).toBe(true)
   })
 })

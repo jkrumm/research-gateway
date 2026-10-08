@@ -17,6 +17,8 @@ export interface GoldenItem {
   query: string
   depth: Depth
   expect: GoldenExpect
+  /** Every cited URL must appear in the job's `sources` — the not-found cases' fabrication check. */
+  citationsRetrieved?: true
 }
 
 export interface MatchResult {
@@ -48,6 +50,12 @@ export function matchExpect(text: string, expect: GoldenExpect, liveValue: strin
     if (match) return { pass: true, matched: match[0] }
   }
   return { pass: false, matched: null }
+}
+
+/** Cited URLs that are not among the job's sources — a citation the run never read. */
+export function unretrievedCitations(citationUrls: string[], sources: string[]): string[] {
+  const read = new Set(sources)
+  return [...new Set(citationUrls)].filter((url) => !read.has(url))
 }
 
 // ── Live resolvers ────────────────────────────────────────────────────────────
@@ -162,7 +170,9 @@ function validateItem(raw: unknown, line: number): GoldenItem {
   if (typeof depth !== 'string' || !DEPTHS.has(depth)) {
     throw new Error(`golden line ${line}: depth must be one of quick, standard, deep`)
   }
-  return { id, query, depth: depth as Depth, expect: validateExpect(item['expect'], line) }
+  const golden: GoldenItem = { id, query, depth: depth as Depth, expect: validateExpect(item['expect'], line) }
+  if (item['citationsRetrieved'] === true) golden.citationsRetrieved = true
+  return golden
 }
 
 export function parseGolden(jsonl: string): GoldenItem[] {
