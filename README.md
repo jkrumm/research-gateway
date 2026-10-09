@@ -288,7 +288,7 @@ that would fail on every call.
 text/JSON-lines file a worker passes `lines` (up to 5 case-insensitive terms) and gets the header plus
 only the matching lines, so a 500 KB table is not cut at the page-text budget. The file is filtered as
 a stream (`readBoundedLines`, ceiling 128 MB), so a 19 MB CSV is read for its rows without being held.
-The delivered text is capped at 24k chars (`LINE_FILTER_MAX_CHARS`); a broad term keeps the first and the
+The delivered text is capped at 24k chars (`FILTER_MAX_CHARS`); a broad term keeps the first and the
 last matches (a ring buffer while streaming) with one "N matching lines omitted" line between them.
 For a long document (HTML or PDF text past the page cut) `lines` returns the opening line plus each
 matching paragraph with one paragraph of context, chosen before the cut and capped at the same 24k; no match returns the head

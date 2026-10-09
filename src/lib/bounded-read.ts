@@ -208,9 +208,9 @@ const MAX_LINE_CHARS = 1_000_000
 export interface StreamedLines {
   /** First line of the body (no line terminator). */
   header: string
-  /** The first matching lines after the header, in order, kept while they fit half of `keepChars`. */
+  /** The first matching lines after the header, in order. */
   matches: string[]
-  /** The most recent matching lines that did not fit `matches`, in order, bounded by the other half of `keepChars` (a ring: older ones are evicted). */
+  /** The most recent matching lines that did not fit `matches`, in order (a ring: older ones are evicted). */
   tail: string[]
   /** Every matching line after the header, kept or not. Lines in neither `matches` nor `tail` were counted, not stored. */
   matched: number
@@ -222,38 +222,47 @@ export interface StreamedLines {
 
 export interface ReadLinesOptions {
   isMatch: (line: string) => boolean
-  /** Characters of matching lines to keep, split evenly between the first matches and the last ones; the middle is counted, not stored. */
-  keepChars: number
+  /**
+   * Characters (each kept line costs its length plus one) that `matches` and `tail` may hold
+   * together. A function receives the header line, for a caller whose budget depends on it.
+   */
+  keepChars: number | ((header: string) => number)
   ceilingBytes?: number
 }
 
+// The ring drops evicted entries in batches of at least this many, so eviction stays O(1)
+// amortised on a file with millions of matches while the array never holds many dead entries.
+const TAIL_COMPACT_AT = 1024
+
 /**
- * Streams a body line by line and keeps only its header plus the lines `isMatch` accepts — the
- * first ones and, in a bounded ring, the last ones. Memory is bounded by `keepChars` (plus one
- * in-flight line), never by the file size or the match count. Stops, cancelling
- * the download, once `ceilingBytes` have been read and reports where. Env- and log-free.
+ * Streams a body line by line and keeps only its header plus the lines `isMatch` accepts: the
+ * first ones that fit half the budget and, in a bounded ring, the last ones that fit what the
+ * head left. A matching line too big for its half but within the whole budget is still kept when
+ * nothing else is (it takes the head). Memory is bounded by the budget (plus one in-flight
+ * line), never by the file size or the match count. Stops, cancelling the download, once
+ * `ceilingBytes` have been read and reports where. Env- and log-free.
  */
 export async function readBoundedLines(body: ReadableStream<Uint8Array> | null, opts: ReadLinesOptions): Promise<StreamedLines> {
   const ceiling = opts.ceilingBytes ?? MAX_STREAMED_LINES_BYTES
   const out: StreamedLines = { header: '', matches: [], tail: [], matched: 0, searched: 0 }
   if (!body) return out
 
-  const headBudget = Math.floor(opts.keepChars / 2)
-  const tailBudget = opts.keepChars - headBudget
+  let keepChars = 0
+  let headBudget = 0
   let sawHeader = false
   let headChars = 0
   let headFull = false
-  // The ring: `out.tail` from `tailStart` on is live; evicted entries are dropped in batches so
-  // eviction stays O(1) amortised on a file with millions of matches.
+  // The ring: `out.tail` from `tailStart` on is live. Its budget is whatever the head left.
   let tailStart = 0
   let tailChars = 0
   const pushTail = (line: string): void => {
     const cost = line.length + 1
+    const tailBudget = keepChars - headChars
     if (cost > tailBudget) return
     out.tail.push(line)
     tailChars += cost
     while (tailChars > tailBudget) tailChars -= (out.tail[tailStart++] ?? '').length + 1
-    if (tailStart >= 1024 && tailStart * 2 >= out.tail.length) {
+    if (tailStart >= TAIL_COMPACT_AT && tailStart * 2 >= out.tail.length) {
       out.tail = out.tail.slice(tailStart)
       tailStart = 0
     }
@@ -263,6 +272,8 @@ export async function readBoundedLines(body: ReadableStream<Uint8Array> | null, 
     if (!sawHeader) {
       out.header = line
       sawHeader = true
+      keepChars = Math.max(0, typeof opts.keepChars === 'function' ? opts.keepChars(line) : opts.keepChars)
+      headBudget = Math.floor(keepChars / 2)
       return
     }
     out.searched++
@@ -275,6 +286,12 @@ export async function readBoundedLines(body: ReadableStream<Uint8Array> | null, 
       return
     }
     headFull = true
+    // Too big for the head half but within the whole budget, with nothing kept yet: deliver it.
+    if (out.matches.length === 0 && tailChars === 0 && line.length + 1 <= keepChars) {
+      out.matches.push(line)
+      headChars = line.length + 1
+      return
+    }
     pushTail(line)
   }
   const finish = (): StreamedLines => {

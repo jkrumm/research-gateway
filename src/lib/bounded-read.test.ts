@@ -177,7 +177,7 @@ describe('readBoundedLines', () => {
     expect(r.matched).toBe(2000)
     expect(r.matches.every((l) => l.startsWith('Germany'))).toBe(true)
     expect(r.matches.join('\n').length).toBeLessThanOrEqual(40_000)
-    expect(r.tail.join('\n').length).toBeLessThanOrEqual(40_000)
+    expect([...r.matches, ...r.tail].reduce((n, l) => n + l.length + 1, 0)).toBeLessThanOrEqual(80_000)
     expect(r.matches.length + r.tail.length).toBeLessThan(r.matched) // the middle was counted, not stored
     expect(r.stoppedAtBytes).toBeUndefined()
   })
@@ -188,7 +188,7 @@ describe('readBoundedLines', () => {
     expect(r.matched).toBe(rows)
     expect(r.matches[0]).toStartWith('Germany,0,')
     expect(r.tail.at(-1)).toStartWith(`Germany,${rows - 1},`)
-    expect(r.tail.reduce((n, l) => n + l.length + 1, 0)).toBeLessThanOrEqual(5_000)
+    expect([...r.matches, ...r.tail].reduce((n, l) => n + l.length + 1, 0)).toBeLessThanOrEqual(10_000)
     expect(r.matches.reduce((n, l) => n + l.length + 1, 0)).toBeLessThanOrEqual(5_000)
     // The ring is contiguous and in order up to the final line.
     const ids = r.tail.map((l) => Number(l.split(',')[1]))
@@ -201,6 +201,21 @@ describe('readBoundedLines', () => {
       keepChars: 100,
     })
     expect([...r.matches, ...r.tail]).toEqual(Array.from({ length: 10 }, (_, i) => `Germany,${i}`))
+  })
+
+  it('keeps a single matching line wider than the head half but within the budget', async () => {
+    const big = `Germany,${'y'.repeat(700)}`
+    const r = await readBoundedLines(textStream(['h\n', `${big}\n`, 'France,1\n']), { isMatch: (l) => l.startsWith('Germany'), keepChars: 1_000 })
+    expect(r.matches).toEqual([big])
+    expect(r.matched).toBe(1)
+  })
+
+  it('never holds more than the budget in head and ring together', async () => {
+    const lines = Array.from({ length: 50 }, (_, i) => `Germany,${i},${'y'.repeat(60)}\n`)
+    const r = await readBoundedLines(textStream(['h\n', ...lines]), { isMatch: () => true, keepChars: (header) => 1_000 + header.length - 1 })
+    const cost = [...r.matches, ...r.tail].reduce((n, l) => n + l.length + 1, 0)
+    expect(cost).toBeLessThanOrEqual(1_000)
+    expect(r.tail.at(-1)).toStartWith('Germany,49,')
   })
 
   it('stops at the ceiling and reports it', async () => {

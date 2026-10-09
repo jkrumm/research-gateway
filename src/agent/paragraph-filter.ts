@@ -10,7 +10,7 @@
 // check hold (worker.ts); nothing shown to the model is missing from it. It always says the rest
 // of the document was NOT returned, so a missing passage is never read as an absent one.
 
-import { LINE_FILTER_MAX_CHARS, lineMatcher } from './line-filter.js'
+import { FILTER_MAX_CHARS, lineMatcher } from './line-filter.js'
 
 // One paragraph is clipped here so a document without paragraph breaks cannot swallow the budget.
 const PARAGRAPH_CLIP_CHARS = 3_000
@@ -120,7 +120,7 @@ export function fitDocumentText(
   if (!terms?.length || text.length <= cap) return { text, filter: null }
   // The selection is capped well under the page cut, same as the row filter: a broad term must not
   // spend a worker's page-text budget in one call.
-  const filtered = filterParagraphs(text, terms, Math.min(cap, LINE_FILTER_MAX_CHARS))
+  const filtered = filterParagraphs(text, terms, Math.min(cap, FILTER_MAX_CHARS))
   if (filtered) return { text: filtered.text, filter: { matched: filtered.matched, total: filtered.total } }
   const quoted = terms.map((t) => `"${t.toLowerCase()}"`).join(', ')
   return {

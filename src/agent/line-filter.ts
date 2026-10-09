@@ -20,8 +20,9 @@ export const MAX_LINE_TERMS = 5
  * Most characters a filtered read delivers, header and notes included. Well under TEXT_CAP: a
  * broad term on a wide CSV (233-683 rows of ~1 KB in the 2026-10-09 OWID run) otherwise spent a
  * worker's whole page-text budget in two calls. A cap this size forces a narrower term instead.
+ * Shared by the row filter below and paragraph-filter.ts.
  */
-export const LINE_FILTER_MAX_CHARS = 24_000
+export const FILTER_MAX_CHARS = 24_000
 export const MAX_TERM_CHARS = 100
 
 // Content types whose bodies are one record per line. Deliberately narrower than
@@ -90,7 +91,7 @@ export interface LineFilterResult {
   omitted: number
 }
 
-/** What a streaming scan of a body found (bounded-read.ts's `readBoundedLines`). `matches` may hold fewer than `matched`: a stream keeps only what fits. */
+/** What a streaming scan of a body found (bounded-read.ts's `readBoundedLines`). `matches` and `tail` may hold fewer lines than `matched`: a stream keeps only what fits. */
 export type LineScan = StreamedLines
 
 /** The case-insensitive substring test `terms` (from normalizeTerms) describe. */
@@ -102,61 +103,71 @@ export function lineMatcher(rawTerms: readonly string[]): (line: string) => bool
   }
 }
 
+// The wording of a scan's closing note and of the gap line between head and tail, plus the room
+// both can ever take. The stream is budgeted off `reserve` (lineScanBudget) before it knows any
+// count, so every number is priced at its worst case; formatLineScan renders the same wording
+// with the real ones and so can never overshoot.
+const WORST_COUNT = 9_999_999_999
+const WORST_STOPPED_MB = 9_999
+
+function scanWording(rawTerms: readonly string[]) {
+  const quoted = rawTerms.map((t) => `"${t.toLowerCase()}"`).join(', ')
+  const stoppedNote = (stoppedAtBytes: number | undefined): string =>
+    stoppedAtBytes === undefined
+      ? ''
+      : ` The download was stopped after ${Math.round(stoppedAtBytes / 1_048_576)} MB, so later lines were NOT searched at all.`
+  const noteFor = (c: { matched: number; searched: number; kept: number; stoppedAtBytes?: number | undefined }): string => {
+    const stopped = stoppedNote(c.stoppedAtBytes)
+    if (c.matched === 0) {
+      return `[no lines matched ${quoted}: ${c.searched} lines below the header were searched and none contain any of these terms.${stopped} Only the header line is shown; the rest of the document was NOT returned.]`
+    }
+    const omitted = c.matched - c.kept
+    const cut = omitted > 0 ? ` ${omitted} further matching lines did not fit and are NOT shown: use narrower terms.` : ''
+    return `[line filter ${quoted}: ${c.matched} of ${c.searched} lines below the header match; showing ${c.kept}.${cut}${stopped} All other lines of the document were NOT returned, so a row missing here is not evidence it is absent.]`
+  }
+  const gapFor = (omitted: number): string =>
+    `[… ${omitted} matching lines omitted — add a narrower term (e.g. a name plus a year: "name,2024") …]`
+  // matched and kept can have equal digit counts, but the "did not fit" clause (omitted > 0) is
+  // only present when some were left out, so price a long kept AND a long omitted.
+  const worst = { matched: WORST_COUNT, searched: WORST_COUNT, kept: 999_999_999, stoppedAtBytes: WORST_STOPPED_MB * 1_048_576 }
+  const reserve =
+    Math.max(noteFor(worst).length, noteFor({ ...worst, matched: 0 }).length) + 2 + gapFor(WORST_COUNT).length + 1
+  return { noteFor, gapFor, reserve }
+}
+
+/** The room the header line gets: whatever `maxChars` leaves after the note and gap reserve. */
+function headerRoom(rawTerms: readonly string[], maxChars: number): number {
+  return Math.max(0, maxChars - scanWording(rawTerms).reserve)
+}
+
 /**
- * Header line + the scanned matching lines within `maxChars` in total, closed by a note that the
- * rest of the document was NOT returned. When the matches do not all fit, the first and the last
- * ones are kept (a question usually needs the latest rows too) with one line between them saying
- * how many were left out.
+ * The exact number of characters (each line costs its length + 1) the stream may keep for a
+ * body whose first line is `header`, so that formatLineScan's output fits `maxChars`. Pass it as
+ * readBoundedLines's `keepChars`.
+ */
+export function lineScanBudget(header: string, rawTerms: readonly string[], maxChars: number): number {
+  const room = headerRoom(rawTerms, maxChars)
+  return room - Math.min(header.length, room)
+}
+
+/**
+ * Header line + the scanned matching lines + a note that the rest of the document was NOT
+ * returned. Head/tail policy lives here, not in the stream: when the matches do not all fit, the
+ * stream keeps the first ones (`scan.matches`) and the last ones (`scan.tail`, a ring) because a
+ * question usually needs the latest rows too, and drops the middle, counting it. This renders
+ * exactly what the stream kept, with one line between them saying how many were left out. It
+ * trusts the stream's budget (lineScanBudget) instead of re-fitting, so a kept line is never
+ * cut a second time or reported as omitted.
  */
 export function formatLineScan(scan: LineScan, rawTerms: readonly string[], maxChars: number): LineFilterResult {
-  const { header, matched, searched } = scan
-  const candidates = scan.tail.length === 0 ? scan.matches : [...scan.matches, ...scan.tail]
-  const quoted = rawTerms.map((t) => `"${t.toLowerCase()}"`).join(', ')
-  const stopped =
-    scan.stoppedAtBytes === undefined
-      ? ''
-      : ` The download was stopped after ${Math.round(scan.stoppedAtBytes / 1_048_576)} MB, so later lines were NOT searched at all.`
-
-  const noteFor = (kept: number): string => {
-    if (matched === 0) {
-      return `[no lines matched ${quoted}: ${searched} lines below the header were searched and none contain any of these terms.${stopped} Only the header line is shown; the rest of the document was NOT returned.]`
-    }
-    const omitted = matched - kept
-    const cut = omitted > 0 ? ` ${omitted} further matching lines did not fit and are NOT shown: use narrower terms.` : ''
-    return `[line filter ${quoted}: ${matched} of ${searched} lines below the header match; showing ${kept}.${cut}${stopped} All other lines of the document were NOT returned, so a row missing here is not evidence it is absent.]`
-  }
-  const gapFor = (omitted: number): string => `[… ${omitted} matching lines omitted — add a narrower term, e.g. "Germany,1990" …]`
-
-  // The note's size depends on how many lines fit, so reserve for the longest form up front.
-  const reserve = noteFor(0).length + 2 + gapFor(matched).length + 1
-  const room = Math.max(0, maxChars - reserve)
-  const lineRoom = room - Math.min(header.length, room)
-
-  // The first half of the room goes to leading matches, the rest (whatever the head left) to the
-  // last ones. `from` never reaches below `headCount`, so no line is shown twice.
-  const cost = (i: number): number => 1 + (candidates[i]?.length ?? 0)
-  const headRoom = Math.floor(lineRoom / 2)
-  let used = 0
-  let headCount = 0
-  while (headCount < candidates.length && used + cost(headCount) <= headRoom) used += cost(headCount++)
-  let from = candidates.length
-  while (from > headCount && used + cost(from - 1) <= lineRoom) used += cost(--from)
-
-  // Every stored line fitting while the stream still dropped some means the gap is where the
-  // stream dropped them: between its head matches and its ring.
-  const gapAt = from === headCount ? scan.matches.length : headCount
-  const before = candidates.slice(0, gapAt)
-  const after = candidates.slice(from === headCount ? gapAt : from)
-  const omitted = matched - before.length - after.length
-  const lines = [header.length > room ? header.slice(0, room) : header, ...before]
+  const { header, matches, tail, matched, searched } = scan
+  const { noteFor, gapFor } = scanWording(rawTerms)
+  const omitted = Math.max(0, matched - matches.length - tail.length)
+  const lines = [header.slice(0, headerRoom(rawTerms, maxChars)), ...matches]
   if (omitted > 0) lines.push(gapFor(omitted))
-  lines.push(...after)
-  return {
-    text: `${lines.join('\n')}\n\n${noteFor(before.length + after.length)}`,
-    matched,
-    searched,
-    omitted,
-  }
+  lines.push(...tail)
+  const note = noteFor({ matched, searched, kept: matches.length + tail.length, stoppedAtBytes: scan.stoppedAtBytes })
+  return { text: `${lines.join('\n')}\n\n${note}`, matched, searched, omitted }
 }
 
 /**
