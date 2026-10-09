@@ -16,13 +16,14 @@ import { Readability } from '@mozilla/readability'
 import { stripConsentOverlays } from './consent.js'
 import { resolveSite } from './site-adapters.js'
 import { normalizeText } from './extract.js'
+import { enrichThinText } from './structured-data.js'
 
 type ParseRequest =
   | { kind: 'extract'; url: string; body: string }
   | { kind: 'readability'; body: string }
 
 type ParseResponse =
-  | { ok: true; via: 'site-adapter' | 'readability'; text: string | null }
+  | { ok: true; via: 'site-adapter' | 'readability'; text: string | null; thin: boolean; structured: boolean }
   | { ok: false; error: string }
 
 declare const self: Worker
@@ -41,7 +42,7 @@ self.onmessage = (e: MessageEvent<ParseRequest>): void => {
   try {
     const req = e.data
     if (req.kind === 'readability') {
-      self.postMessage({ ok: true, via: 'readability', text: viaReadability(req.body) } satisfies ParseResponse)
+      self.postMessage({ ok: true, via: 'readability', text: viaReadability(req.body), thin: false, structured: false } satisfies ParseResponse)
       return
     }
 
@@ -57,10 +58,15 @@ self.onmessage = (e: MessageEvent<ParseRequest>): void => {
       : new Readability(document as unknown as ConstructorParameters<typeof Readability>[0]).parse()
     const raw = adapted ?? article?.textContent?.trim()
     const text = raw ? normalizeText(raw) : raw
+    // A site adapter's text is deliberate; only a Readability reading that lost most of a big
+    // page gets the page's JSON-LD appended (structured-data.ts).
+    const enriched = adapted
+      ? { text: text ?? null, thin: false, structured: false }
+      : enrichThinText({ body: req.body, text: text ?? null })
     self.postMessage({
       ok: true,
       via: adapted ? 'site-adapter' : 'readability',
-      text: text ?? null,
+      ...enriched,
     } satisfies ParseResponse)
   } catch (err) {
     self.postMessage({ ok: false, error: String(err) } satisfies ParseResponse)

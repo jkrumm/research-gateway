@@ -121,7 +121,7 @@ async function readOriginHtml(
 
   // Parsing runs in a worker pool (html-parse.ts), off the event loop — linkedom + Readability
   // are synchronous CPU work that would otherwise block /health (issue #21).
-  const { via, text } = await extractText(ctx.url, body, ctx.budget)
+  const { via, text, thin, structured } = await extractText(ctx.url, body, ctx.budget)
   // The impersonation rung always records under its own label — `via` here is a site
   // adapter/Readability choice that has nothing to do with which fetcher dialled the origin,
   // and a success through impit is `via: 'impersonate'` so fetch-bench/probe can count what
@@ -129,13 +129,21 @@ async function readOriginHtml(
   const step: FetchStep = label === 'impersonate' ? 'impersonate' : via
   stepRef.current = step
   if (label !== 'impersonate') ctx.noteReadabilityMiss('thin', text?.length ?? 0)
-  if (text && text.length >= MIN_USABLE_CHARS && !looksBinary(text)) {
+  // Readability kept a sliver of a big page and the page held no JSON-LD to make up for it —
+  // that clears MIN_USABLE_CHARS but is not the page (canyon.com: 1 KB of 611 KB, no price, no
+  // specs), so the rendering/extract steps get their turn. A thin page WITH structured data was
+  // already enriched by the parse worker and is accepted.
+  const sparse = thin && !structured
+  if (text && text.length >= MIN_USABLE_CHARS && !looksBinary(text) && !sparse) {
     attempt(ctx.attempts, step, t1, { ok: true, chars: text.length })
     ctx.hostGate.noteOk(ctx.host, { startedAt: attemptStartedAt })
     log('tool.fetchPage', { jobId: ctx.jobId, url: ctx.url, via: step, chars: text.length })
     return { terminal: ctx.done(step, text, dialledUrl) }
   }
-  const error = text && looksBinary(text) ? 'binary content' : `thin (${text?.length ?? 0} chars)`
+  const chars = text?.length ?? 0
+  let error = `thin (${chars} chars)`
+  if (text && looksBinary(text)) error = 'binary content'
+  else if (sparse) error = `thin for page size (${chars} chars of ${body.length})`
   attempt(ctx.attempts, step, t1, { ok: false, chars: text?.length ?? 0, error })
   return { terminal: null, block: null }
 }

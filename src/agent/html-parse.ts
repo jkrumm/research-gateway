@@ -17,12 +17,16 @@ type ParseRequest =
   | { kind: 'readability'; body: string }
 
 type ParseResponse =
-  | { ok: true; via: 'site-adapter' | 'readability'; text: string | null }
+  | { ok: true; via: 'site-adapter' | 'readability'; text: string | null; thin: boolean; structured: boolean }
   | { ok: false; error: string }
 
 export interface ExtractedText {
   via: 'site-adapter' | 'readability'
   text: string | null
+  /** Readability kept a sliver of a big body (structured-data.ts's `isThinForBody`). */
+  thin: boolean
+  /** The page's JSON-LD was appended to `text` as a delimited section. */
+  structured: boolean
 }
 
 interface Pending {
@@ -115,7 +119,7 @@ function request(req: ParseRequest, signal?: AbortSignal): Promise<ParseResponse
 async function parse(req: ParseRequest, signal?: AbortSignal): Promise<ExtractedText> {
   const res = await request(req, signal)
   if (!res.ok) throw new Error(res.error)
-  return { via: res.via, text: res.text }
+  return { via: res.via, text: res.text, thin: res.thin, structured: res.structured }
 }
 
 // Step 1 of the fetch chain: the site adapter's reader when one applies, Readability otherwise.
