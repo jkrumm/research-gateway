@@ -99,6 +99,26 @@ describe('unmatchedNumbers — 2026-10-09 false positives', () => {
   })
 })
 
+describe('percentage-conversion constant', () => {
+  it('does not report the 100 of "*100" as an unmatched figure', () => {
+    expect(unmatchedNumbers('-45.7%: (572.319-1054.796)/1054.796*100', [572.319, 1054.796])).toEqual(['45.7%'])
+  })
+
+  it('exempts the multiplication spellings', () => {
+    for (const claim of ['change = (a/b) * 100', 'change = (a/b) × 100', 'change = (a/b)×100', 'change = (a/b) x 100', 'change = (a/b) x100'])
+      expect(unmatchedNumbers(claim, [1])).toEqual([])
+  })
+
+  it('still checks a standalone 100', () => {
+    expect(unmatchedNumbers('The index reached 100 points', [1])).toEqual(['100'])
+    expect(unmatchedNumbers('Revenue was 100 in 2020 and 200 in 2021', [1])).toEqual(['100', '200'])
+  })
+
+  it('still checks other factors after a multiplication sign', () => {
+    expect(unmatchedNumbers('value = a*1000', [1])).toEqual(['1000'])
+  })
+})
+
 describe('status exemption boundaries', () => {
   it('still checks counts of responses/errors', () => {
     expect(unmatchedNumbers('The survey got 500 responses', [1])).toEqual(['500'])

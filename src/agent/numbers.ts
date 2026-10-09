@@ -98,6 +98,8 @@ export function claimNumbers(claim: string): ClaimNumber[] {
     if (/^[-/:.]\d/.test(next2)) continue
     if (VERSION_BEFORE.test(before)) continue
     if (/^[45]\d\d$/.test(token) && statusAt(start, end)) continue
+    // The percentage-conversion constant of a formula ("(a-b)/b*100"), not a quoted figure.
+    if (token === '100' && /(?:[*×]|\sx)\s*$/.test(before)) continue
 
     const percent = /^\s?%/.test(text.slice(end, end + 2))
     const decimals = token.includes('.') ? (token.split('.')[1]?.length ?? 0) : 0
