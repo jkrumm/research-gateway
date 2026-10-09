@@ -8,7 +8,15 @@ import { WorkerDigest } from './schema.js'
 import type { Depth } from './schema.js'
 import { createLedger, type LedgerSnapshot, type RetrievalLedger } from './ledger.js'
 import { groundDigest } from './ground.js'
-import { shouldForceSubmit, buildSalvageMessages, buildSalvageInstruction, SALVAGE_TOOL_NAME } from './salvage.js'
+import {
+  shouldForceSubmit,
+  buildSalvageMessages,
+  buildSalvageInstruction,
+  buildSalvageRetryInstruction,
+  classifySalvageFailure,
+  SALVAGE_TOOL_NAME,
+  type SalvageFailure,
+} from './salvage.js'
 import { log } from '../lib/log.js'
 import { withSpan } from '../lib/otel.js'
 import { emptyUsage, addUsage, toUsageStats } from '../lib/usage.js'
@@ -141,52 +149,62 @@ export async function runWorker(args: {
         // See salvage.ts's header for the measured failure this recovers from.
         if (!raw) {
           try {
-            const salvageMessages = buildSalvageMessages({
+            let salvageMessages = buildSalvageMessages({
               userPrompt: subQuestion + backgroundSection(context),
               transcript: result.response.messages,
               instruction: buildSalvageInstruction(),
             })
-            const salvageResult = await generateText({
-              model: workerModel,
-              instructions: workerPrompt(depth),
-              messages: salvageMessages,
-              tools: { submit_digest: submitDigestTool },
-              // Resolves to 'auto' at effort high — DeepSeek thinking mode rejects a forced
-              // tool_choice — so this still relies on submit_digest being the only tool on
-              // offer, same as llm-settings.ts's submitToolChoice contract everywhere else.
-              toolChoice: workerSubmitChoice(SALVAGE_TOOL_NAME),
-              stopWhen: stepCountIs(1),
-              maxRetries: 2,
-              // A model that, mid-transcript-replay, still reaches for a tool no longer on
-              // offer (brainNotes/searchWeb/fetchPage — only submit_digest is declared for
-              // this call) hits AI_NoSuchToolError. The AI SDK already degrades an unrepaired
-              // one into a non-throwing "invalid" tool-call entry rather than an escaping
-              // exception (ai/dist/index.js's parseToolCall: every repair-failure path is
-              // caught by the SAME outer try that already catches the bare NoSuchToolError),
-              // so `repairToolCall` cannot change whether this call survives — passing a
-              // narrower `activeTools` on top of the already-single-tool `tools` object above
-              // would be equally inert for the same reason. What this hook DOES add is
-              // visibility: without it, a stray tool call here degrades silently into the
-              // SDK's internal invalid-entry bookkeeping with nothing in our own logs to show
-              // it happened.
-              repairToolCall: async ({ toolCall, error }) => {
-                if (NoSuchToolError.isInstance(error)) {
-                  log('worker.salvage_repair', { jobId, round, attemptedTool: toolCall.toolName })
-                }
-                return null
-              },
-              abortSignal: idle.signal,
-              onStepEnd: () => idle.arm(),
-              onToolExecutionStart: () => idle.arm(),
-              onToolExecutionEnd: () => idle.arm(),
-            })
-            const salvageRaw = extractDigest(salvageResult.toolCalls)
-            usage = { ...addUsage(usage, toUsageStats(salvageResult.usage, 0, salvageResult.steps)), durationMs: Date.now() - start }
-            if (salvageRaw) {
-              raw = salvageRaw
-              salvaged = true
+            let failure: SalvageFailure | null = null
+            // Two attempts: an empty reply (text only, no call, a malformed call) is usually a
+            // one-off, and the lost digest is a lost sub-question. The retry sees the first reply.
+            for (let attempt = 1; attempt <= 2 && !raw; attempt++) {
+              const salvageResult = await generateText({
+                model: workerModel,
+                instructions: workerPrompt(depth),
+                messages: salvageMessages,
+                tools: { submit_digest: submitDigestTool },
+                // Resolves to 'auto' at effort high — DeepSeek thinking mode rejects a forced
+                // tool_choice — so this still relies on submit_digest being the only tool on
+                // offer, same as llm-settings.ts's submitToolChoice contract everywhere else.
+                toolChoice: workerSubmitChoice(SALVAGE_TOOL_NAME),
+                stopWhen: stepCountIs(1),
+                maxRetries: 2,
+                // A stray call to a tool no longer on offer degrades inside the SDK into an
+                // "invalid" tool-call entry rather than an exception; this hook only adds the
+                // visibility our own logs would otherwise lack.
+                repairToolCall: async ({ toolCall, error }) => {
+                  if (NoSuchToolError.isInstance(error)) {
+                    log('worker.salvage_repair', { jobId, round, attemptedTool: toolCall.toolName })
+                  }
+                  return null
+                },
+                abortSignal: idle.signal,
+                onStepEnd: () => idle.arm(),
+                onToolExecutionStart: () => idle.arm(),
+                onToolExecutionEnd: () => idle.arm(),
+              })
+              const salvageRaw = extractDigest(salvageResult.toolCalls)
+              usage = { ...addUsage(usage, toUsageStats(salvageResult.usage, 0, salvageResult.steps)), durationMs: Date.now() - start }
+              if (salvageRaw) {
+                raw = salvageRaw
+                salvaged = true
+              } else {
+                failure = classifySalvageFailure({ text: salvageResult.text, toolCalls: salvageResult.toolCalls })
+                salvageMessages = [
+                  ...salvageMessages,
+                  ...salvageResult.response.messages,
+                  { role: 'user', content: buildSalvageRetryInstruction(failure) },
+                ]
+              }
+              log('worker.salvage', {
+                jobId,
+                round,
+                attempt,
+                ok: salvaged,
+                findings: salvageRaw?.findings.length ?? 0,
+                ...(salvageRaw ? {} : { reason: failure, finishReason: salvageResult.finishReason }),
+              })
             }
-            log('worker.salvage', { jobId, round, ok: salvaged, findings: salvageRaw?.findings.length ?? 0 })
           } catch (salvageErr) {
             // The salvage call itself can fail (transcript too large for the model's real
             // window, idle timeout, etc.) — fall back to today's null-digest behaviour rather

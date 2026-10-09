@@ -74,3 +74,24 @@ export function buildSalvageInstruction(): string {
     '- openGaps: anything you could not establish from what you already retrieved, phrased as a self-contained research question a fresh worker could investigate — never as a note about what went wrong.',
   ].join('\n')
 }
+
+// Why a salvage call produced no digest. 18 of 197 salvages came back empty (2026-10-09), so the
+// next audit needs the cause, and the retry needs to know whether a nudge can help.
+export type SalvageFailure = 'invalid-call' | 'text-only' | 'no-output'
+
+export function classifySalvageFailure(reply: { text: string; toolCalls: ReadonlyArray<unknown> }): SalvageFailure {
+  if (reply.toolCalls.length > 0) return 'invalid-call' // a call arrived but did not parse as a digest
+  return reply.text.trim().length > 0 ? 'text-only' : 'no-output'
+}
+
+// The second and last salvage attempt, appended after the first reply. Short and mechanical: the
+// first reply did not call the tool, so say only that and what to do.
+export function buildSalvageRetryInstruction(failure: SalvageFailure): string {
+  const what =
+    failure === 'invalid-call'
+      ? `Your ${SALVAGE_TOOL_NAME} call was malformed.`
+      : failure === 'text-only'
+        ? `You answered in plain text instead of calling ${SALVAGE_TOOL_NAME}.`
+        : `You returned no ${SALVAGE_TOOL_NAME} call.`
+  return `${what} Call ${SALVAGE_TOOL_NAME} now with a valid summary, findings and openGaps, built only from the tool results already in this conversation. If few findings are supported, submit those and put the rest in openGaps.`
+}

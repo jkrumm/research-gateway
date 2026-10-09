@@ -87,3 +87,14 @@ describe('buildSalvageInstruction', () => {
     expect(buildSalvageInstruction()).toContain('openGaps')
   })
 })
+
+describe('salvage failure classification', () => {
+  it('names why a salvage reply carried no digest', async () => {
+    const { classifySalvageFailure, buildSalvageRetryInstruction } = await import('./salvage.js')
+    expect(classifySalvageFailure({ text: 'Here are my findings…', toolCalls: [] })).toBe('text-only')
+    expect(classifySalvageFailure({ text: '  ', toolCalls: [] })).toBe('no-output')
+    expect(classifySalvageFailure({ text: '', toolCalls: [{}] })).toBe('invalid-call')
+    expect(buildSalvageRetryInstruction('text-only')).toContain('plain text')
+    expect(buildSalvageRetryInstruction('invalid-call')).toContain('malformed')
+  })
+})
