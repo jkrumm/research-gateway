@@ -829,3 +829,17 @@ Two live standard jobs, the Wave 8 equivalents, both `status: ok`, `partialCause
 - **Salvage:** one worker salvaged in the Canyon job (attempt 1, 7 findings); the retrieved-URL list was in its instruction. Whether fewer salvaged findings are stripped (baseline 3 of 5 / 4 of 5) cannot be read from one job: `worker.ungrounded` did not fire for it.
 - **Fetch waste:** no GitHub blob URL, `r.jina.ai` fetch or three-locale buycycle fetch in either job, so none of the three fixes was exercised live. The blob-to-raw rewrite is fixture-covered only. Content-hash replay was not built: by the time the text is known the network work is done, and not charging the page budget would break the per-caller accounting `fetch-flight.ts` guarantees.
 - **Open:** a big, sparse page with no JSON-LD whose later stages all fail now loses its Readability sliver (previously accepted). Not measured.
+
+## Wave 11 re-validation (2026-10-09, deploys 2068928 and 539916f)
+
+Big raw files and long documents. Logs by jobId in `~/Library/Logs/research-gateway.log`.
+
+| Case | Job | Result |
+|-|-|-|
+| OWID CSV, standard (2068928) | 0190c6e3 | 180s, `ok`. `raw.githubusercontent.com/.../owid-co2-data.csv` streamed: 50,411 lines searched per call, 233-683 matches kept at <= 80k chars. Germany 1990/2024 read; China 1990 missed (a wide-row, 79-column filter on `china` filled the 80k with early years). One computed-percentage number-check cap (legitimate, known). |
+| Same query after the extension fix (539916f) | e37cd2b5 | 328s, `partial` (`dropped`: 2 citations whose URLs were never retrieved; the worker's search tool errored late in the run). China 2,483.534 Mt (1990) and 12,289.037 Mt (2024), Germany 1,054.796 / 572.319 read from the CSV with narrow `Country,year` terms (matched 1-5 lines, 2-5k chars per call). Consistency pass ran (1 edit). |
+| Llama 3 paper, standard | 05e65f6c | 178s, `partial` (`scrubbed`: the arXiv PDF URL named in prose after `budget-spent`). `arxiv.org/html/2407.21783v3` is 365,898 chars; the report quotes section 5.4.7 and Tables 25-26 (late in the paper, past the old 80k cut) with the right numbers (-65% VR average, FRR +95/+25/+102%). |
+
+- `owid-public.owid.io/.../owid-co2-data.csv` (33 MB) is served with **no `Content-Type`**: the first deploy fell through the whole chain (`body exceeds 8388608 byte cap`, then lightpanda, Tavily, Wayback oversized). `isLineOrientedResource` now takes a missing or octet-stream type plus a `.csv/.tsv/.ndjson/.jsonl/.txt` path as line-oriented; covered by a fetch-chain test, not yet exercised live (the worker did not request that host in the re-run).
+- Wide rows (79 columns, ~1 KB) mean ~70 rows per 80k: a worker filtering on a country alone gets the early years first. The codebook-reading workers used `Country,year` style terms and fit; a hint in the tool description was not added (single clause budget).
+- Not measured: the paragraph filter on a PDF (the Llama run read HTML), the streamed-line memory profile on the mini (`memory.ratio` 0.037 idle), the 128 MB ceiling (largest real file 33 MB).
