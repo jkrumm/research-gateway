@@ -797,3 +797,20 @@ target — the negatives are collapsed but the tangents (what hono/flux/router a
 **Still unproven:** the deep tail (n=2) against `SHUTDOWN_DRAIN_MS`, and whether the 64k synthesis
 budget worsens it. Deep synthesis output tokens *are* logged on the success path — `synthesis.done`
 carries `outputTokens` in `synthesize.ts` — so that leg is measurable from the logs, not missing.
+
+## Wave 8 re-validation (2026-10-09, deploy 3be1a06 + CI timeout fix)
+
+Five live jobs (equivalents of the validation batch). All `status: ok`, `partialCause: null`.
+
+| Job | Depth | Wall | Cost | Citations | Capped | Number-unmatched |
+|-|-|-|-|-|-|-|
+| Elysia 1.4.x release | standard | 270s | $0.22 | 44 | 1 | 0 |
+| Canyon Endurace CF 7, DE price | standard | 550s | $0.26 | 29 | 1 | 0 |
+| ClickHouse LTS | quick | 20s | $0.008 | 5 | 0 | 0 |
+| Attention paper PDF | quick | 18s | $0.008 | 5 | 0 | 0 |
+| Germany population CSV | standard | 185s | $0.10 | 14 | 3 | 3 |
+
+- **Line filter** (`fetchPage` `lines`): the CSV worker read `population.csv` as 17,394 lines, matched 66 and was handed 1.9k chars, header included; Germany's rows arrive, not the 80k prefix. It used 1-2 terms per call.
+- **Scrub/number false alarms:** none of the 0/5 jobs is `partial` (the 2026-10-09 batch had 3 of 5). The Canyon-ID and HTTP-status caps did not recur; the fixes are covered by fixtures, not proven by this sample (n=5).
+- **Salvage:** two workers fell to salvage (Elysia, Canyon), both recovered on attempt 1 with 5 findings each. The retry path (attempt 2, `reason`/`finishReason` on failure) was not exercised live.
+- The 3 CSV number-unmatched are on a job that computes figures from rows (derived values by design, capped `low`, not an error).
