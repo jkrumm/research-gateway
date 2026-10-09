@@ -66,11 +66,30 @@ export const SALVAGE_TOOL_NAME = 'submit_digest'
 // (a budget, not a fault) and explicitly forbids commentary on tool/budget/error status in the
 // output — deliberately avoiding the very words ("unavailable", "disabled", "broken") a model
 // reaches for when narrating a tool-access problem, so there is nothing left to echo.
-export function buildSalvageInstruction(): string {
+// Cap on the URL list: a worker rarely reads more than a few dozen pages, and the list only has
+// to be long enough that a salvaged citation can point at a page the ledger actually holds.
+const SALVAGE_MAX_LISTED_URLS = 60
+
+// `retrieved` is the ledger's retrieved list (what groundDigest will accept as a citation). Without
+// it the model cites URLs it only saw in search snippets or constructed, and 3 of 5 / 4 of 5
+// salvaged findings were stripped as ungrounded (2026-10-09 audit).
+export function buildSalvageInstruction(retrieved: readonly string[] = []): string {
+  // A URL is page- or search-derived text: strip control characters and cap its length so it
+  // cannot open a line of its own inside the instruction block.
+  const listed = retrieved
+    .map((u) => u.replace(/[\u0000-\u001f\u007f\s]+/g, '').slice(0, 300))
+    .filter((u) => u.length > 0)
+    .slice(0, SALVAGE_MAX_LISTED_URLS)
   return [
     'The research phase for this sub-question has ended because the evidence-gathering budget is spent — not due to any problem with the tools themselves. Do not comment on tools, budgets, retries, or errors anywhere in your answer.',
     `Using ONLY the tool results already present earlier in this conversation, call ${SALVAGE_TOOL_NAME} now:`,
     '- summary and findings: what those retrieved sources actually establish, citing only their URLs.',
+    ...(listed.length > 0
+      ? [
+          '- Cite ONLY these pages you fetched in full; a finding resting on any other URL (a search snippet, a URL you did not fetch) is likely discarded:',
+          ...listed.map((u) => `  - ${u}`),
+        ]
+      : []),
     '- openGaps: anything you could not establish from what you already retrieved, phrased as a self-contained research question a fresh worker could investigate — never as a note about what went wrong.',
   ].join('\n')
 }

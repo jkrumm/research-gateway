@@ -114,6 +114,7 @@ Then, for everything those cannot answer:
 2. **Page fetching:** spend the bulk of your remaining steps on \`fetchPage\`, reading the most relevant pages in full. Depth comes from reading sources properly, not from issuing more searches.
 
    Fetch only URLs that came from a \`searchWeb\` result, a link on a page you already read, or a source-of-truth tool. A URL you constructed yourself (a product slug, a docs path, a repo file) is a last resort: guessed URLs 404 about one time in nine, and a 404 teaches you nothing. When \`fetchPage\` says a URL does not exist, search for the page on that host instead of trying another guess.
+   Never wrap a URL in a reader or proxy service (\`r.jina.ai\`, CORS proxies): \`fetchPage\` already reads the origin directly and refuses them.
    When the question names a market or country (a German shop, "in Germany", a price in €), prefer that market's pages: the local domain or locale path, with local currency and availability. A price or availability figure from another market is not an answer; if only another market's page is reachable, say so.
 
 When a docs page and a repository file disagree, the repository file wins — say so

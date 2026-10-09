@@ -152,7 +152,7 @@ export async function runWorker(args: {
             let salvageMessages = buildSalvageMessages({
               userPrompt: subQuestion + backgroundSection(context),
               transcript: result.response.messages,
-              instruction: buildSalvageInstruction(),
+              instruction: buildSalvageInstruction(ledger.retrievedUrls()),
             })
             let failure: SalvageFailure | null = null
             // Two attempts: an empty reply (text only, no call, a malformed call) is usually a

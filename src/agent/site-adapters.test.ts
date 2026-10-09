@@ -148,6 +148,61 @@ describe('resolveSite', () => {
     expect(site.extract).toBeNull()
   })
 
+  describe('GitHub blob', () => {
+    it('rewrites a blob file URL to raw.githubusercontent.com, keeping the blob page as fallback', () => {
+      const site = resolveSite('https://github.com/acme/data/blob/main/stats/2024.csv')
+      expect(site.fetchUrl).toBe('https://raw.githubusercontent.com/acme/data/main/stats/2024.csv')
+      expect(site.fallbackUrl).toBe('https://github.com/acme/data/blob/main/stats/2024.csv')
+      expect(site.skipToExtract).toBe(false)
+      expect(site.extract).toBeNull()
+    })
+
+    it('rewrites markdown and code blobs and routes www.github.com the same way', () => {
+      expect(resolveSite('https://www.github.com/oven-sh/bun/blob/main/README.md').fetchUrl).toBe(
+        'https://raw.githubusercontent.com/oven-sh/bun/main/README.md',
+      )
+      expect(resolveSite('https://github.com/oven-sh/bun/blob/v1.2.0/src/index.ts').fetchUrl).toBe(
+        'https://raw.githubusercontent.com/oven-sh/bun/v1.2.0/src/index.ts',
+      )
+    })
+
+    it('drops the query and fragment from the fetch URL only', () => {
+      const site = resolveSite('https://github.com/acme/data/blob/main/README.md?plain=1#L10-L20')
+      expect(site.fetchUrl).toBe('https://raw.githubusercontent.com/acme/data/main/README.md')
+      expect(site.fallbackUrl).toBe('https://github.com/acme/data/blob/main/README.md')
+    })
+
+    it('takes the first segment after blob/ as the ref, so a slashed ref lands on the fallback', () => {
+      const site = resolveSite('https://github.com/acme/data/blob/feature/x/file.md')
+      expect(site.fetchUrl).toBe('https://raw.githubusercontent.com/acme/data/feature/x/file.md')
+      expect(site.fallbackUrl).toBe('https://github.com/acme/data/blob/feature/x/file.md')
+    })
+
+    it('leaves every non-blob github.com URL untouched', () => {
+      for (const url of [
+        'https://github.com/',
+        'https://github.com/oven-sh/bun',
+        'https://github.com/oven-sh/bun/issues/1',
+        'https://github.com/oven-sh/bun/pull/2',
+        'https://github.com/oven-sh/bun/tree/main/src',
+        'https://github.com/oven-sh/bun/commits/main',
+        'https://github.com/oven-sh/bun/releases/tag/bun-v1.0.0',
+        'https://github.com/oven-sh/bun/blob/main',
+        'https://github.com/oven-sh/bun/blob/main/',
+        'https://github.com/oven-sh/bun/blob/main/dir/',
+      ]) {
+        const site = resolveSite(url)
+        expect(site.fetchUrl).toBe(url)
+        expect(site.fallbackUrl).toBeUndefined()
+      }
+    })
+
+    it('does not touch a raw.githubusercontent.com URL cited directly', () => {
+      const url = 'https://raw.githubusercontent.com/acme/data/main/stats/2024.csv'
+      expect(resolveSite(url).fetchUrl).toBe(url)
+    })
+  })
+
   describe('arXiv', () => {
     it('rewrites /abs/<id> to the HTML build, carrying the PDF as a fallback', () => {
       const site = resolveSite('https://arxiv.org/abs/2309.04452')

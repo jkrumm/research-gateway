@@ -98,3 +98,19 @@ describe('salvage failure classification', () => {
     expect(buildSalvageRetryInstruction('invalid-call')).toContain('malformed')
   })
 })
+
+describe('buildSalvageInstruction retrieved list', () => {
+  it('lists the retrieved URLs so salvaged citations can only point at fetched pages', () => {
+    const instruction = buildSalvageInstruction(['https://a.example/x', 'https://b.example/y'])
+    expect(instruction).toContain('- https://a.example/x')
+    expect(instruction).toContain('- https://b.example/y')
+  })
+
+  it('omits the list section when nothing was retrieved and caps a long list', () => {
+    expect(buildSalvageInstruction([])).not.toContain('Cite ONLY these pages')
+    const many = Array.from({ length: 100 }, (_, i) => `https://e.example/${i}`)
+    const out = buildSalvageInstruction(many)
+    expect(out).toContain('https://e.example/59')
+    expect(out).not.toContain('https://e.example/60')
+  })
+})

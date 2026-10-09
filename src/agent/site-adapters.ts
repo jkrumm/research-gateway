@@ -138,6 +138,37 @@ const arxivAdapter: SiteAdapter = {
   extract: extractArxivHtml as unknown as (document: MinimalDocument) => string | null,
 }
 
+// GitHub `blob/` file pages: the page is the file wrapped in ~500 KB of chrome. A CSV blob URL
+// went through lightpanda and came back as 551k chars of page chrome, not the data. The same
+// file at `raw.githubusercontent.com/<owner>/<repo>/<ref>/<path>` is the bytes themselves,
+// served as `text/plain`, which the origin step hands back verbatim (`RAW_CONTENT_TYPES`) — and
+// which also lets fetchPage's `lines` filter run over the whole file. Every `/blob/` file URL
+// is rewritten (markdown and code read better raw too); repo roots, issues, pulls, tree,
+// commits, releases etc. decline and take the generic path. The ledger keeps the blob URL the
+// worker cited. Query (`?plain=1`) and fragment (`#L10`) are display state and are dropped from
+// both the dialled URL and the fallback. A `raw.githubusercontent.com` URL cited directly needs no adapter.
+//
+// Known limitation: a ref containing a slash (`feature/x`) is ambiguous in a blob URL — the
+// path alone cannot say where the ref ends — so `<ref>` is the FIRST segment after `blob/` and
+// `blob/feature/x/file.md` becomes ref `feature`, path `x/file.md`, which 404s on raw. That
+// 404 must not read as an absence claim about the file, so `fallbackUrl` is the blob page
+// itself: the chain retries it through the generic path, and only a 404 there is `missing`.
+const GITHUB_BLOB_RE = /^\/([^/]+)\/([^/]+)\/blob\/([^/]+)\/([^/]+(?:\/[^/]+)*)$/
+
+const githubAdapter: SiteAdapter = {
+  plan: (parsed) => {
+    const match = GITHUB_BLOB_RE.exec(parsed.pathname)
+    if (!match) return null // not a blob file URL — repo root, issues, pulls, tree, commits, releases…
+    const [, owner, repo, ref, path] = match
+    if (!owner || !repo || !ref || !path) return null
+    return {
+      fetchUrl: `https://raw.githubusercontent.com/${owner}/${repo}/${ref}/${path}`,
+      skipToExtract: false,
+      fallbackUrl: `${parsed.origin}${parsed.pathname}`,
+    }
+  },
+}
+
 // Keyed by lowercase host of the ORIGINAL url.
 const ADAPTERS: Record<string, SiteAdapter> = {
   // All Reddit hosts go to the safereddit.com Redlib mirror since 2026-09-25: old.reddit.com
@@ -160,6 +191,8 @@ const ADAPTERS: Record<string, SiteAdapter> = {
   'www.dpreview.com': dpreviewAdapter,
   'arxiv.org': arxivAdapter,
   'www.arxiv.org': arxivAdapter,
+  'github.com': githubAdapter,
+  'www.github.com': githubAdapter,
 }
 
 export interface ResolvedSite {
