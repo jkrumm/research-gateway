@@ -14,7 +14,7 @@ WHERE TraceId = replaceAll('e1aafd34-83b2-4207-b47a-b9e937a5d577', '-', '')
 
 gives you the plan, every worker, every page fetch with its fallback waterfall, the synthesis,
 and the grounding verdict — plus every `log()` line, which now carries the same `TraceId`.
-Nothing else joins those together; container logs rotate away inside 72h and a deep job runs
+Nothing else joins those together; the LaunchAgent log files are plain files with no retention rule, and a deep job runs
 for minutes (measured p50 366s, max 1237s over 30 days).
 
 A span exports when it **ends**, so a running job shows up as a partial trace: workers and
@@ -34,21 +34,27 @@ research.job                    server, root — traceId = jobId
 │  └─ research.worker  ×N       internal, parallel, bounded by WORKER_MAX_CONCURRENCY
 │     ├─ tool.searchWeb         client
 │     ├─ tool.fetchPage         client   + one `fetch.step` EVENT per fallback attempt
-│     └─ tool.<any other>       client   (wrapped generically in buildTools)
+│     └─ tool.<any other>       client   (wrapped generically in buildTools): packageInfo, githubFile,
+│                                        githubRepo, findPackages, academicSearch, findVideos,
+│                                        libraryDocs, brainNotes — the ten tools on the mini, nine elsewhere
 ├─ research.round   round=2     internal — the gap round, only if findings left holes
 ├─ research.synthesis           client
+├─ research.consistency_gate    internal — the divergence gate; ALWAYS present on a job that reaches it
+│  └─ research.consistency      client   only when the gate let the pass run
 └─ research.ground              internal — the code-side citation gate
 ```
 
 | Span | Key attributes |
 |-|-|
-| `research.job` | `research.depth` · `research.query` (200 chars) · `research.reason` submit_report/assembled/empty · `research.rounds` · `research.workers` · `research.digests` · `report.status` ok/partial · `report.citations` · `report.sources` · `grounding.pages_retrieved` / `.pages_failed` / `.citations_dropped` / `.confidence_capped` · `llm.input_tokens` / `.cached_input_tokens` / `.output_tokens` / `.reasoning_tokens` · `cost.llm_usd` / `.search_usd` / `.total_usd` · `search.calls` · `render.count` / `.failures` |
+| `research.job` | `research.depth` · `research.query` (200 chars) · `research.reason` submit_report/assembled/empty · `research.rounds` · `research.workers` · `research.digests` · `report.status` ok/partial · `grounding.partial_cause` dropped/scrubbed/no-pages/failures (absent when ok) · `report.citations` · `report.sources` · `grounding.pages_retrieved` / `.pages_missing` / `.pages_failed` / `.citations_dropped` / `.confidence_capped` / `.citations_degraded` / `.citations_number_unmatched` · **stage rollups:** `synthesis.outcome` · `worker.salvaged` (count of workers whose digest came from the salvage call) · `consistency.gate` (`ran` or the skip reason) · `consistency.failed` (0/1) · `consistency.corrected` / `.edits` · `human.browser` / `.solved` / `.suppressed` / `.abandoned` (counts per outcome) · `llm.input_tokens` / `.cached_input_tokens` / `.output_tokens` / `.reasoning_tokens` · `cost.llm_usd` / `.search_usd` / `.total_usd` · `search.calls` · `render.count` / `.failures` |
 | `research.plan` | `llm.model` · `plan.sub_questions` · `plan.fallback` |
 | `research.round` | `research.round` · `research.workers_dispatched` · `research.digests_returned` · `research.gap_round` · `research.round_retry` (only on a retry pass — a round that lost EVERY worker is re-dispatched once over the same questions, so one `research.round` number can legitimately carry two spans) |
 | `research.worker` | `worker.sub_question` (200) · **`worker.forced_submit`** step_cap/context_cap/worker_deadline/job_deadline, absent = finished naturally · `worker.steps` · `worker.digest` · `worker.findings_kept` / `.findings_stripped` · `ledger.retrieved` / `.failed` / `.snippet` · `llm.*` |
-| `research.synthesis` | `synthesis.digests` · `synthesis.outcome` submitted/salvaged/rejected_no_call/rejected_guard/failed |
-| `research.ground` | the four `grounding.*` counts + `report.status` |
-| `tool.fetchPage` | `fetch.url` · `fetch.host` · `fetch.via` · `fetch.ok` · `fetch.chars` · `fetch.attempts` · `fetch.error` · events `fetch.step` {step, ok, chars, error, ms} and `fetch.rewrite` |
+| `research.synthesis` | `synthesis.digests` · `synthesis.outcome` submitted/salvaged/failed/`rejected_<kind>` (kind: length, malformed-call, text-only, no-output, guard) |
+| `research.consistency_gate` | `consistency.divergence` (signal count) · `consistency.skipped` (reason, absent when it ran) · `consistency.corrected` / `.vetoed` / `.edits` · `report.chars_before` / `.chars_after` |
+| `research.consistency` | `consistency.outcome` consistent/corrected/vetoed/truncated/failed · `consistency.edits` · `consistency.applied` (JSON, each span truncated) · `llm.output_tokens` — a `failed` outcome sets the span status to error |
+| `research.ground` | the `grounding.*` counts (retrieved, missing, failed, dropped, capped, degraded, number_unmatched) + `report.status` |
+| `tool.fetchPage` | `fetch.url` · `fetch.host` · `fetch.via` · `fetch.ok` · `fetch.chars` · `fetch.attempts` · `fetch.error` · events `fetch.step` {step, ok, chars, error, ms}, `fetch.rewrite`, and `human_solve` {outcome browser/solved/suppressed/abandoned, escalated, host, reason} — one per human-solve attempt, so a challenge that reached the owner's dialog is a span event, not only a `human_solve.*` log line |
 | `tool.searchWeb` | `search.query` (200) · `search.via` cache/budget/dual/tavily/sonar · `search.results` |
 
 A zero-evidence job (`research.reason=empty`) is the one exception to that `research.job` row:
@@ -84,7 +90,7 @@ FROM otel_traces WHERE ServiceName='research-gateway' AND SpanName='research.job
 GROUP BY d, depth ORDER BY d DESC
 ```
 
-**2. Where a 28-minute job goes — stage breakdown (bar)**
+**2. Where a job's time goes — stage breakdown (bar)**
 
 Search: `ServiceName:research-gateway SpanName:research.*` · group by `SpanName` · `Duration`
 p50/p95. Read `research.worker` against `research.round`: the round costs what its **slowest**
@@ -246,12 +252,12 @@ How to read it:
 | Event | What it means |
 |-|-|
 | `process.draining` | SIGTERM arrived. `running`/`queued` are what was in flight, `drainMs` the configured window |
-| `process.drained` | The drain finished. `remaining: 0` is the good case; **`remaining > 0` is ERROR severity** and means the window elapsed with jobs still running — job-store.ts's `releaseAllOwnedLeases` releases their leases right there so the next replica adopts them immediately instead of waiting out `HEARTBEAT_STALE_MS` |
-| `job.drain_handed_off` | Jobs still queued at shutdown had their lease released for another replica to adopt — not a failure, and not reflected as `status: 'error'` on the job |
-| `job.lease_lost` | This process's write to a job it thought it owned was fenced — another replica already adopted it (`claimStale`). The run is left to finish; its result is discarded |
+| `process.drained` | The drain finished. `remaining: 0` is the good case; **`remaining > 0` is ERROR severity** and means the window elapsed with jobs still running — job-store.ts's `releaseAllOwnedLeases` releases their leases right there so the restarted process adopts them immediately instead of waiting out `HEARTBEAT_STALE_MS` |
+| `job.drain_handed_off` | Jobs still queued at shutdown had their lease released for the restarted process to adopt — not a failure, and not reflected as `status: 'error'` on the job |
+| `job.lease_lost` | This process's write to a job it thought it owned was fenced — a newer owner already adopted it (`claimStale`). The run is left to finish; its result is discarded |
 | `job.resumed` | A job was ADOPTED from a lost lease and resumed from its checkpoint (`fromRound`) — the replacement for the old `job.reaped`/`job.reaped_on_read`. Expected after an unclean restart, not a fault by itself |
 | `job.crash_loop_guard` | A job was given up on after `MAX_JOB_ATTEMPTS` restarts without finishing — it may itself be what keeps crashing the process. **Is** worth investigating |
-| `process.memory_pressure` / `process.memory_recovered` | Admission shed new work at 85% of the cgroup limit and released it below 75%. A pressure line with no recovery line is the shape to alert on |
+| `process.memory_pressure` / `process.memory_recovered` | Admission shed new work at 85% of `MEMORY_LIMIT_MB` (process RSS; there is no cgroup on the mini) and released it below 75%. A pressure line with no recovery line is the shape to alert on |
 | `process.memory_hold` / `process.memory_hold_released` | The softer 70%/65% threshold — queued jobs simply wait for a free slot rather than being refused. Informational; not itself a shedding event |
 | `job.rejected` | Group by `reason`: `queue_full` \| `memory_pressure` \| `draining` |
 
@@ -270,19 +276,100 @@ WHERE ServiceName='research-gateway' AND Body='mcp.job_wait'
 ORDER BY Timestamp DESC LIMIT 100
 ```
 
+**16. Synthesis / consistency failures (number)** — `Body IN ('consistency.failed',
+'synthesis.rejected', 'synthesis.failed')` on logs. Each is a stage that degraded the report
+without failing the job: the assembled fallback shipped, or the consistency pass was a no-op on a
+provider error. Backs the 3-per-hour alert below.
+
+**17. Cost spike (number, SQL)** — jobs over $2 in the last hour, plus 1 when the 24h spend
+exceeds $15; 0 otherwise. The thresholds sit above everything measured 2026-09-23..10-09
+(per-job p95 quick $0.07 / standard $0.40 / deep $1.41, max $1.43; a normal day about $1, the
+two eval/audit days $8-9), so a hit is a runaway job or a loop, not a heavy day. Backs the cost alert.
+
+**18. Synthesis outcome (table)** — `synthesis.outcome` per day × depth from the root span.
+Anything but `submitted` is a degraded report; `assembled` counts the jobs that fell back to the
+digest-assembled report.
+
+```sql
+SELECT toStartOfDay(Timestamp) d, SpanAttributes['research.depth'] depth,
+       SpanAttributes['synthesis.outcome'] outcome, count() jobs,
+       countIf(SpanAttributes['research.reason']='assembled') assembled
+FROM otel_traces WHERE ServiceName='research-gateway' AND SpanName='research.job'
+  AND SpanAttributes['synthesis.outcome'] != '' AND Timestamp > now() - INTERVAL 14 DAY
+GROUP BY d, depth, outcome ORDER BY d DESC, jobs DESC
+```
+
+**19. Worker salvage rate (table)** — salvaged workers over dispatched workers, per day. A rising
+share means workers end without calling `submit_digest` more often (the 2.6% digest-loss
+baseline is in `docs/measurements.md`). `worker.salvaged` is a per-job count; jobs resumed from a
+checkpoint count only their post-resume part (as do `consistency.failed` and `human.*`).
+
+```sql
+SELECT toStartOfDay(Timestamp) d, count() jobs,
+       countIf(toFloat64OrZero(SpanAttributes['worker.salvaged']) > 0) jobs_with_salvage,
+       sum(toFloat64OrZero(SpanAttributes['worker.salvaged'])) salvaged,
+       sum(toFloat64OrZero(SpanAttributes['research.workers'])) workers,
+       round(100*salvaged/nullIf(workers,0),1) salvage_pct
+FROM otel_traces WHERE ServiceName='research-gateway' AND SpanName='research.job'
+  AND SpanAttributes['synthesis.outcome'] != '' AND Timestamp > now() - INTERVAL 14 DAY
+GROUP BY d ORDER BY d DESC
+```
+
+**20. Consistency pass: ran / skipped / failed (table)** — per day × depth × gate decision
+(`ran` or the skip reason), with failures, corrections, edits and mean job time. The gate is the
+lever on this pass's cost, so the question this answers is how often it runs and whether the runs
+change anything.
+
+```sql
+SELECT toStartOfDay(Timestamp) d, SpanAttributes['research.depth'] depth,
+       SpanAttributes['consistency.gate'] gate, count() jobs,
+       sum(toFloat64OrZero(SpanAttributes['consistency.failed'])) failed,
+       countIf(SpanAttributes['consistency.corrected']='true') corrected,
+       sum(toFloat64OrZero(SpanAttributes['consistency.edits'])) edits,
+       round(avg(Duration)/1e9) avg_job_s
+FROM otel_traces WHERE ServiceName='research-gateway' AND SpanName='research.job'
+  AND SpanAttributes['consistency.gate'] != '' AND Timestamp > now() - INTERVAL 14 DAY
+GROUP BY d, depth, gate ORDER BY d DESC, jobs DESC
+```
+
+The rollup attributes exist from the deploy of 2026-10-09 onward; older jobs read as empty in
+tiles 18-20.
+
 ## Alerts
 
-Six, all tile-backed on this dashboard, all firing into the Slack `#alerts` webhook. The
+Seven, all tile-backed on this dashboard, all firing into the Slack `#alerts` webhook. The
 config is exported to `vps/observability/alerts/` — Mongo is not backed up, the repo is.
 
 | Alert | Tile | Fires at | What it means |
 |-|-|-|-|
-| `job.crash_loop_guard >= 1 (15m)` | 10 | ≥1 | A job was given up on after `MAX_JOB_ATTEMPTS` restarts without finishing — it may itself be what keeps crashing the process. Replaces the old `job.reaped`/`job.reaped_on_read` alert, which fired on every ADOPTION, including the routine ones a clean rolling deploy now produces via `job.resumed` — this one fires only when adoption keeps failing the same job |
 | `job.error >= 1 (15m)` | 11 | ≥1 | A job ended terminal-`error`. Zero of these in the 14 days before 2026-09-11 — because a zero-evidence job used to report `done` + `partial` instead |
 | `LLM provider failures >= 3 (15m)` | 12 | ≥3 | `worker.failed` + `plan.fallback`. The **earlier** signal: a burst means the IU endpoint is down while individual jobs may still finish degraded. Threshold 3 so a lone worker timeout stays quiet |
-| `memory pressure >= 1 (15m)` | 13 | ≥1 | Admission shed at 85% of the cgroup limit. The only in-process warning a SIGKILL allows |
+| `memory pressure >= 1 (15m)` | 13 | ≥1 | Admission shed at 85% of `MEMORY_LIMIT_MB` (RSS). The only in-process warning a SIGKILL allows |
 | `drain cut live jobs >= 1 (1h)` | 14 | ≥1 | `process.drained` with `remaining > 0` — the drain window elapsed with jobs still running |
 | `partial rate too high (>30% over 24h, n>=5)` | 15 | ≥1 | A raw-SQL number tile with its own hardcoded rolling 24h window (`TimestampTime > now() - INTERVAL 24 HOUR`, independent of the alert's own hourly check cadence): counts `research.done` rows by `LogAttributes['status']`, and emits the partial count only when `partial/total > 0.3` **and** `total >= 5` (else 0) — the volume gate keeps one partial out of two jobs quiet. Catches the class of regression that produced 66-92% partial for two days (2026-09-23/24, fixed in 07b3a36) same-day instead of unnoticed |
+| `synthesis/consistency failures >= 3 (1h)` | 16 | ≥3 | `consistency.failed` + `synthesis.rejected` + `synthesis.failed` in an hour: reports are shipping degraded (assembled fallback, or a provider erroring on the lead model). Three, so one transient 5xx stays quiet |
+| `cost spike >= 1 (1h)` | 17 | ≥1 | A job over $2, or 24h spend over $15 — see tile 17 for where the thresholds come from. The 24h half re-fires hourly until the window rolls past |
+
+### Where an alert goes — the route into warden
+
+Slack `#alerts` → warden polls it → `warden/config/triage-policy.json` → the repo. The Slack
+title is the alert's `name`, and warden matches the fingerprint of that title (digits stripped,
+so `research-gateway job.error >= 1 (15m)` is `slack_alert:research-gateway-job-error-m`). One
+rule, `slack_alert:research-gateway-*` → `research-gateway`, routes every alert on this
+dashboard, current and future — a new alert needs no policy edit as long as its name starts with
+`research-gateway`. The Kuma monitors (`Research Gateway - HTTP`, `- Renderer -`) already follow
+the same prefix. Dispatches 589-594 (2026-10-08) are the live proof for `job.error`.
+
+**Proof (2026-10-09, no alert faked in `#alerts`):** warden's own regression suite carries
+`test_the_shipped_policy_routes_every_research_gateway_alert_to_its_repo`
+(`warden/tests/test_triage.py`). It loads the real shipped policy and runs each of the seven live
+alert titles through `core.match_targets` → `core.match_rule`, the path `intake.label_route`
+takes, and asserts the repo is `research-gateway`. Suite result at commit time: 513/513.
+Re-run: `cd ~/SourceRoot/warden && .venv/bin/python3 tests/test_triage.py`.
+
+A stuck deploy (the poller's marker lagging `origin/master` for more than 15 minutes, or the
+poller silent that long) is not a HyperDX alert: `devhost-health-check.sh`'s
+`probe_research_gateway` reports it into the `MacMini Dev Host - Push` Kuma heartbeat.
 
 `process.loop_lag` (event-loop lag over 1s, error level) is deliberately NOT an alert: it is a
 diagnostic that explains other signals, not one to page on. A starved loop announces itself

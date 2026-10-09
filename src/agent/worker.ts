@@ -18,6 +18,7 @@ import {
   type SalvageFailure,
 } from './salvage.js'
 import { log } from '../lib/log.js'
+import { noteJobOutcome } from './job-outcomes.js'
 import { withSpan } from '../lib/otel.js'
 import { emptyUsage, addUsage, toUsageStats } from '../lib/usage.js'
 import type { UsageStats } from '../lib/usage.js'
@@ -235,6 +236,7 @@ export async function runWorker(args: {
         }
 
         const snapshot = ledger.snapshot()
+        if (salvaged) noteJobOutcome(jobId, 'worker.salvaged')
         span.setAttributes({
           'worker.steps': stepCount,
           'worker.forced_submit': forcedReason,

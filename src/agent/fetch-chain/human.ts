@@ -1,12 +1,15 @@
 import { assertPublicHttpUrl } from '../../lib/ssrf.js'
 import { log } from '../../lib/log.js'
+import { getActiveSpan } from '../../lib/otel.js'
+import { noteJobOutcome } from '../job-outcomes.js'
+import { classifyHumanResult } from '../human-outcome.js'
 import { classifyBlock, describeBlock } from '../challenge.js'
 import { extractText } from '../html-parse.js'
 import { looksBinary } from '../response-kind.js'
 import { isArchiveUrl } from '../archive.js'
 import { attempt, MIN_USABLE_CHARS, NEVER_ABORT } from './context.js'
 import type { ChainContext } from './context.js'
-import type { FetchChainResult, FetchStep, HumanSolveRequest } from './types.js'
+import type { FetchChainResult, FetchStep, HumanSolveRequest, HumanSolveResult } from './types.js'
 
 // ── Step human (rescue, before Wayback): a pluggable human-in-the-loop solver. Only tried
 // when the caller wired one in (`opts.humanSolve`), the host's policy allows it, AND this
@@ -23,14 +26,25 @@ import type { FetchChainResult, FetchStep, HumanSolveRequest } from './types.js'
 export const humanEligible = (ctx: ChainContext): boolean =>
   ctx.opts.humanSolve !== undefined && ctx.policy.humanSolve && !ctx.policy.skip.includes('human') && ctx.sawBlock && !ctx.site.skipToExtract && !isArchiveUrl(ctx.dialUrl)
 
+// One `human_solve` event on the active fetchPage span plus a per-job tally the root span rolls
+// up (`human.<outcome>`): the outcome used to exist only as a `human_solve.*` log line.
+function recordHumanOutcome(ctx: ChainContext, result: HumanSolveResult): void {
+  const { outcome, escalated, reason } = classifyHumanResult(result)
+  getActiveSpan().addEvent('human_solve', { outcome, escalated, host: ctx.host, ...(reason ? { reason } : {}) })
+  noteJobOutcome(ctx.jobId, `human.${outcome}`)
+}
+
 export async function tryHumanSolve(ctx: ChainContext, reason: string): Promise<FetchChainResult | null> {
   const tH = performance.now()
   // Hoisted so the catch below names the mechanism that actually ran (a throw after a
   // browser-mode result is a 'browser' failure, not a human one).
   let step: FetchStep = 'human'
+  let recorded = false
   try {
     const req: HumanSolveRequest = { url: ctx.dialUrl, host: ctx.host, reason, signal: ctx.opts.signal ?? NEVER_ABORT }
     const result = await ctx.opts.humanSolve!(req)
+    recordHumanOutcome(ctx, result)
+    recorded = true
     if (!result.ok) {
       const ms = attempt(ctx.attempts, 'human', tH, { ok: false, error: result.reason })
       ctx.opts.onHuman?.({ ok: false, ms, reason: result.reason })
@@ -114,6 +128,8 @@ export async function tryHumanSolve(ctx: ChainContext, reason: string): Promise<
     log('tool.fetchPage', { jobId: ctx.jobId, url: ctx.url, via: step, chars: text.length, mode: result.mode })
     return ctx.done(step, text)
   } catch (err) {
+    // A solver call that throws never reached recordHumanOutcome above; count it as abandoned.
+    if (!recorded) recordHumanOutcome(ctx, { ok: false, reason: 'error' })
     const ms = attempt(ctx.attempts, step, tH, { ok: false, error: String(err) })
     ctx.opts.onHuman?.({ ok: false, ms, reason: String(err) })
     return null

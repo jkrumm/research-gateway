@@ -16,6 +16,8 @@ import { log } from '../lib/log.js'
 import { chooseCost, emptyUsage, addUsage } from '../lib/usage.js'
 import { readSearchSpend, readRenderStats, clearFetchFlights } from './tools.js'
 import { env } from '../env.js'
+import { clearJobOutcomes, readJobOutcomes } from './job-outcomes.js'
+import { HUMAN_OUTCOMES } from './human-outcome.js'
 import { traceIdFromJobId, withRootSpan, withSpan } from '../lib/otel.js'
 import { describeFailures, collectRoundOutcome, type RoundResult, type WorkerOutcome } from './round.js'
 import { runRounds } from './rounds.js'
@@ -350,7 +352,7 @@ export async function runResearch(
       if (isFenced()) throw new FencedError('research job fenced before synthesis')
 
       setPhase('synthesizing')
-      const { report: synthesized, usage: synthesisUsage } = await synthesize({
+      const { report: synthesized, usage: synthesisUsage, outcome: synthesisOutcome } = await synthesize({
         query: input.query,
         context: input.context,
         digests: allDigests,
@@ -445,11 +447,12 @@ export async function runResearch(
           if (review.corrected) {
             log('report.consistency_corrected', { jobId, reason, edits: merged.edits })
           }
-          return { reviewed: { ...submitted, report: review.report }, gate: merged }
+          return { reviewed: { ...submitted, report: review.report }, gate: merged, decision: skip ?? 'ran' }
         },
       )
       submitted = gateOutcome.reviewed
       const gate = gateOutcome.gate
+      const gateDecision = gateOutcome.decision
       signal?.throwIfAborted()
 
       // After the consistency pass (which must see the report as written), before grounding.
@@ -524,9 +527,11 @@ export async function runResearch(
       // Operational counters, not spend — kept out of RunCost (which stays about money) and
       // reported only in this log line, plus argo via reportRenderUsage (tools.ts's meterRender).
       const renderStats = readRenderStats(jobId)
+      const jobOutcomes = readJobOutcomes(jobId)
 
-      // Mirrors the `research.done` line below field-for-field on purpose: the trace and the
-      // log are then the same numbers by construction, not two accountings that can drift.
+      // Mirrors the `research.done` line below on purpose: the trace and the log are then the
+      // same numbers by construction, not two accountings that can drift. The stage rollups
+      // (synthesis.outcome, worker.salvaged, consistency.gate/.failed, human.*) are span-only.
       span.setAttributes({
         'research.reason': reason,
         'research.rounds': round,
@@ -534,6 +539,11 @@ export async function runResearch(
         'research.digests': allDigests.length,
         'consistency.corrected': gate.corrected,
         'consistency.edits': gate.edits,
+        'consistency.gate': gateDecision,
+        'consistency.failed': jobOutcomes['consistency.failed'] ?? 0,
+        'synthesis.outcome': synthesisOutcome,
+        'worker.salvaged': jobOutcomes['worker.salvaged'] ?? 0,
+        ...Object.fromEntries(HUMAN_OUTCOMES.map((o) => [`human.${o}`, jobOutcomes[`human.${o}`] ?? 0])),
         'research.outcome_partial': grounded.status === 'partial',
         'report.status': grounded.status,
         'report.citations': grounded.citations.length,
@@ -597,5 +607,8 @@ export async function runResearch(
 
       return report
     },
-  ).finally(() => clearFetchFlights(jobId))
+  ).finally(() => {
+    clearFetchFlights(jobId)
+    clearJobOutcomes(jobId)
+  })
 }

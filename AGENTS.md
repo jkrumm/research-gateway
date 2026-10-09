@@ -235,6 +235,10 @@ bun test           # pure-function tests only — needs no secrets
 - `src/lib/admission.ts` — the pure "may a new job start" decision (draining > memory pressure
   > queue full); `memory-watch.ts` feeds it, `index.ts`'s SIGTERM path flips it
 - `src/lib/otel.ts` + `otel-format.ts` — SDK-free OTLP export, job id = trace id
+- `src/agent/job-outcomes.ts` + `human-outcome.ts` — what lets the `research.job` root span carry its
+  children's outcomes (`synthesis.outcome`, `worker.salvaged`, `consistency.gate`/`.failed`,
+  `human.*`): a per-job tally that deep stages note into and `run.ts` reads once, and the pure
+  human-solve result classifier. Both env-free; the dashboard columns are in `docs/hyperdx-dashboard.md`.
 - `src/lib/cost.ts` + `usage.ts` — per-job spend, reported to argo
 - `evals/` + `scripts/eval.ts` — golden-set answer-quality eval (`evals/golden.jsonl`,
   regex + live-registry resolvers, results in `evals/results/`); `bun scripts/eval.ts`,

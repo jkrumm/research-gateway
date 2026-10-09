@@ -342,7 +342,7 @@ Search records are debounced per job; telemetry failure never fails a job.
 spans parented through `AsyncLocalStorage`; the AI SDK's own telemetry is deliberately off
 because it records prompts). **A job's trace id is its job id** with dashes stripped, so a
 trace joins its argo rows and its log lines with no correlation column, and a log line in
-HyperDX is clickable into its trace. Container logs rotate away inside 72h; this is the record.
+HyperDX is clickable into its trace. The LaunchAgent log files on the mini have no retention rule and are not the record; this is.
 Dashboard tiles and SQL: [`docs/hyperdx-dashboard.md`](./docs/hyperdx-dashboard.md).
 
 ## Restarts, and what they cost

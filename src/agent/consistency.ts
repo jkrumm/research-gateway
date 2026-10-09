@@ -4,6 +4,7 @@ import { consistencyModel, leadSubmitChoice } from '../lib/llm.js'
 import { consistencyPrompt } from './prompt.js'
 // The schema (runtime validator) and its inferred shape (type) share a name, so the value
 // import carries an inline type-only rename rather than a second import statement.
+import { noteJobOutcome } from './job-outcomes.js'
 import { ConsistencyReview, type ConsistencyReview as ConsistencyReviewInput } from './schema.js'
 import { resolveConsistencyReview } from './extract.js'
 import { noopConsistencyReview } from './consistency-gate.js'
@@ -138,6 +139,7 @@ export async function reviewConsistency(args: {
         span.setAttributes({ 'consistency.outcome': 'failed' })
         span.setStatus('error', String(err).slice(0, 300))
         log('consistency.failed', { jobId, error: String(err) })
+        noteJobOutcome(jobId, 'consistency.failed')
         return noopConsistencyReview(report, { ...emptyUsage(), durationMs: Date.now() - start })
       } finally {
         idle.clear()

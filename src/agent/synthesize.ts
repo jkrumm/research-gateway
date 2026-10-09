@@ -16,6 +16,9 @@ import type { UsageStats } from '../lib/usage.js'
 import { createIdleWatchdog } from '../lib/idle-watchdog.js'
 import type { IdleWatchdog } from '../lib/idle-watchdog.js'
 
+// Mirrors the `synthesis.outcome` span attribute: how the report was (not) produced.
+export type SynthesisOutcome = 'submitted' | 'salvaged' | 'failed' | `rejected_${Exclude<SynthesisReply['kind'], 'submitted'>}`
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyTool = Tool<any, any>
 
@@ -78,7 +81,7 @@ export async function synthesize(args: {
   jobId: string
   signal?: AbortSignal | undefined
   undigested?: readonly string[] | undefined
-}): Promise<{ report: SubmittedReport | null; usage: UsageStats }> {
+}): Promise<{ report: SubmittedReport | null; usage: UsageStats; outcome: SynthesisOutcome }> {
   const { query, context, digests, depth, jobId } = args
   const start = Date.now()
 
@@ -155,9 +158,12 @@ export async function synthesize(args: {
         })
         const { reply, resolved } = out
         if (reply.kind !== 'submitted' || !resolved?.report) {
-          span.setAttributes({ 'synthesis.outcome': `rejected_${reply.kind}` })
+          // `attempt()` turns a submitted-but-unusable reply into 'guard', so 'submitted' here is
+          // only the type system's view.
+          const outcome: SynthesisOutcome = reply.kind === 'submitted' ? 'rejected_guard' : `rejected_${reply.kind}`
+          span.setAttributes({ 'synthesis.outcome': outcome })
           if (reply.kind !== 'submitted') logRejection(jobId, reply, out.result, usage.outputTokens, 'assembled')
-          return { report: null, usage }
+          return { report: null, usage, outcome }
         }
         if (resolved.salvaged) {
           // Loud and distinct on purpose: how often this fires is the signal for whether the
@@ -168,8 +174,9 @@ export async function synthesize(args: {
             reason: 'report.report was double-encoded JSON of the whole submission; unwrapped inner markdown',
           })
         }
-        span.setAttributes({ 'synthesis.outcome': resolved.salvaged ? 'salvaged' : 'submitted' })
-        return { report: resolved.report, usage }
+        const outcome = resolved.salvaged ? 'salvaged' : 'submitted'
+        span.setAttributes({ 'synthesis.outcome': outcome })
+        return { report: resolved.report, usage, outcome }
       } catch (err) {
         // Caught INSIDE the span callback so the span ends normally and synthesize keeps its
         // "never throws" contract — a failed synthesis is a null report, not an error.
@@ -180,7 +187,7 @@ export async function synthesize(args: {
         span.setAttributes({ 'synthesis.outcome': 'failed' })
         span.setStatus('error', String(err).slice(0, 300))
         log('synthesis.failed', { jobId, error: String(err) })
-        return { report: null, usage: { ...emptyUsage(), durationMs: Date.now() - start } }
+        return { report: null, usage: { ...emptyUsage(), durationMs: Date.now() - start }, outcome: 'failed' }
       } finally {
         idle.clear()
       }
