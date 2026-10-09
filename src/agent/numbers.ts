@@ -68,14 +68,21 @@ const APPROX_BEFORE = /(?:~|≈|\babout|\baround|\bapprox(?:imately|\.)?|\brough
 const VERSION_BEFORE = /(?:\bpatch|\bversion|\bv|\bseason|\bs|\bgen|\bsection|§)\s*$/i
 
 /** The numbers in a claim that are worth checking against its cited page. */
+const STATUS_PHRASE_END = /^\s*(?:$|[.,;:)(]|(?:and|for|on|from|when|at|because|so|instead|with|but)\b)/i
+
 export function claimNumbers(claim: string): ClaimNumber[] {
   // A URL inside the claim carries its own digits (ids, dates) that are not claims.
   const text = claim.replace(/https?:\/\/\S+/g, ' ')
   // An HTTP status quoted as the response itself ("returns 404", "HTTP 410") is a fact about
   // the request, not a figure the page text states.
-  const statusAt = (start: number, end: number): boolean =>
-    /\b(?:http|status|returns?|returned|responded|response|error|code)\s*(?:code\s*)?$/i.test(text.slice(Math.max(0, start - 16), start)) ||
-    /^\s*(?:\(?not found\b|error\b|response\b|status\b)/i.test(text.slice(end, end + 14))
+  // After a verb ("returned 500") the number must end the phrase: "returned 500 results" is a count.
+  const statusAt = (start: number, end: number): boolean => {
+    const before = text.slice(Math.max(0, start - 24), start)
+    const after = text.slice(end, end + 14)
+    if (/^\s*(?:\(?not found\b|error\b|response\b|status\b)/i.test(after)) return true
+    if (/\b(?:http|status|response|error|code)\s*(?:code\s*)?$/i.test(before)) return true
+    return /\b(?:returns?|returned|responded|answered)\s*(?:with\s*)?(?:an?\s*)?$/i.test(before) && STATUS_PHRASE_END.test(after)
+  }
   const out: ClaimNumber[] = []
   for (const match of text.matchAll(/\d+(?:,\d{3})*(?:\.\d+)?/g)) {
     const token = match[0]

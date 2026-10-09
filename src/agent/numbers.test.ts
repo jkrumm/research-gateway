@@ -103,5 +103,12 @@ describe('status exemption boundaries', () => {
   it('still checks counts of responses/errors', () => {
     expect(unmatchedNumbers('The survey got 500 responses', [1])).toEqual(['500'])
     expect(unmatchedNumbers('We logged 404 errors this week', [1])).toEqual(['404'])
+    expect(unmatchedNumbers('The search returned 500 results', [1])).toEqual(['500'])
+    expect(unmatchedNumbers('The API returns 429 items per page', [1])).toEqual(['429'])
+  })
+
+  it('exempts a verb-quoted status that ends the phrase', () => {
+    expect(unmatchedNumbers('The old URL returned 410.', [1])).toEqual([])
+    expect(unmatchedNumbers('It responded with a 503 when overloaded', [1])).toEqual([])
   })
 })
