@@ -161,7 +161,7 @@ export function groundClaims(
     // dropped: a derived figure can be right, and the claim's other content still rests on the
     // page. Only checked where the page's text was recorded (fetchPage); see numbers.ts.
     const pageNumbers = ledger.numbersOf(claim.url)
-    const missingNumbers = pageNumbers ? unmatchedNumbers(claim.claim, pageNumbers) : []
+    const missingNumbers = pageNumbers ? unmatchedNumbers(claim.claim, pageNumbers, claim.url) : []
     if (missingNumbers.length > 0) {
       ceiling = 'low'
       unmatched.push({ index: kept.length, numbers: missingNumbers })
@@ -534,7 +534,7 @@ export function groundReport(
   // A scrub note is evidence lost, exactly like a dropped citation: the body named a source
   // this run could not verify. It therefore feeds `degradedRun` — without that, issue #7 is
   // only half closed and the contradiction still ships under `status: ok`.
-  const scrubbed = scrubBody(submitted.report, detached)
+  const scrubbed = scrubBody(submitted.report, detached, (url) => ledger.tierOf(url) === 'missing')
   // Hygiene runs AFTER the scrub so an entry the prose leans on is still flagged inline; only
   // guessed-URL 404s and budget housekeeping nothing depends on leave the public list.
   const unverified = tidyUnverified(detached, {
