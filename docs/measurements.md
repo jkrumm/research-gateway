@@ -814,3 +814,18 @@ Five live jobs (equivalents of the validation batch). All `status: ok`, `partial
 - **Scrub/number false alarms:** none of the 0/5 jobs is `partial` (the 2026-10-09 batch had 3 of 5). The Canyon-ID and HTTP-status caps did not recur; the fixes are covered by fixtures, not proven by this sample (n=5).
 - **Salvage:** two workers fell to salvage (Elysia, Canyon), both recovered on attempt 1 with 5 findings each. The retry path (attempt 2, `reason`/`finishReason` on failure) was not exercised live.
 - The 3 CSV number-unmatched are on a job that computes figures from rows (derived values by design, capped `low`, not an error).
+
+## Wave 9 re-validation (2026-10-09, deploy 7b11498)
+
+Two live standard jobs, the Wave 8 equivalents, both `status: ok`, `partialCause: null`.
+
+| Job | Wall | Cost | Citations | Consistency pass |
+|-|-|-|-|-|
+| Canyon Endurace CF 7, DE price (Wave 8: 550s, $0.26; 7880ee74: 550s) | 270s | $0.18 | 27 (0 dropped) | ran, 53s / 13k output tokens, 1 real edit |
+| Elysia latest stable + last minor | 181s | $0.11 | 21 (0 dropped) | ran, 14s / 3k output tokens, 0 edits |
+
+- **JSON-LD rescue:** 25 canyon.com pages fetched in the Canyon job, every one delivered 3.2k+ chars (median ~7k; before: 1,048-1,445). The report carries `offers.price 2299.00 EUR` and the variant availability from the structured data, cited `high` to the 4427 page. The 4427 page took one readability pass, no lightpanda/Tavily/solver fallback.
+- **Consistency pass, before the detector was tightened:** the gate let both jobs through with 158 and 28 divergence signals (top signals were noise: `number: 4427 vs 6990`, `year 2025 vs 2026`, `number: 105 vs 2299`). A pass is still cheaper than the Wave 8 baseline (53s/13k and 14s/3k vs. p50 59s earlier and the 230s Canyon pass that failed), but the gate skipped nothing. Follow-up in the same wave: bare years and unit-less numbers no longer count (`number:` with an empty or function-word unit, `year` kind removed); fixtures cover both. Not re-measured live: the pass/skip rate needs the `consistency.skipped` `no-divergence` count over more jobs.
+- **Salvage:** one worker salvaged in the Canyon job (attempt 1, 7 findings); the retrieved-URL list was in its instruction. Whether fewer salvaged findings are stripped (baseline 3 of 5 / 4 of 5) cannot be read from one job: `worker.ungrounded` did not fire for it.
+- **Fetch waste:** no GitHub blob URL, `r.jina.ai` fetch or three-locale buycycle fetch in either job, so none of the three fixes was exercised live. The blob-to-raw rewrite is fixture-covered only. Content-hash replay was not built: by the time the text is known the network work is done, and not charging the page budget would break the per-caller accounting `fetch-flight.ts` guarantees.
+- **Open:** a big, sparse page with no JSON-LD whose later stages all fail now loses its Readability sliver (previously accepted). Not measured.
