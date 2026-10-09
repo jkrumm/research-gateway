@@ -343,9 +343,14 @@ function referencesBody(body: string, entry: UnverifiedEntry): boolean {
 
 // The sentence (or line) holding a match: bounded by a newline or terminal punctuation
 // followed by whitespace. A URL's own dots are never followed by whitespace mid-URL.
+// A trailing source link ("… was not readable. — <url>") is its own "sentence" with no words: it
+// belongs to the sentence before it on the same line, so that one is the context.
 function sentenceAround(text: string, at: number, length: number): string {
   const before = text.slice(0, at)
-  const start = Math.max(before.lastIndexOf('\n'), ...[...before.matchAll(/[.!?](?=\s)/g)].map((m) => m.index + 1))
+  const lineStart = before.lastIndexOf('\n')
+  const stops = [...before.matchAll(/[.!?](?=\s)/g)].map((m) => m.index + 1).filter((i) => i > lineStart)
+  let start = Math.max(lineStart, ...stops)
+  if (!/\p{L}/u.test(text.slice(start + 1, at))) start = Math.max(lineStart, ...stops.filter((i) => i < start))
   const after = text.slice(at + length)
   const end = after.search(/[.!?](?=\s|$)|\n/)
   return text.slice(start + 1, end === -1 ? text.length : at + length + end)

@@ -187,6 +187,12 @@ describe('scrub false alarms (2026-10-09)', () => {
     expect(scrubBody(body, entries).annotated).toBe(1)
   })
 
+  it('reads a trailing source link with the sentence before it (job 702c260d)', () => {
+    const url = 'https://ourworldindata.org/co2-dataset-sources'
+    expect(flags(`- A provisional-year note could not be checked: the sources page was not readable. — ${url}`, url)).toBe(false)
+    expect(flags(`- The latest year is 2024 and it is final. — ${url}`, url)).toBe(true)
+  })
+
   it('never annotates a source the origin answered 404/410 for', () => {
     const entries: ReadonlyArray<UnverifiedEntry> = [
       { topic: 'population csv', url: 'https://example.com/data/old.csv', reason: 'HTTP 404' },
