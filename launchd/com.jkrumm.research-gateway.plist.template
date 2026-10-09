@@ -23,7 +23,7 @@
   <!-- SHUTDOWN_DRAIN_MS (src/env.ts) is 1_800_000ms = 1800s: on SIGTERM the
        process drains running jobs before exiting. launchd's own default
        ExitTimeOut is 20s — it would SIGKILL straight through that drain,
-       the exact trap sideclaw's own plist + Makefile `reload` drift check
+       the exact trap agent-gateway's own plist + Makefile `reload` drift check
        exists to avoid. Set comfortably above 1800s. -->
   <key>ExitTimeOut</key><integer>1860</integer>
 </dict>

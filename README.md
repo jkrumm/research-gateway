@@ -102,7 +102,7 @@ only, so the long window costs no memory.
 
 | Door | Consumer | How to wait |
 |-|-|-|
-| REST `GET /research/:jobId` | Hermes, sideclaw, anything on the tailnet | **Poll it.** Each call returns the current state immediately. There is no blocking variant — a client that calls it once and stops has only read `queued` |
+| REST `GET /research/:jobId` | Hermes, agent-gateway, anything on the tailnet | **Poll it.** Each call returns the current state immediately. There is no blocking variant — a client that calls it once and stops has only read `queued` |
 | MCP `job_wait` | Claude Code | **One call.** It blocks until the job is terminal over a kept-alive stream; call it again only if it returns `stillRunning` |
 
 Do not port the MCP shape onto the REST door. They are different endpoints on purpose: the
@@ -484,7 +484,7 @@ a strict superset (human solve, brain search, higher concurrency); see
 | Hermes | direct bearer HTTP — `POST /research` then poll `GET /research/{jobId}`; not an MCP client |
 | anything else on the tailnet | bearer HTTP, or the MCP endpoint |
 
-This service replaced the sideclaw `research` tool; the MCP facade that was once "deferred, only
+This service replaced the agent-gateway `research` tool; the MCP facade that was once "deferred, only
 if an MCP-only client needs it" became the main door the moment Claude Code was the main client.
 
 The CLI is also the fallback when the MCP tools are missing: a session whose MCP connection

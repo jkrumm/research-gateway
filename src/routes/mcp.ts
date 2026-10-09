@@ -19,7 +19,7 @@ import { env } from '../env.js'
 import { log } from '../lib/log.js'
 import type { CallToolResult } from '@modelcontextprotocol/server'
 
-// MCP facade over the research engine, modelled on sideclaw's async-job contract:
+// MCP facade over the research engine, modelled on agent-gateway's async-job contract:
 // `research` submits and returns a jobId immediately, then `job_wait` / `job_status`
 // retrieve the eventual report. The submit stays non-blocking because a job runs for
 // minutes and a submit must not; `job_wait` then blocks for as long as the job takes

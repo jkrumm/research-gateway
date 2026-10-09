@@ -7,10 +7,10 @@ a measured answer — most of them a different answer than the one it shipped wi
 
 ## Why this service exists
 
-Research logic used to live only inside the sideclaw `/research` MCP tool — a `claude -p`
+Research logic used to live only inside the agent-gateway `/research` MCP tool — a `claude -p`
 worker driven by a markdown prompt, reachable only from Claude Code on the Mac mini. Hermes and
 any other client could not use it. One research brain on the VPS, callable by every client with
-provider keys centralized server-side, replaced it; the sideclaw `research` handler and skill
+provider keys centralized server-side, replaced it; the agent-gateway `research` handler and skill
 prompt were retired (the same way `implement` was retired for the native `@implementer`).
 
 It is **agentic, not a pipeline**: a model decides which providers to call, goes deeper when
@@ -36,7 +36,7 @@ research is non-uniform; every query needs a different number of calls and depth
 | Job store (again) | heartbeat-reaped: a job caught mid-run always came back terminal `error` | → **owner LEASE + resumable checkpoint** (2026-09-23, the parse-off-the-main-thread change): `owner`/`attempts`/`checkpoint_json` on the row; a stale lease is CLAIMED (`claimStale`, one `UPDATE … RETURNING`, the compare-and-set two replicas sharing the file need) and the job resumes from its last completed round instead of restarting cold. A poison job — one that crashes `MAX_JOB_ATTEMPTS` processes in a row — still ends terminal, so this is strictly a superset of the old behaviour, not a removal of it |
 | Caching | deferred TTL cache on `(query, depth)` | still deferred; the field notes' `context` parameter is the cheaper lever |
 | Ingress | ~~public subdomain behind Cloudflare Tunnel~~ | **Tailscale-only**: grey-cloud A record → Traefik, same as argo / audio-gateway |
-| MCP shim | "later, only if an MCP-only client needs it — HTTP is the foundation" | **the primary path.** Claude Code is the main client and speaks MCP; `/mcp` mirrors sideclaw's submit → wait → read contract |
+| MCP shim | "later, only if an MCP-only client needs it — HTTP is the foundation" | **the primary path.** Claude Code is the main client and speaks MCP; `/mcp` mirrors agent-gateway's submit → wait → read contract |
 | Telemetry | argo `POST /usage/records` as `source: research-gateway` | unchanged, grown to seven records per job; plus OTLP traces/logs to ClickStack, SDK-free. The mini routes the same records to the local usage-tracker's JSONL instead (`USAGE_SINK=jsonl` + `USAGE_JSONL_PATH` in `scripts/launch.sh`), because that tracker owns the argo sync there and posting to both would duplicate rows; the VPS keeps posting directly |
 | Grounding | (not in the PRD) | the retrieval ledger, after issue #1: a rate-limited run cited unfetched URLs at `high`. Code counts evidence; the model never asserts verification |
 | Zero-evidence job | `done` + `partial` with a hardcoded "budget was exhausted" stub | **2026-09-11: terminal `error` naming the real upstream cause**, plus one round retry when the research budget is still nearly untouched. 14-day telemetry: 9 of 19 `partial` jobs had zero worker digests, and every one traced to a fast upstream IU-endpoint failure (e.g. a worker dying in 66ms out of a 300 000ms budget on `AI_APICallError: Forbidden`) — never to the budget itself |
@@ -138,7 +138,7 @@ per-host reputation logic rather than layered on top of it.
 ## VPS instance retired (2026-09-26)
 
 The VPS Docker instance is gone — no fallback remains, the mini is the only instance. Every live
-consumer (Claude Code's `/research` skill, sideclaw, Hermes, the CLI) already talked to the mini,
+consumer (Claude Code's `/research` skill, agent-gateway, Hermes, the CLI) already talked to the mini,
 and the mini carries a strict superset of what the VPS ever ran: human solve (needs a MacBook to
 prompt, which the VPS never had), `brainNotes`/Karakeep, and higher measured concurrency (5 vs
 the VPS's 3, `.env.mini.tpl`). The accepted cost is exactly that superset in reverse — no second

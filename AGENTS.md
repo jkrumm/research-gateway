@@ -20,7 +20,7 @@ agent needs before touching code; don't restate what README already owns.
 
 Everything is submit-then-poll — never expect a synchronous result.
 
-- HTTP (Hermes's and sideclaw's lane): `POST /research` → `{ jobId, status }`; **poll**
+- HTTP (Hermes's and agent-gateway's lane): `POST /research` → `{ jobId, status }`; **poll**
   `GET /research/:jobId` — it returns current state at once and never blocks — until
   `status: "done"` — p50 quick ~12s / standard ~150s / deep ~450-700s (re-measured 2026-10-09 after the consistency-pass gate, deep n=2; the 2026-10-08 audit was 100s / 362s / 770s, the 2026-08/09 record 38s / 111s / 366s), full distribution in
   `docs/measurements.md` § Job duration.
@@ -31,7 +31,7 @@ Everything is submit-then-poll — never expect a synchronous result.
   that makes an unbounded wait safe — read it there rather than re-deriving it. A client still
   needs a generous per-server `timeout`, sized for queue wait PLUS execution. This is the
   primary client path (Claude Code's
-  `/research` skill, sideclaw); plain bearer HTTP is for everything else.
+  `/research` skill, agent-gateway); plain bearer HTTP is for everything else.
 - `result.status` can be `"partial"` — evidence was lost and the report prepends a banner.
   A text-only MCP client sees only the prose, so **always surface `unverified` and a
   non-`ok` status to the human**, never just the `report` string.
