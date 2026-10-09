@@ -534,11 +534,12 @@ export function groundReport(
   // A scrub note is evidence lost, exactly like a dropped citation: the body named a source
   // this run could not verify. It therefore feeds `degradedRun` — without that, issue #7 is
   // only half closed and the contradiction still ships under `status: ok`.
-  const scrubbed = scrubBody(submitted.report, detached, (url) => ledger.tierOf(url) === 'missing')
+  const isMissing = (url: string): boolean => ledger.tierOf(url) === 'missing'
+  const scrubbed = scrubBody(submitted.report, detached, isMissing)
   // Hygiene runs AFTER the scrub so an entry the prose leans on is still flagged inline; only
   // guessed-URL 404s and budget housekeeping nothing depends on leave the public list.
   const unverified = tidyUnverified(detached, {
-    isMissing: (url) => ledger.tierOf(url) === 'missing',
+    isMissing,
     inProse: (entry) => !!entry.url && scrubbed.flaggedUrls.has(entry.url),
     protectedUrls: new Set(dropped.flatMap((d) => (d.url ? [d.url] : []))),
   })

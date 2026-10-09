@@ -158,6 +158,8 @@ export async function runWorker(args: {
             // Two attempts: an empty reply (text only, no call, a malformed call) is usually a
             // one-off, and the lost digest is a lost sub-question. The retry sees the first reply.
             for (let attempt = 1; attempt <= 2 && !raw; attempt++) {
+              // A throw on the first attempt (a transient error past the SDK's own retries) still
+              // earns the second; a throw on the second reaches the outer catch.
               const salvageResult = await generateText({
                 model: workerModel,
                 instructions: workerPrompt(depth),
@@ -182,7 +184,12 @@ export async function runWorker(args: {
                 onStepEnd: () => idle.arm(),
                 onToolExecutionStart: () => idle.arm(),
                 onToolExecutionEnd: () => idle.arm(),
+              }).catch((err: unknown) => {
+                if (attempt === 2) throw err
+                log('worker.salvage', { jobId, round, attempt, ok: false, error: String(err).slice(0, 300) })
+                return null
               })
+              if (!salvageResult) continue
               const salvageRaw = extractDigest(salvageResult.toolCalls)
               usage = { ...addUsage(usage, toUsageStats(salvageResult.usage, 0, salvageResult.steps)), durationMs: Date.now() - start }
               if (salvageRaw) {

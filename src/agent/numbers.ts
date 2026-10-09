@@ -75,7 +75,7 @@ export function claimNumbers(claim: string): ClaimNumber[] {
   // the request, not a figure the page text states.
   const statusAt = (start: number, end: number): boolean =>
     /\b(?:http|status|returns?|returned|responded|response|error|code)\s*(?:code\s*)?$/i.test(text.slice(Math.max(0, start - 16), start)) ||
-    /^\s*(?:\(?not found|error|response|status)/i.test(text.slice(end, end + 14))
+    /^\s*(?:\(?not found\b|error\b|response\b|status\b)/i.test(text.slice(end, end + 14))
   const out: ClaimNumber[] = []
   for (const match of text.matchAll(/\d+(?:,\d{3})*(?:\.\d+)?/g)) {
     const token = match[0]

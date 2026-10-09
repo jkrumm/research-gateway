@@ -87,11 +87,10 @@ export function classifySalvageFailure(reply: { text: string; toolCalls: Readonl
 // The second and last salvage attempt, appended after the first reply. Short and mechanical: the
 // first reply did not call the tool, so say only that and what to do.
 export function buildSalvageRetryInstruction(failure: SalvageFailure): string {
-  const what =
-    failure === 'invalid-call'
-      ? `Your ${SALVAGE_TOOL_NAME} call was malformed.`
-      : failure === 'text-only'
-        ? `You answered in plain text instead of calling ${SALVAGE_TOOL_NAME}.`
-        : `You returned no ${SALVAGE_TOOL_NAME} call.`
-  return `${what} Call ${SALVAGE_TOOL_NAME} now with a valid summary, findings and openGaps, built only from the tool results already in this conversation. If few findings are supported, submit those and put the rest in openGaps.`
+  const reasons: Record<SalvageFailure, string> = {
+    'invalid-call': `Your ${SALVAGE_TOOL_NAME} call was malformed or named the wrong tool.`,
+    'text-only': `You answered in plain text instead of calling ${SALVAGE_TOOL_NAME}.`,
+    'no-output': `You returned no ${SALVAGE_TOOL_NAME} call.`,
+  }
+  return `${reasons[failure]} Call ${SALVAGE_TOOL_NAME} now with a valid summary, findings and openGaps, built only from the tool results already in this conversation. If few findings are supported, submit those and put the rest in openGaps.`
 }

@@ -26,6 +26,11 @@ const RAW_CONTENT_TYPES = [
   'text/markdown',
   'text/csv',
   'text/tab-separated-values',
+  'application/csv',
+  'application/x-ndjson',
+  'application/jsonl',
+  'application/x-jsonlines',
+  'application/jsonlines',
   'application/xml',
   'text/xml',
   '+xml', // application/rss+xml, application/atom+xml

@@ -98,3 +98,10 @@ describe('unmatchedNumbers — 2026-10-09 false positives', () => {
     expect(unmatchedNumbers('The bike weighs 404 grams', [1])).toEqual(['404'])
   })
 })
+
+describe('status exemption boundaries', () => {
+  it('still checks counts of responses/errors', () => {
+    expect(unmatchedNumbers('The survey got 500 responses', [1])).toEqual(['500'])
+    expect(unmatchedNumbers('We logged 404 errors this week', [1])).toEqual(['404'])
+  })
+})

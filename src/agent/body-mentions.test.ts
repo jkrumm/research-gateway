@@ -196,3 +196,13 @@ describe('scrub false alarms (2026-10-09)', () => {
     expect(scrubBody(body, entries, (u) => u.endsWith('old.csv')).annotated).toBe(0)
   })
 })
+
+describe('own-figure exemption compares whole figures', () => {
+  const entries: ReadonlyArray<UnverifiedEntry> = [
+    { topic: 'Elysia 1.3 release 2024', url: 'https://elysiajs.com/blog/elysia-13', reason: 'fetch failed' },
+  ]
+  it.each(['3%', '24', '4', '1.30'])('flags a foreign figure %s that is only a substring of the topic', (figure) => {
+    const body = `The note (https://elysiajs.com/blog/elysia-13) could not be read, yet it claims ${figure}.`
+    expect(scrubBody(body, entries).annotated).toBe(1)
+  })
+})

@@ -320,8 +320,9 @@ function patternFor(url: string): RegExp | null {
 //     blocked `münchen.de` holds a composed `ü`; a body carrying the canonically-equivalent
 //     DECOMPOSED form (`u` + U+0308) is the same hostname to every reader and every resolver,
 //     but matched nothing. Both sides are NFC-normalized.
-function referencesBody(body: string, entry: UnverifiedEntry & { url: string }): boolean {
+function referencesBody(body: string, entry: UnverifiedEntry): boolean {
   const url = entry.url
+  if (!url) return false
   const pattern = patternFor(url)
   if (pattern === null) return false
   const text = normalizeForMatch(body)
@@ -353,8 +354,9 @@ function sentenceAround(text: string, at: number, length: number): string {
 // A figure the entry itself carries (the "1.3" in "Elysia 1.3 blog release note", a year in its
 // URL) names the subject — it is not a claim made about it. Any other figure is an assertion.
 function hasForeignFigure(sentence: string, entry: UnverifiedEntry): boolean {
-  const own = `${entry.topic} ${entry.url ?? ''}`
-  return (sentence.match(/\d+(?:[.,]\d+)*/g) ?? []).some((figure) => !own.includes(figure))
+  const figures = (text: string): string[] => text.match(/\d+(?:[.,]\d+)*/g) ?? []
+  const own = new Set(figures(`${entry.topic} ${entry.url ?? ''}`))
+  return figures(sentence).some((figure) => !own.has(figure))
 }
 
 const SAYS_UNVERIFIED =
@@ -426,7 +428,7 @@ export function scrubBody(
     const key = dedupKey(entry.url)
     if (seen.has(key)) continue
     seen.add(key)
-    if (!referencesBody(body, { ...entry, url: entry.url })) continue
+    if (!referencesBody(body, entry)) continue
     annotated++
     flaggedUrls.add(entry.url)
     // `renderUrl`/`renderProse`: model-controlled, and this is markdown (see markdown.ts).
