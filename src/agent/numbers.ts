@@ -67,6 +67,20 @@ export interface ClaimNumber {
 const APPROX_BEFORE = /(?:~|≈|\babout|\baround|\bapprox(?:imately|\.)?|\broughly|\bnearly|\balmost|\bsome|\bca\.?)\s*$/i
 const VERSION_BEFORE = /(?:\bpatch|\bversion|\bv|\bseason|\bs|\bgen|\bsection|§)\s*$/i
 
+// The "100" of a percentage-conversion formula ("(a-b)/b*100"), not a quoted figure. Only a real
+// formula qualifies: a multiplication sign (`*`, `×`, or a spaced `x`/`X`) right before the 100
+// whose left side ends in `)` or in "/ operand". "3 * 100 items", "2 x 100 meters" and markdown
+// bold ("**100**") are quantities; "100%" is a percentage the claim states.
+const FORMULA_OPERATOR = /(\*|×|(?<=\s)[xX])\s*$/
+const FORMULA_LEFT_SIDE = /(?:\)|\/\s*[\w.,]+)\s*$/
+function isPercentFactor(text: string, start: number, end: number): boolean {
+  if (/^\s?%/.test(text.slice(end, end + 2)) || text[end] === '*') return false
+  const pre = text.slice(Math.max(0, start - 60), start)
+  const operator = FORMULA_OPERATOR.exec(pre)
+  if (!operator || (operator[1] === '*' && pre[operator.index - 1] === '*')) return false
+  return FORMULA_LEFT_SIDE.test(pre.slice(0, operator.index))
+}
+
 /** The numbers in a claim that are worth checking against its cited page. */
 const STATUS_PHRASE_END = /^\s*(?:$|[.,;:)(]|(?:and|for|on|from|when|at|because|so|instead|with|but)\b)/i
 
@@ -98,8 +112,7 @@ export function claimNumbers(claim: string): ClaimNumber[] {
     if (/^[-/:.]\d/.test(next2)) continue
     if (VERSION_BEFORE.test(before)) continue
     if (/^[45]\d\d$/.test(token) && statusAt(start, end)) continue
-    // The percentage-conversion constant of a formula ("(a-b)/b*100"), not a quoted figure.
-    if (token === '100' && /(?:[*×]|\sx)\s*$/.test(before)) continue
+    if (token === '100' && isPercentFactor(text, start, end)) continue
 
     const percent = /^\s?%/.test(text.slice(end, end + 2))
     const decimals = token.includes('.') ? (token.split('.')[1]?.length ?? 0) : 0

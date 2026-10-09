@@ -114,6 +114,18 @@ describe('percentage-conversion constant', () => {
     expect(unmatchedNumbers('Revenue was 100 in 2020 and 200 in 2021', [1])).toEqual(['100', '200'])
   })
 
+  it('exempts the factor of a spaced division formula', () => {
+    expect(unmatchedNumbers('change = a / b * 100', [1])).toEqual([])
+    expect(unmatchedNumbers('(572.319-1054.796)/1054.796 × 100', [572.319, 1054.796])).toEqual([])
+  })
+
+  it('checks a 100 that is a quantity, not a formula factor', () => {
+    expect(unmatchedNumbers('3 * 100 items in stock', [1])).toEqual(['100'])
+    expect(unmatchedNumbers('**100** riders', [1])).toEqual(['100'])
+    expect(unmatchedNumbers('2 x 100 meters', [1])).toEqual(['100'])
+    expect(unmatchedNumbers('(a/b) * 100% of riders', [1])).toEqual(['100%'])
+  })
+
   it('still checks other factors after a multiplication sign', () => {
     expect(unmatchedNumbers('value = a*1000', [1])).toEqual(['1000'])
   })
