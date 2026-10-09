@@ -1,6 +1,10 @@
-import { describe, it, expect, afterEach } from 'bun:test'
+import { describe, it, expect, afterEach, setDefaultTimeout } from 'bun:test'
 import { createHostGate } from './host-gate.js'
 import type { HumanSolveRequest, FetchChainOptions } from './fetch-chain.js'
+
+// Chain tests walk the real host-gate intervals (3-5s each on a loaded runner); the 5s default
+// flaked the CI check on 2026-10-09 and the deploy poller refuses a red SHA.
+setDefaultTimeout(30_000)
 
 // Same boot convention as otel-spans.test.ts: fetch-chain.ts imports env.ts, which parses
 // process.env at import time and throws without secrets — so the module graph is pulled in
