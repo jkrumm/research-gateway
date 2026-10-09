@@ -157,3 +157,54 @@ Evidence from five live jobs (2026-10-09): Elysia c00b078c, Canyon b8aad229, Cli
   - Make the salvage path recover more often, for example by retrying salvage once on an empty result. Log why salvage failed (text-only reply vs. no call vs. error). No wall-clock caps.
 - [x] Re-run the five validation queries (or equivalents) live after the deploy. Record durations, partial causes and number-check caps in `docs/measurements.md`. File anything still off as GitHub issues.
 **Left behind:** Plan complete. Shipped: scrub never annotates a `missing`-tier (404/410) source and compares whole figures against the entry's own topic/URL (substring match was a review catch); `numbers.ts` treats digits in the cited URL as found and exempts an HTTP status quoted as the response (word-bounded keywords); `fetchPage` optional `lines` (≤5 case-insensitive terms) returns header + matching lines for text/CSV/TSV/NDJSON bodies, filtered before the 80k cut, own flight/dedup key per filter, ledger holds exactly the returned text (`line-filter.ts`; added csv/ndjson media types to `RAW_CONTENT_TYPES`); worker salvage tries twice (a throw on attempt 1 still earns attempt 2), logs `attempt`/`reason`/`finishReason`. Live: 5 jobs, 0 partial, line filter read Germany's rows from a 17k-line CSV, see `docs/measurements.md` § Wave 8. CI: the `fetch-chain` suite flaked on a 5s default timeout on the runner (poller refused two SHAs); `setDefaultTimeout(30_000)`. Gate: `make check` green (1383 tests), `ground.test.ts` green, sideclaw review run, both blockers fixed. Review items skipped: `fetchPage` execute closure complexity (fallow), brain-note branch ignores `lines`/dedup key, no note when a `lines` filter is requested but not applicable (non-line body), `omitted` not logged, line-filter reserve sizing only masked by TEXT_CAP, no groundReport-level integration tests for the missing bypass. Unproven: salvage retry path live; partial-rate drop at n=5. No next wave spawned, per the brief.
+
+## Wave 9 — Extraction, consistency cost, fetch waste            <!-- status: active -->
+Evidence comes from the 2026-10-09 log forensics on jobs 7880ee74 (Canyon, 550s), a1f33758, 72f6b7b8, b8aad229, c494ec73 and cce38233. Find their lines in `~/Library/Logs/research-gateway.log` by jobId.
+- [ ] **Thin Readability on a big shop page is accepted as usable.**
+  - The canyon.com product pages are static HTML (about 611 KB). They hold `"price":"2199.00"`, 3 `application/ld+json` blocks and "Shimano 105" 13 times. Readability kept only 1,048–1,445 chars. That cleared `MIN_USABLE_CHARS = 200` (`fetch-chain/context.ts`), so lightpanda, Tavily and the solver never ran. 25 pages in one job delivered no specs or prices.
+  - Fix in the pure extract path: when Readability yields a tiny share of a large HTML body, append the page's structured data. Use ld+json `Product`/`Offer`/`ItemList` and similar, flattened to readable `key: value` lines. Also consider spec tables. If that is still thin, fall through to the next stage instead of accepting it.
+  - Keep it env-free and testable with a trimmed Canyon-like fixture (no network). The ledger must hold exactly the delivered text, so the number check sees the price.
+  - Check the other site adapters and `extract.ts` for an existing ld+json helper before writing one.
+- [ ] **The consistency pass costs 25–40% of wall time for nearly nothing.**
+  - In 8 passes since the Wave 8 deploy, 7 made 0 edits and one made 2 cosmetic ones. On Canyon it ran about 230s and then failed with a provider 500, which cost 42% of the job and bought nothing. Each pass emits 14–40k output tokens.
+  - Tighten `consistency-gate.ts` so the pass runs only when there is a concrete divergence signal between the digests, for example the same entity carrying different numbers, dates or versions across digests. Build that detection pure and test it.
+  - Find out why a minimal-span edit pass emits 14–40k output tokens, and cut it if that's prompt-driven.
+  - **No wall-clock cap or timeout around the LLM call**; owner rule `~/.claude/rules/agent-limits.md`.
+  - Record before/after pass rate and wall time in `docs/measurements.md`.
+- [ ] **Fetch waste.**
+  - A GitHub `blob/...` URL for a CSV went through lightpanda and returned 551k chars of page chrome. Rewrite `github.com/<o>/<r>/blob/<ref>/<path>` to the raw URL in `site-adapters.ts`, or wherever `fetch.rewrite` lives.
+  - The same buycycle page was fetched in three locales (en-hu, en-us, en-gr) at an identical 2,824 chars. Consider content-hash replay in `fetch-flight.ts`: a different URL with identical text replays and charges no new page budget. Only do it if it stays simple and grounding-safe; the ledger must still register the URL the worker cited.
+  - The `r.jina.ai` wrappers were `proxy-refused`. Make sure the worker prompt or tool description tells workers not to use reader proxies, in one short line at most.
+- [ ] **Salvaged findings are mostly stripped** (3 of 5 and 4 of 5 ungrounded). Check whether the salvage prompt gives the model the URLs actually fetched (the ledger's retrieved list), so salvaged citations point at retrieved pages. Fix it if not. No step caps or turn limits.
+- [ ] Ship, then re-run the Canyon query live (`Was kostet das Canyon Endurace CF 7 aktuell in Deutschland und welche Ausstattung hat es?`, standard) plus one Elysia or CSV query. Record durations, how many canyon.com pages delivered more than 3k chars, and consistency pass/skip in `docs/measurements.md`.
+**Left behind:**
+
+## Wave 10 — Observability and alerts that reach warden            <!-- status: pending -->
+The evidence is the 2026-10-09 observability audit. Telemetry arrives in ClickHouse/HyperDX with severities intact. Alerts live in `../vps/observability/alerts/research-gateway-*.json` and post to Slack #alerts. Warden polls #alerts, triages through `../warden/config/triage-policy.json`, and dispatches to the repo. Dispatches 589–594 on 2026-10-08 prove that path works for `job-error`.
+
+This wave edits sibling repos. Follow each repo's AGENTS.md, commit there, and push there. `dotfiles` may carry someone else's unpushed commit: never push foreign commits; note it under Left behind instead.
+
+**Gateway telemetry** (this repo):
+- [ ] Roll child outcomes up to the `research.job` span: `synthesis.outcome`, a `worker.salvaged` count, the consistency gate decision, and `consistency.failed`.
+- [ ] Give human solve an outcome attribute (escalated / browser / solved / abandoned / suppressed reason) on a span or event, not only logs.
+
+**Dashboard doc:**
+- [ ] Update `docs/hyperdx-dashboard.md`: add the consistency spans, the extra tool spans, and the `partial_cause` / `citations_degraded` / `pages_missing` / `consistency.*` columns. Fix the stale "cgroup"/"replicas" wording.
+- [ ] Add tiles for synthesis outcome, salvage rate, and consistency pass/skip/edits.
+
+**Alerts** (vps repo):
+- [ ] Add exported alert JSONs, following the existing files' format, for:
+  - `consistency.failed` or synthesis failure/fallback, at 3 or more per hour;
+  - a cost spike (daily sum or per-job p95 over a threshold set from `docs/measurements.md`).
+- [ ] Remove the stale `research-gateway-job-reaped-1-15m.json`.
+- [ ] Find out how exported alerts get applied to live HyperDX (a script or API in vps). Apply them. If applying needs the HyperDX UI, say so under Left behind.
+
+**Warden routing:**
+- [ ] Add one wildcard rule in `../warden/config/triage-policy.json`, `slack_alert:research-gateway-*` → `research-gateway`, so every current and future gateway alert routes deterministically. Keep the existing specific rules if they carry different actions.
+
+**Deploy-stuck probe** (dotfiles):
+- [ ] In `../dotfiles/scripts/devhost-health-check.sh` `probe_research_gateway`, flag when the deploy clone `~/.research-gateway/app` HEAD is behind `origin/master` for more than about 15 min. That feeds the existing Kuma push. Keep it cheap: `git ls-remote` or the poller's state, no new daemon.
+
+**End-to-end proof:**
+- [ ] Show that a research-gateway alert would land in warden as a research-gateway item. Use warden's own triage dry-run or test path if one exists; read warden's AGENTS.md. Do not fake a Slack alert in #alerts unless warden documents that as the test method. Record the proof in `docs/hyperdx-dashboard.md` § Alerts.
+**Left behind:**
