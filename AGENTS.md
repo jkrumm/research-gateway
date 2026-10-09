@@ -171,6 +171,14 @@ bun test           # pure-function tests only — needs no secrets
   lead synthesizes
   (`run-contract.ts` holds `runResearch`'s env-free input/opts/`RunResearchFn` types, shared
   with `lib/job-runner-core.ts`)
+- `src/agent/consistency.ts` + `consistency-gate.ts` + `digest-divergence.ts` — the post-synthesis
+  consistency pass (one lead call, find/replace spans only) and the gate in front of it. The pass
+  runs only at `standard`/`deep`, with >= 2 digests, a report >= 6k chars **and** a concrete
+  divergence signal: two different digests giving the same subject (>= 3 shared salient words, a
+  shared source host counts one) a different date, currency, percent, version, year or unit-typed
+  number. No signal logs `consistency.skipped` with `skip: "no-divergence"` (plus
+  `divergence` / `divergenceSignals`; the gate span carries `consistency.divergence`). 7 of 8 passes
+  after Wave 8 changed nothing at 14-40k reasoning tokens each — the gate is the lever, not effort.
 - `src/agent/ledger.ts` + `ground.ts` — the grounding invariant above; `body-mentions.ts` extends
   it to the report PROSE (a blocked source named in the body, not just cited — a bare
   homepage with no claim, or a sentence that says the source was unreadable, is exempt);
@@ -210,6 +218,10 @@ bun test           # pure-function tests only — needs no secrets
   that flow. Readability/site-adapter parsing runs off the event loop in a worker
   pool (`html-parse.ts` + `parse-worker.ts`); the whole chain is bounded by a per-fetch
   budget (`FETCH_CHAIN_BUDGET_MS`).
+- `src/agent/structured-data.ts` — JSON-LD rescue for a thin Readability reading of a big page (body > 50k
+  chars, text < 3k and < 3% of it): flattens Product/Offer/ItemList nodes to `key: value` lines, appended to the
+  delivered text by the parse worker; with none to append, origin.ts falls through instead of accepting the sliver.
+  Pure, env-free.
 - `src/agent/fetch-flight.ts` — per-job single-flight and memory for `fetchPage` (tools.ts owns
   the registry; run.ts clears a job's entry). Page/404/block outcomes are replayed, transient
   failures are not; every caller still commits the staged ledger into its OWN ledger and charges

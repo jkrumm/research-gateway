@@ -4,6 +4,7 @@ import { runWorker } from './worker.js'
 import { synthesize } from './synthesize.js'
 import { reviewConsistency } from './consistency.js'
 import { consistencySkipReason, noopConsistencyReview } from './consistency-gate.js'
+import { detectDigestDivergence, divergenceSummary } from './digest-divergence.js'
 import { applyConsistencyGate, CONSISTENCY_WARNING, stripInlineConfidenceTags } from './extract.js'
 import { assembleReport, nextRoundQuestions } from './assemble.js'
 import { mergeLedgers, type LedgerSnapshot } from './ledger.js'
@@ -380,7 +381,10 @@ export async function runResearch(
       // may return a corrected body. On any failure the ORIGINAL report continues: this pass
       // degrades to a no-op rather than risking the whole job's output. `reason` is reported
       // unchanged — it records how the report was PRODUCED, which the review does not alter.
-      // consistencySkipReason bypasses the call for quick, single-digest and short reports.
+      // consistencySkipReason bypasses the call for quick, single-digest and short reports,
+      // and for any job whose digests carry no divergence signal (the same subject with a
+      // different number, date or version — digest-divergence.ts): without one the pass has
+      // nothing to fix, and 7 of 8 measured passes changed nothing.
       // The gate's bookkeeping (lead-usage fold, applied/vetoed counts) lives in extract.ts's
       // env-free applyConsistencyGate, unit-testable outside run.ts's env-chained import
       // graph (run.test.ts's convention imports such helpers directly). The warning merge
@@ -392,10 +396,39 @@ export async function runResearch(
         'research.consistency_gate',
         { 'report.reason': reason },
         async (gateSpan) => {
-          const skip = consistencySkipReason({ depth, digestCount: allDigests.length, reportChars: submitted.report.length })
+          // The scan is O(statements²) and the pass is a no-op for quick/single-digest/short
+          // anyway, so only look for a divergence once the cheap floors are met. A failed scan
+          // degrades to "no signal" (a skipped pass), like every other failure on this path.
+          const floor = consistencySkipReason({ depth, digestCount: allDigests.length, reportChars: submitted.report.length, divergenceCount: 1 })
+          let divergence: ReturnType<typeof detectDigestDivergence> = { count: 0, signals: [] }
+          if (floor === null) {
+            try {
+              divergence = detectDigestDivergence(allDigests)
+            } catch (err) {
+              log('consistency.divergence_failed', { jobId, error: String(err) })
+            }
+          }
+          const skip = consistencySkipReason({
+            depth,
+            digestCount: allDigests.length,
+            reportChars: submitted.report.length,
+            divergenceCount: divergence.count,
+          })
+          const divergenceSignals = divergenceSummary(divergence)
+          gateSpan.setAttributes({ 'consistency.divergence': divergence.count })
           if (skip) {
-            log('consistency.skipped', { jobId, skip, depth, digests: allDigests.length, chars: submitted.report.length })
+            log('consistency.skipped', {
+              jobId,
+              skip,
+              depth,
+              digests: allDigests.length,
+              chars: submitted.report.length,
+              divergence: divergence.count,
+              divergenceSignals,
+            })
             gateSpan.setAttributes({ 'consistency.skipped': skip })
+          } else {
+            log('consistency.divergence', { jobId, divergence: divergence.count, divergenceSignals })
           }
           const review = skip
             ? noopConsistencyReview(submitted.report, emptyUsage())

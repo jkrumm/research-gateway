@@ -87,6 +87,11 @@ deep ~450s on n=2 —
 [full distribution](./docs/measurements.md#job-duration-by-depth--the-30-day-span-record)).
 `RESEARCH_MAX_CONCURRENCY` caps concurrent jobs and `RESEARCH_MAX_QUEUE` the backlog.
 
+The post-synthesis consistency pass is gated: it runs only at `standard`/`deep` with at least two
+digests, a report of 6k+ characters, and a divergence signal between the worker digests (the same
+subject carrying a different number, date or version). Otherwise it is skipped
+(`consistency.skipped`, `skip` = `quick-depth` / `single-digest` / `short-report` / `no-divergence`).
+
 A finished job is retained **7 days** (`JOB_TTL_MINUTES`, default 10080) in sqlite, so the
 `jobId` is a durable handle: a client whose wait was cut — a closed session, a restart, a
 dropped stream — can still fetch the result later, and a retried submit carrying an
