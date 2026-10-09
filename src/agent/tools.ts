@@ -8,6 +8,7 @@ import { getActiveSpan, withSpan } from '../lib/otel.js'
 import { reportTavilyUsage, reportSonarUsage, reportRenderUsage, reportYtdlpUsage, reportArchiveUsage } from '../lib/usage.js'
 import { reportTavilyAccountUsage } from '../lib/tavily-account.js'
 import { capText, TEXT_CAP } from './extract.js'
+import { filterVariant, MAX_LINE_TERMS, MAX_TERM_CHARS, normalizeTerms } from './line-filter.js'
 import { commitRead, createPageBudget, isProxyUrl, PAGE_BUDGET_SPENT, PROXY_REFUSED, type PageBudget } from './fetch-guard.js'
 import { createLedger } from './ledger.js'
 import { buildDirectSourceTools } from './direct-sources.js'
@@ -539,16 +540,23 @@ function buildFetchPageTool(ledger: RetrievalLedger, pageBudget: PageBudget, job
 
   return tool({
     description:
-      'Fetch the main text content of a URL. Uses Mozilla Readability for clean article extraction; falls back to a JavaScript renderer and then Tavily Extract if readability fails or returns thin content. For a YouTube video URL this returns the full spoken transcript of the video.',
+      'Fetch the main text content of a URL. Uses Mozilla Readability for clean article extraction; falls back to a JavaScript renderer and then Tavily Extract if readability fails or returns thin content. For a YouTube video URL this returns the full spoken transcript of the video. For a large CSV/TSV/text/JSON-lines file pass `lines` (case-insensitive terms) to get its header plus only the matching lines.',
     inputSchema: z.object({
       url: z.string().describe('The URL to fetch'),
+      lines: z.array(z.string().max(MAX_TERM_CHARS)).max(MAX_LINE_TERMS).optional().describe('Terms to match in a line-oriented file'),
     }),
     // Takes the AI SDK's 2nd `options` argument (previously ignored) so the job/tool
     // abortSignal reaches the chain — `instrument()` above already forwards it unchanged;
     // this is the one execute that had a reason to read it (a fetch chain can run the ~90s
     // FETCH_CHAIN_BUDGET_MS on its own, and a cancelled job should cancel that too).
-    execute: async ({ url }, options) => {
-      if (fetched.has(url)) {
+    execute: async ({ url, lines }, options) => {
+      // A filtered read is a different read of the same URL: its own per-worker dedup key and its
+      // own single-flight below, so it can neither be refused as "already fetched" after an
+      // unfiltered (cut) read nor replay its partial text to an unfiltered caller.
+      const terms = normalizeTerms(lines)
+      const variant = filterVariant(terms)
+      const fetchedKey = variant ? `${url}\n${variant}` : url
+      if (fetched.has(fetchedKey)) {
         getActiveSpan().setAttributes({ 'fetch.url': url, 'fetch.via': 'cache', 'fetch.ok': true })
         log('tool.fetchPage', { jobId, url, via: 'cache' })
         return { url, text: 'Already fetched earlier in this conversation — reuse the previous result for this URL.' }
@@ -592,6 +600,7 @@ function buildFetchPageTool(ledger: RetrievalLedger, pageBudget: PageBudget, job
         const staged = createLedger()
         const result = await runFetchChain(url, {
           ledger: staged,
+          ...(terms.length > 0 ? { lineFilter: terms } : {}),
           jobId,
           signal: options?.abortSignal,
           onTavilyCredits: (credits) => recordTavilyExtract(jobId, credits),
@@ -629,7 +638,7 @@ function buildFetchPageTool(ledger: RetrievalLedger, pageBudget: PageBudget, job
           staged: snapshot,
           terminal: isTerminalOutcome({ text: result.text, staged: snapshot, blocked: blockedAttempt !== undefined }),
         }
-      })
+      }, variant)
 
       if (source !== 'ran') {
         getActiveSpan().setAttributes({ 'fetch.url': url, 'fetch.host': hostOf(url), 'fetch.via': source, 'fetch.ok': outcome.text !== null })
@@ -640,7 +649,7 @@ function buildFetchPageTool(ledger: RetrievalLedger, pageBudget: PageBudget, job
       commitRead({ staged: outcome.staged, into: ledger, delivered: text !== null })
       if (outcome.text === null) return { url, error: missingHint(url, outcome) ?? outcome.error ?? 'fetch failed' }
       if (text === null) return { url, error: PAGE_BUDGET_SPENT }
-      fetched.add(url)
+      fetched.add(fetchedKey)
       return { url, text }
     },
   })

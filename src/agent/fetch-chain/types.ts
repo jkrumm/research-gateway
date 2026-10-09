@@ -49,6 +49,13 @@ export interface FetchChainResult {
 
 export interface FetchChainOptions {
   ledger: RetrievalLedger
+  /**
+   * Normalized terms (line-filter.ts `normalizeTerms`) for fetchPage's `lines` parameter. Applied
+   * in the origin stage's raw branch to a line-oriented body (CSV/TSV/plain text/JSON-lines),
+   * BEFORE the TEXT_CAP cut, so the filter sees the whole bounded-read body. Ignored for
+   * every other kind of body.
+   */
+  lineFilter?: readonly string[]
   jobId?: string
   /**
    * Called with the credits Tavily billed for an Extract call — including a call that

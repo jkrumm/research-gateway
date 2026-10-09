@@ -1,4 +1,5 @@
-import { normalizeText } from '../extract.js'
+import { normalizeText, TEXT_CAP } from '../extract.js'
+import { filterLines, isLineOrientedContentType } from '../line-filter.js'
 import { extractText } from '../html-parse.js'
 import { isRawContentType, isDefinitivelyMissing, isPdf, looksBinary } from '../response-kind.js'
 import { extractPdfText } from '../pdf.js'
@@ -227,10 +228,22 @@ async function readOriginBody(
   if (isRawContentType(contentType)) {
     const raw = normalizeText(body)
     if (raw.length > 0 && !looksBinary(raw)) {
-      attempt(ctx.attempts, 'raw', t1, { ok: true, chars: raw.length })
+      // fetchPage's `lines` filter runs here, on the whole body and before `ctx.done`'s
+      // capText(TEXT_CAP) — a filter placed after the chain would only ever see the first 80k.
+      const terms = ctx.opts.lineFilter
+      const filtered = terms?.length && isLineOrientedContentType(contentType) ? filterLines(raw, terms, TEXT_CAP) : null
+      const text = filtered?.text ?? raw
+      attempt(ctx.attempts, 'raw', t1, { ok: true, chars: text.length })
       ctx.hostGate.noteOk(ctx.host, { startedAt: attemptStartedAt })
-      log('tool.fetchPage', { jobId: ctx.jobId, url: ctx.url, via: 'raw', chars: raw.length, contentType })
-      return { terminal: ctx.done('raw', raw, dialledUrl) }
+      log('tool.fetchPage', {
+        jobId: ctx.jobId,
+        url: ctx.url,
+        via: 'raw',
+        chars: text.length,
+        contentType,
+        ...(filtered ? { lineFilter: terms?.length, lines: filtered.searched, matched: filtered.matched } : {}),
+      })
+      return { terminal: ctx.done('raw', text, dialledUrl) }
     }
     // An empty or binary body is a miss like any other — fall through to the rendering
     // steps, which is the right answer for a URL that serves an empty JSON body to a bot and

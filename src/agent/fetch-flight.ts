@@ -47,7 +47,9 @@ export function missingHint(url: string, outcome: Pick<FetchOutcome, 'text' | 's
 const MAX_TRACKED_JOBS = 64
 
 export interface FlightRegistry {
-  run(jobId: string, url: string, exec: () => Promise<FetchOutcome>): Promise<{ outcome: FetchOutcome; source: FlightSource }>
+  /** `variant` names a differently-shaped read of the same URL (fetchPage's `lines` filter): it
+   * gets its own flight, so a filtered outcome is never replayed to an unfiltered caller. */
+  run(jobId: string, url: string, exec: () => Promise<FetchOutcome>, variant?: string): Promise<{ outcome: FetchOutcome; source: FlightSource }>
   /** Drop a finished job's remembered pages. */
   clear(jobId: string): void
 }
@@ -56,7 +58,7 @@ export function createFlightRegistry(): FlightRegistry {
   const jobs = new Map<string, Map<string, { promise: Promise<FetchOutcome>; settled: boolean }>>()
 
   return {
-    async run(jobId, url, exec) {
+    async run(jobId, url, exec, variant = '') {
       let flights = jobs.get(jobId)
       if (!flights) {
         flights = new Map()
@@ -67,7 +69,7 @@ export function createFlightRegistry(): FlightRegistry {
         }
       }
 
-      const key = normalizeUrl(url)
+      const key = variant ? `${normalizeUrl(url)}\n${variant}` : normalizeUrl(url)
       const existing = flights.get(key)
       if (existing) {
         const source = existing.settled ? 'replayed' : 'joined'

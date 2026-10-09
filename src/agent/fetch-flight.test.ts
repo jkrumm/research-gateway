@@ -30,6 +30,20 @@ function deferred<T>() {
 }
 
 describe('createFlightRegistry', () => {
+  test('a variant read of the same URL gets its own flight and is never replayed to a plain caller', async () => {
+    const reg = createFlightRegistry()
+    let runs = 0
+    const filtered = await reg.run('j', 'https://a.example/x.csv', async () => (runs++, page('header\nDE,83')), 'lines:de')
+    const plain = await reg.run('j', 'https://a.example/x.csv', async () => (runs++, page('full body')))
+    const again = await reg.run('j', 'https://a.example/x.csv', async () => (runs++, page('unused')), 'lines:de')
+    expect(filtered.source).toBe('ran')
+    expect(plain.source).toBe('ran')
+    expect(plain.outcome.text).toBe('full body')
+    expect(again.source).toBe('replayed')
+    expect(again.outcome.text).toBe('header\nDE,83')
+    expect(runs).toBe(2)
+  })
+
   test('concurrent callers share one run', async () => {
     const reg = createFlightRegistry()
     const gate = deferred<FetchOutcome>()

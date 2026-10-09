@@ -1224,3 +1224,51 @@ describe('arXiv HTML→PDF fallback (origin.ts consuming site.fallbackUrl)', () 
     expect(impersonateRequested).not.toContain(HTML_URL)
   })
 })
+
+describe('fetchPage line filter (origin raw branch)', () => {
+  const CSV_URL = 'https://203.0.113.21/population.csv'
+  // Germany sits far past the 80k-char TEXT_CAP, the live failure this filter exists for.
+  function bigCsv(): string {
+    const rows = ['country,year,population']
+    for (const c of ['Afghanistan', 'Brazil', 'Canada', 'Denmark', 'Germany', 'Japan'])
+      for (let y = 1800; y < 2025; y++) for (let i = 0; i < 6; i++) rows.push(`${c},${y},${1_000_000 + y * 7 + i}`)
+    return rows.join('\n')
+  }
+  const serve = (type: string) => stubFetch(() => new Response(bigCsv(), { status: 200, headers: { 'content-type': type } }))
+  const opts = () => ({
+    ledger: createLedger(),
+    hostGate: createHostGate(),
+    tavilyExtract: stubTavilyFail(),
+    impersonatedFetch: stubImpersonateUnavailable(),
+    impersonationMemory: createImpersonationMemory(),
+    assertPublicUrl: stubAssertPublicUrlOk(),
+  })
+
+  it('without the filter a body past TEXT_CAP is cut before Germany', async () => {
+    serve('text/csv')
+    const r = await runFetchChain(CSV_URL, opts())
+    expect(r.via).toBe('raw')
+    expect(r.text).toContain('[truncated:')
+    expect(r.text).not.toContain('Germany,')
+  })
+
+  it('the filter sees the whole body and returns the header plus the matching rows', async () => {
+    serve('text/csv; charset=utf-8')
+    const r = await runFetchChain(CSV_URL, { ...opts(), lineFilter: ['germany'] })
+    expect(r.via).toBe('raw')
+    expect(r.text?.startsWith('country,year,population\nGermany,1800,')).toBe(true)
+    expect(r.text).toContain('Germany,2024,')
+    expect(r.text).not.toContain('Brazil,')
+    expect(r.text).not.toContain('[truncated:')
+    expect((r.text ?? '').length).toBeLessThanOrEqual(80_000)
+  })
+
+  it('records the URL as retrieved and ignores the filter for a non-line-oriented body', async () => {
+    const ledger = createLedger()
+    serve('application/json')
+    const r = await runFetchChain(CSV_URL, { ...opts(), ledger, lineFilter: ['germany'] })
+    expect(r.via).toBe('raw')
+    expect(r.text).toContain('[truncated:')
+    expect(ledger.tierOf(CSV_URL)).toBe('retrieved')
+  })
+})
