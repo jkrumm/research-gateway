@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test'
 import { TEXT_CAP } from './extract.js'
 import {
   filterVariant,
+  isLineOrientedResource,
   formatLineScan,
   lineMatcher,
   isLineOrientedContentType,
@@ -160,5 +161,20 @@ describe('oversizedPrefix', () => {
   test('drops a trailing partial line from a byte-cut read', () => {
     const text = oversizedPrefix('h\nr1\nr2\nr3-par', 100, TEXT_CAP)
     expect(text.split('\n\n[')[0]).toBe('h\nr1\nr2\nr3-par'.slice(0, 'h\nr1\nr2'.length))
+  })
+})
+
+describe('isLineOrientedResource', () => {
+  test('a declared line-oriented type wins', () => {
+    expect(isLineOrientedResource('text/csv', 'https://a.test/x')).toBe(true)
+  })
+  test('a missing or generic type falls back to the URL extension', () => {
+    expect(isLineOrientedResource(null, 'https://a.test/data/owid-co2-data.csv')).toBe(true)
+    expect(isLineOrientedResource('application/octet-stream', 'https://a.test/x.tsv?dl=1')).toBe(true)
+    expect(isLineOrientedResource(null, 'https://a.test/page')).toBe(false)
+  })
+  test('a declared non-line type is never overridden by the extension', () => {
+    expect(isLineOrientedResource('text/html', 'https://a.test/x.csv')).toBe(false)
+    expect(isLineOrientedResource('application/pdf', 'https://a.test/x.csv')).toBe(false)
   })
 })

@@ -1298,12 +1298,12 @@ describe('fetchPage oversized line-oriented file', () => {
       },
     })
   }
-  function setup(): { tavilyCalls: string[][]; fetched: string[]; opts: FetchChainOptions } {
+  function setup(headers: Record<string, string> = { 'content-type': 'text/csv' }): { tavilyCalls: string[][]; fetched: string[]; opts: FetchChainOptions } {
     const tavilyCalls: string[][] = []
     const fetched: string[] = []
     stubFetch((u) => {
       fetched.push(u)
-      return new Response(oversizedCsv(), { status: 200, headers: { 'content-type': 'text/csv' } })
+      return new Response(oversizedCsv(), { status: 200, headers })
     })
     const tavily = stubTavilyFail()
     return {
@@ -1334,6 +1334,14 @@ describe('fetchPage oversized line-oriented file', () => {
     expect(opts.ledger?.tierOf(URL)).toBe('retrieved')
     expect(tavilyCalls).toEqual([])
     expect(fetched).toEqual([URL]) // no render, no wayback
+  })
+
+  it('streams a file served with no Content-Type when the URL says .csv', async () => {
+    const { opts, fetched } = setup({})
+    const r = await runFetchChain(URL, { ...opts, lineFilter: ['germany'] })
+    expect(r.via).toBe('raw')
+    expect(r.text).toContain('[line filter "germany"')
+    expect(fetched).toEqual([URL])
   })
 
   it('without `lines` returns the header plus a prefix and a note naming `lines`, not a failure', async () => {

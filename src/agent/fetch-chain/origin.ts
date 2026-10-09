@@ -1,6 +1,6 @@
 import { normalizeText, TEXT_CAP } from '../extract.js'
 import { fitDocumentText } from '../paragraph-filter.js'
-import { formatLineScan, isLineOrientedContentType, lineMatcher, oversizedPrefix } from '../line-filter.js'
+import { formatLineScan, isLineOrientedResource, lineMatcher, oversizedPrefix } from '../line-filter.js'
 import { extractText } from '../html-parse.js'
 import { isRawContentType, isDefinitivelyMissing, isPdf, looksBinary } from '../response-kind.js'
 import { extractPdfText } from '../pdf.js'
@@ -247,10 +247,10 @@ async function readOriginBody(
 
   // A line-oriented file with `lines` set is filtered as a STREAM: only the header and the
   // matching lines are ever held, so a 19 MB CSV costs output-sized memory and the download
-  // ceiling (MAX_STREAMED_LINES_BYTES) is far above the buffered one. Decided on the declared
-  // type alone — a CSV is never a PDF.
+  // ceiling is far above the buffered one. Decided on the declared type (or, when it says nothing,
+  // the URL's extension) — a mislabeled PDF still announces itself in readStreamedLines.
   const terms = ctx.opts.lineFilter
-  if (terms?.length && isRawContentType(contentType) && isLineOrientedContentType(contentType)) {
+  if (terms?.length && isLineOrientedResource(contentType, ctx.url)) {
     return await readStreamedLines(ctx, res, terms, { t1, startedAt: attemptStartedAt, dialledUrl })
   }
 
@@ -272,7 +272,7 @@ async function readOriginBody(
     // An oversized line-oriented file read without `lines` is still an answer: its header plus a
     // prefix, with the way to read the rest. Render, Tavily and Wayback cannot do better for a
     // raw text file, so the chain ends here rather than falling through.
-    if (!isPdfBody && isRawContentType(contentType) && isLineOrientedContentType(contentType)) {
+    if (!isPdfBody && isLineOrientedResource(contentType, ctx.url)) {
       const text = oversizedPrefix(new TextDecoder().decode(bytes), bytes.length, TEXT_CAP)
       return succeedRaw(ctx, {
         text,

@@ -38,6 +38,24 @@ export function isLineOrientedContentType(contentType: string | null | undefined
   return LINE_ORIENTED_TYPES.some((t) => value.includes(t))
 }
 
+// Object stores and CDNs often serve a data file with no Content-Type (owid-public.owid.io: a 33 MB
+// CSV with none) or a generic one. The URL's own extension then says what the body is; a binary
+// that lies about its name is still caught downstream (looksBinary, the %PDF- header check).
+const GENERIC_TYPES = ['application/octet-stream', 'binary/octet-stream']
+const LINE_ORIENTED_EXTENSION = /\.(?:csv|tsv|ndjson|jsonl|txt)$/i
+
+/** Whether a response should be treated as a line-oriented file: by declared type, else by extension when the type says nothing. */
+export function isLineOrientedResource(contentType: string | null | undefined, url: string): boolean {
+  if (isLineOrientedContentType(contentType)) return true
+  const type = (contentType ?? '').trim().toLowerCase()
+  if (type !== '' && !GENERIC_TYPES.some((g) => type.includes(g))) return false
+  try {
+    return LINE_ORIENTED_EXTENSION.test(new URL(url).pathname)
+  } catch {
+    return false
+  }
+}
+
 /** Trimmed, lower-cased, de-duplicated, non-empty terms — at most MAX_LINE_TERMS of them. */
 export function normalizeTerms(terms: readonly string[] | undefined): string[] {
   if (!terms) return []
