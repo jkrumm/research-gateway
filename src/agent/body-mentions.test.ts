@@ -191,6 +191,8 @@ describe('scrub false alarms (2026-10-09)', () => {
     const url = 'https://ourworldindata.org/co2-dataset-sources'
     expect(flags(`- A provisional-year note could not be checked: the sources page was not readable. — ${url}`, url)).toBe(false)
     expect(flags(`- The latest year is 2024 and it is final. — ${url}`, url)).toBe(true)
+    expect(flags(`Alpha is fine. Beta was not readable. — ${url}`, url)).toBe(false)
+    expect(flags(`The dataset could not be read. ${url} shows 2024 is final.`, url)).toBe(true)
   })
 
   it('never annotates a source the origin answered 404/410 for', () => {

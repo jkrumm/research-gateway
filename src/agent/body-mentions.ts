@@ -348,9 +348,11 @@ function referencesBody(body: string, entry: UnverifiedEntry): boolean {
 function sentenceAround(text: string, at: number, length: number): string {
   const before = text.slice(0, at)
   const lineStart = before.lastIndexOf('\n')
-  const stops = [...before.matchAll(/[.!?](?=\s)/g)].map((m) => m.index + 1).filter((i) => i > lineStart)
+  const stops = [...before.matchAll(/[.!?](?=\s)/g)].map((m) => m.index + 1)
   let start = Math.max(lineStart, ...stops)
-  if (!/\p{L}/u.test(text.slice(start + 1, at))) start = Math.max(lineStart, ...stops.filter((i) => i < start))
+  // Only a link led by a wordless run ("— ", ": ") is a trailer; one that opens the sentence is not.
+  const lead = text.slice(start + 1, at)
+  if (/\S/.test(lead) && !/\p{L}/u.test(lead)) start = Math.max(lineStart, ...stops.filter((i) => i < start))
   const after = text.slice(at + length)
   const end = after.search(/[.!?](?=\s|$)|\n/)
   return text.slice(start + 1, end === -1 ? text.length : at + length + end)
