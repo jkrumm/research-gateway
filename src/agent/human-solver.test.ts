@@ -230,7 +230,7 @@ describe('createHumanSolver — browser-then-solve escalation', () => {
     const solver = createHumanSolver(h.ports)
     const result = await solver(makeRequest())
 
-    expect(result).toEqual({ ok: false, reason: 'dialog rate limit' })
+    expect(result).toEqual({ ok: false, reason: 'dialog rate limit', suppressed: true })
     expect(h.promptCalls.length).toBe(0) // never reached the dialog — suppressed by admission
   })
 })

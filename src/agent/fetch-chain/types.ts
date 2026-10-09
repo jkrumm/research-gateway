@@ -178,6 +178,8 @@ export type HumanSolveResult =
       /** The settled page's HTTP status, when the solver could read one — absent means unknown. */
       status?: number | undefined
     }
-  | { ok: false; reason: string }
+  // `suppressed`: the attempt was refused by state (a host/global suppression, rate limit or a busy
+  // queue) rather than made and lost — human-solver.ts sets it, human-outcome.ts reads it.
+  | { ok: false; reason: string; suppressed?: true }
 
 export type HumanSolve = (req: HumanSolveRequest) => Promise<HumanSolveResult>

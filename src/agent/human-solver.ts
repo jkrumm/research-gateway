@@ -246,7 +246,7 @@ export function createHumanSolver(ports: HumanSolverPorts): HumanSolve {
       const dialogDecision = ports.state.planDialog(req.host, ports.now())
       if (dialogDecision.action === 'suppressed') {
         ports.log('human_solve.suppressed', { host: req.host, reason: dialogDecision.reason })
-        return { ok: false, reason: dialogDecision.reason }
+        return { ok: false, reason: dialogDecision.reason, suppressed: true }
       }
       return runSolve(req)
     }
@@ -260,7 +260,7 @@ export function createHumanSolver(ports: HumanSolverPorts): HumanSolve {
       // run — potentially minutes after the caller stopped waiting for an answer.
       if (ports.now() - queuedAt > ports.waitMs) {
         ports.log('human_solve.done', { host: req.host, mode: 'solve', outcome: 'busy', queuedMs: ports.now() - queuedAt })
-        return { ok: false, reason: 'busy' }
+        return { ok: false, reason: 'busy', suppressed: true }
       }
 
       const startedAt = ports.now()
@@ -297,7 +297,7 @@ export function createHumanSolver(ports: HumanSolverPorts): HumanSolve {
     const decision = ports.state.plan(req.host, ports.now())
     if (decision.action === 'suppressed') {
       ports.log('human_solve.suppressed', { host: req.host, reason: decision.reason })
-      return Promise.resolve({ ok: false, reason: decision.reason })
+      return Promise.resolve({ ok: false, reason: decision.reason, suppressed: true })
     }
     // plan() never returns 'solve' — see its own header comment — so anything not suppressed
     // here is 'browser'.

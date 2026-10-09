@@ -531,7 +531,7 @@ export async function runResearch(
 
       // Mirrors the `research.done` line below on purpose: the trace and the log are then the
       // same numbers by construction, not two accountings that can drift. The stage rollups
-      // (synthesis.outcome, worker.salvaged, consistency.gate/.failed, human.*) are span-only.
+      // (synthesis.outcome, worker.salvaged, consistency.gate/.failed, human.*) are in both.
       span.setAttributes({
         'research.reason': reason,
         'research.rounds': round,
@@ -592,6 +592,14 @@ export async function runResearch(
         citationsDegraded: grounded.grounding.citationsDegraded,
         citationsNumberUnmatched: grounded.grounding.citationsNumberUnmatched,
         partialCause: grounded.grounding.partialCause,
+        synthesisOutcome,
+        consistencyGate: gateDecision,
+        consistencyFailed: jobOutcomes['consistency.failed'] ?? 0,
+        workersSalvaged: jobOutcomes['worker.salvaged'] ?? 0,
+        humanBrowser: jobOutcomes['human.browser'] ?? 0,
+        humanSolved: jobOutcomes['human.solved'] ?? 0,
+        humanSuppressed: jobOutcomes['human.suppressed'] ?? 0,
+        humanAbandoned: jobOutcomes['human.abandoned'] ?? 0,
         inputTokens: combined.inputTokens,
         cachedInputTokens: combined.cachedInputTokens,
         outputTokens: combined.outputTokens,
