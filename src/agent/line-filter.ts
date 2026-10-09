@@ -16,6 +16,12 @@
 import type { StreamedLines } from '../lib/bounded-read.js'
 
 export const MAX_LINE_TERMS = 5
+/**
+ * Most characters a filtered read delivers, header and notes included. Well under TEXT_CAP: a
+ * broad term on a wide CSV (233-683 rows of ~1 KB in the 2026-10-09 OWID run) otherwise spent a
+ * worker's whole page-text budget in two calls. A cap this size forces a narrower term instead.
+ */
+export const LINE_FILTER_MAX_CHARS = 24_000
 export const MAX_TERM_CHARS = 100
 
 // Content types whose bodies are one record per line. Deliberately narrower than
@@ -98,10 +104,13 @@ export function lineMatcher(rawTerms: readonly string[]): (line: string) => bool
 
 /**
  * Header line + the scanned matching lines within `maxChars` in total, closed by a note that the
- * rest of the document was NOT returned.
+ * rest of the document was NOT returned. When the matches do not all fit, the first and the last
+ * ones are kept (a question usually needs the latest rows too) with one line between them saying
+ * how many were left out.
  */
 export function formatLineScan(scan: LineScan, rawTerms: readonly string[], maxChars: number): LineFilterResult {
-  const { header, matches, matched, searched } = scan
+  const { header, matched, searched } = scan
+  const candidates = scan.tail.length === 0 ? scan.matches : [...scan.matches, ...scan.tail]
   const quoted = rawTerms.map((t) => `"${t.toLowerCase()}"`).join(', ')
   const stopped =
     scan.stoppedAtBytes === undefined
@@ -116,25 +125,37 @@ export function formatLineScan(scan: LineScan, rawTerms: readonly string[], maxC
     const cut = omitted > 0 ? ` ${omitted} further matching lines did not fit and are NOT shown: use narrower terms.` : ''
     return `[line filter ${quoted}: ${matched} of ${searched} lines below the header match; showing ${kept}.${cut}${stopped} All other lines of the document were NOT returned, so a row missing here is not evidence it is absent.]`
   }
+  const gapFor = (omitted: number): string => `[… ${omitted} matching lines omitted — add a narrower term, e.g. "Germany,1990" …]`
 
   // The note's size depends on how many lines fit, so reserve for the longest form up front.
-  const reserve = noteFor(0).length + 2
+  const reserve = noteFor(0).length + 2 + gapFor(matched).length + 1
   const room = Math.max(0, maxChars - reserve)
-  let used = header.length > room ? room : header.length
-  const kept: string[] = []
-  for (const line of matches) {
-    if (used + 1 + line.length > room) break
-    kept.push(line)
-    used += 1 + line.length
-  }
+  const lineRoom = room - Math.min(header.length, room)
 
-  const head = header.length > room ? header.slice(0, room) : header
-  const out = [head, ...kept].join('\n')
+  // The first half of the room goes to leading matches, the rest (whatever the head left) to the
+  // last ones. `from` never reaches below `headCount`, so no line is shown twice.
+  const cost = (i: number): number => 1 + (candidates[i]?.length ?? 0)
+  const headRoom = Math.floor(lineRoom / 2)
+  let used = 0
+  let headCount = 0
+  while (headCount < candidates.length && used + cost(headCount) <= headRoom) used += cost(headCount++)
+  let from = candidates.length
+  while (from > headCount && used + cost(from - 1) <= lineRoom) used += cost(--from)
+
+  // Every stored line fitting while the stream still dropped some means the gap is where the
+  // stream dropped them: between its head matches and its ring.
+  const gapAt = from === headCount ? scan.matches.length : headCount
+  const before = candidates.slice(0, gapAt)
+  const after = candidates.slice(from === headCount ? gapAt : from)
+  const omitted = matched - before.length - after.length
+  const lines = [header.length > room ? header.slice(0, room) : header, ...before]
+  if (omitted > 0) lines.push(gapFor(omitted))
+  lines.push(...after)
   return {
-    text: `${out}\n\n${noteFor(kept.length)}`,
+    text: `${lines.join('\n')}\n\n${noteFor(before.length + after.length)}`,
     matched,
     searched,
-    omitted: matched - kept.length,
+    omitted,
   }
 }
 

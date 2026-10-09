@@ -208,9 +208,11 @@ const MAX_LINE_CHARS = 1_000_000
 export interface StreamedLines {
   /** First line of the body (no line terminator). */
   header: string
-  /** Matching lines after the header, in order, kept only while they fit `keepChars`. */
+  /** The first matching lines after the header, in order, kept while they fit half of `keepChars`. */
   matches: string[]
-  /** Every matching line after the header, kept or not. */
+  /** The most recent matching lines that did not fit `matches`, in order, bounded by the other half of `keepChars` (a ring: older ones are evicted). */
+  tail: string[]
+  /** Every matching line after the header, kept or not. Lines in neither `matches` nor `tail` were counted, not stored. */
   matched: number
   /** Every line after the header that was tested. */
   searched: number
@@ -220,23 +222,42 @@ export interface StreamedLines {
 
 export interface ReadLinesOptions {
   isMatch: (line: string) => boolean
-  /** Characters of matching lines to keep; later matches are counted, not stored. */
+  /** Characters of matching lines to keep, split evenly between the first matches and the last ones; the middle is counted, not stored. */
   keepChars: number
   ceilingBytes?: number
 }
 
 /**
- * Streams a body line by line and keeps only its header plus the lines `isMatch` accepts — memory
- * is bounded by `keepChars` (plus one in-flight line), never by the file size. Stops, cancelling
+ * Streams a body line by line and keeps only its header plus the lines `isMatch` accepts — the
+ * first ones and, in a bounded ring, the last ones. Memory is bounded by `keepChars` (plus one
+ * in-flight line), never by the file size or the match count. Stops, cancelling
  * the download, once `ceilingBytes` have been read and reports where. Env- and log-free.
  */
 export async function readBoundedLines(body: ReadableStream<Uint8Array> | null, opts: ReadLinesOptions): Promise<StreamedLines> {
   const ceiling = opts.ceilingBytes ?? MAX_STREAMED_LINES_BYTES
-  const out: StreamedLines = { header: '', matches: [], matched: 0, searched: 0 }
+  const out: StreamedLines = { header: '', matches: [], tail: [], matched: 0, searched: 0 }
   if (!body) return out
 
+  const headBudget = Math.floor(opts.keepChars / 2)
+  const tailBudget = opts.keepChars - headBudget
   let sawHeader = false
-  let keptChars = 0
+  let headChars = 0
+  let headFull = false
+  // The ring: `out.tail` from `tailStart` on is live; evicted entries are dropped in batches so
+  // eviction stays O(1) amortised on a file with millions of matches.
+  let tailStart = 0
+  let tailChars = 0
+  const pushTail = (line: string): void => {
+    const cost = line.length + 1
+    if (cost > tailBudget) return
+    out.tail.push(line)
+    tailChars += cost
+    while (tailChars > tailBudget) tailChars -= (out.tail[tailStart++] ?? '').length + 1
+    if (tailStart >= 1024 && tailStart * 2 >= out.tail.length) {
+      out.tail = out.tail.slice(tailStart)
+      tailStart = 0
+    }
+  }
   const onLine = (raw: string): void => {
     const line = raw.endsWith('\r') ? raw.slice(0, -1) : raw
     if (!sawHeader) {
@@ -247,9 +268,18 @@ export async function readBoundedLines(body: ReadableStream<Uint8Array> | null, 
     out.searched++
     if (!opts.isMatch(line)) return
     out.matched++
-    if (keptChars + line.length + 1 > opts.keepChars) return
-    out.matches.push(line)
-    keptChars += line.length + 1
+    // The head is a prefix: once one line does not fit, later (even shorter) ones go to the ring.
+    if (!headFull && headChars + line.length + 1 <= headBudget) {
+      out.matches.push(line)
+      headChars += line.length + 1
+      return
+    }
+    headFull = true
+    pushTail(line)
+  }
+  const finish = (): StreamedLines => {
+    if (tailStart > 0) out.tail = out.tail.slice(tailStart)
+    return out
   }
 
   const decoder = new TextDecoder()
@@ -281,7 +311,7 @@ export async function readBoundedLines(body: ReadableStream<Uint8Array> | null, 
       if (bytes >= ceiling) {
         out.stoppedAtBytes = bytes
         await reader.cancel().catch(() => {})
-        return out
+        return finish()
       }
     }
     carry += decoder.decode()
@@ -289,5 +319,5 @@ export async function readBoundedLines(body: ReadableStream<Uint8Array> | null, 
   } finally {
     reader.releaseLock()
   }
-  return out
+  return finish()
 }

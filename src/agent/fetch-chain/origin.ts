@@ -1,6 +1,6 @@
 import { normalizeText, TEXT_CAP } from '../extract.js'
 import { fitDocumentText } from '../paragraph-filter.js'
-import { formatLineScan, isLineOrientedResource, lineMatcher, oversizedPrefix } from '../line-filter.js'
+import { formatLineScan, isLineOrientedResource, LINE_FILTER_MAX_CHARS, lineMatcher, oversizedPrefix } from '../line-filter.js'
 import { extractText } from '../html-parse.js'
 import { isRawContentType, isDefinitivelyMissing, isPdf, looksBinary } from '../response-kind.js'
 import { extractPdfText } from '../pdf.js'
@@ -175,8 +175,8 @@ async function readStreamedLines(
   terms: readonly string[],
   at: { t1: number; startedAt: number; dialledUrl: string },
 ): Promise<{ terminal: FetchChainResult } | { terminal: null; block: BlockOutcome }> {
-  const scan = await readBoundedLines(res.body, { isMatch: lineMatcher(terms), keepChars: TEXT_CAP })
-  const result = formatLineScan(scan, terms, TEXT_CAP)
+  const scan = await readBoundedLines(res.body, { isMatch: lineMatcher(terms), keepChars: LINE_FILTER_MAX_CHARS })
+  const result = formatLineScan(scan, terms, LINE_FILTER_MAX_CHARS)
   const text = normalizeText(result.text)
   if (scan.header.trim() === '' && scan.searched === 0) {
     attempt(ctx.attempts, 'raw', at.t1, { ok: false, chars: 0, error: 'empty body' })

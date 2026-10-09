@@ -4,6 +4,7 @@ import {
   filterVariant,
   isLineOrientedResource,
   formatLineScan,
+  LINE_FILTER_MAX_CHARS,
   lineMatcher,
   isLineOrientedContentType,
   MAX_LINE_TERMS,
@@ -15,7 +16,7 @@ import {
 function filterLines(text: string, terms: readonly string[], maxChars: number) {
   const lines = text.split(/\r?\n/)
   const matches = lines.slice(1).filter(lineMatcher(terms))
-  return formatLineScan({ header: lines[0] ?? '', matches, matched: matches.length, searched: lines.length - 1 }, terms, maxChars)
+  return formatLineScan({ header: lines[0] ?? '', matches, tail: [], matched: matches.length, searched: lines.length - 1 }, terms, maxChars)
 }
 
 // A population.csv shaped like the live case (the real one was 557 KB): countries alphabetically, Germany deep
@@ -131,7 +132,7 @@ describe('isLineOrientedContentType', () => {
 describe('formatLineScan', () => {
   test('says when a download ceiling stopped the scan', () => {
     const r = formatLineScan(
-      { header: 'a,b', matches: ['Germany,1'], matched: 1, searched: 10, stoppedAtBytes: 128 * 1_048_576 },
+      { header: 'a,b', matches: ['Germany,1'], tail: [], matched: 1, searched: 10, stoppedAtBytes: 128 * 1_048_576 },
       ['germany'],
       TEXT_CAP,
     )
@@ -140,8 +141,61 @@ describe('formatLineScan', () => {
   })
 
   test('counts matches beyond what the stream kept as omitted', () => {
-    const r = formatLineScan({ header: 'h', matches: ['Germany,1'], matched: 5, searched: 9 }, ['germany'], TEXT_CAP)
+    const r = formatLineScan({ header: 'h', matches: ['Germany,1'], tail: [], matched: 5, searched: 9 }, ['germany'], TEXT_CAP)
     expect(r.omitted).toBe(4)
+  })
+})
+
+describe('formatLineScan head and tail', () => {
+  const wide = (i: number): string => `China,${1800 + i},${'x'.repeat(1_000)}`
+  const manyRows = Array.from({ length: 600 }, (_, i) => wide(i))
+
+  test('many matches: header + head + omitted line + tail, within the cap', () => {
+    const r = filterLines(['country,year,pad', ...manyRows].join('\n'), ['china'], LINE_FILTER_MAX_CHARS)
+    expect(r.text.length).toBeLessThanOrEqual(LINE_FILTER_MAX_CHARS)
+    const lines = r.text.split('\n')
+    expect(lines[0]).toBe('country,year,pad')
+    expect(lines[1]).toStartWith('China,1800,')
+    const gap = lines.findIndex((l) => l.startsWith('[… '))
+    expect(gap).toBeGreaterThan(1)
+    expect(lines[gap]).toBe(`[… ${r.omitted} matching lines omitted — add a narrower term, e.g. "Germany,1990" …]`)
+    expect(lines[gap + 1]).toStartWith('China,')
+    expect(r.text).toContain(`China,${1800 + 599},`) // the latest row survives
+    const shown = lines.filter((l) => l.startsWith('China,'))
+    expect(r.omitted).toBe(600 - shown.length)
+    // head and tail are both non-empty and in original order
+    const years = shown.map((l) => Number(l.split(',')[1]))
+    expect(years).toEqual([...years].sort((a, b) => a - b))
+    expect(gap - 1).toBeGreaterThan(0)
+    expect(lines.length - gap - 1).toBeGreaterThan(3)
+  })
+
+  test('few matches: unchanged, no omitted line', () => {
+    const r = filterLines(['h', 'China,1', 'India,2', 'China,3'].join('\n'), ['china'], LINE_FILTER_MAX_CHARS)
+    expect(r.text.startsWith('h\nChina,1\nChina,3\n\n[line filter')).toBe(true)
+    expect(r.text).not.toContain('[… ')
+    expect(r.omitted).toBe(0)
+  })
+
+  test('a stream that kept head + ring is formatted the same way, and counts what it lost', () => {
+    const r = formatLineScan(
+      { header: 'h', matches: ['A,1', 'A,2'], tail: ['A,9', 'A,10'], matched: 10, searched: 20 },
+      ['a'],
+      LINE_FILTER_MAX_CHARS,
+    )
+    expect(r.text.split('\n').slice(0, 6)).toEqual(['h', 'A,1', 'A,2', '[… 6 matching lines omitted — add a narrower term, e.g. "Germany,1990" …]', 'A,9', 'A,10'])
+    expect(r.omitted).toBe(6)
+  })
+
+  test('everything the stream stored fitting still reports the loss between head and ring', () => {
+    const r = formatLineScan({ header: 'h', matches: ['A,1'], tail: ['A,9'], matched: 5, searched: 5 }, ['a'], LINE_FILTER_MAX_CHARS)
+    expect(r.text.split('\n').slice(0, 4)).toEqual(['h', 'A,1', '[… 3 matching lines omitted — add a narrower term, e.g. "Germany,1990" …]', 'A,9'])
+  })
+
+  test('the delivered text is exactly what the note counts (ledger invariant)', () => {
+    const r = filterLines(['h', ...manyRows].join('\n'), ['china'], LINE_FILTER_MAX_CHARS)
+    const shown = r.text.split('\n').filter((l) => l.startsWith('China,')).length
+    expect(r.text).toContain(`showing ${shown}.`)
   })
 })
 

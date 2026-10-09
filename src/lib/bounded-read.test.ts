@@ -176,9 +176,31 @@ describe('readBoundedLines', () => {
     expect(r.searched).toBe(rows)
     expect(r.matched).toBe(2000)
     expect(r.matches.every((l) => l.startsWith('Germany'))).toBe(true)
-    expect(r.matches.join('\n').length).toBeLessThanOrEqual(80_000)
-    expect(r.matches.length).toBeLessThan(r.matched) // the rest were counted, not stored
+    expect(r.matches.join('\n').length).toBeLessThanOrEqual(40_000)
+    expect(r.tail.join('\n').length).toBeLessThanOrEqual(40_000)
+    expect(r.matches.length + r.tail.length).toBeLessThan(r.matched) // the middle was counted, not stored
     expect(r.stoppedAtBytes).toBeUndefined()
+  })
+
+  it('keeps the LAST matches in a ring bounded by the cap, not by the match count', async () => {
+    const rows = 50_000
+    const r = await readBoundedLines(csvStream(rows, (i) => `Germany,${i},${'y'.repeat(100)}`), { isMatch: () => true, keepChars: 10_000 })
+    expect(r.matched).toBe(rows)
+    expect(r.matches[0]).toStartWith('Germany,0,')
+    expect(r.tail.at(-1)).toStartWith(`Germany,${rows - 1},`)
+    expect(r.tail.reduce((n, l) => n + l.length + 1, 0)).toBeLessThanOrEqual(5_000)
+    expect(r.matches.reduce((n, l) => n + l.length + 1, 0)).toBeLessThanOrEqual(5_000)
+    // The ring is contiguous and in order up to the final line.
+    const ids = r.tail.map((l) => Number(l.split(',')[1]))
+    expect(ids).toEqual(ids.map((_, i) => rows - ids.length + i))
+  })
+
+  it('puts matches that do not fit the head into the ring, so a file that fits the cap loses nothing', async () => {
+    const r = await readBoundedLines(textStream(['h\n', ...Array.from({ length: 10 }, (_, i) => `Germany,${i}\n`)]), {
+      isMatch: () => true,
+      keepChars: 100,
+    })
+    expect([...r.matches, ...r.tail]).toEqual(Array.from({ length: 10 }, (_, i) => `Germany,${i}`))
   })
 
   it('stops at the ceiling and reports it', async () => {
@@ -212,6 +234,6 @@ describe('readBoundedLines', () => {
 
   it('returns an empty result for a null body', async () => {
     const r = await readBoundedLines(null, { isMatch: () => true, keepChars: 10 })
-    expect(r).toEqual({ header: '', matches: [], matched: 0, searched: 0 })
+    expect(r).toEqual({ header: '', matches: [], tail: [], matched: 0, searched: 0 })
   })
 })

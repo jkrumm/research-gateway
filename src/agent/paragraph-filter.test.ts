@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import { TEXT_CAP } from './extract.js'
+import { LINE_FILTER_MAX_CHARS } from './line-filter.js'
 import { filterParagraphs, fitDocumentText } from './paragraph-filter.js'
 
 // A paper-shaped document: a title, many body paragraphs separated by blank lines, the safety
@@ -71,6 +72,13 @@ describe('fitDocumentText', () => {
     const r = fitDocumentText(paper(), ['llama guard'], TEXT_CAP)
     expect(r.filter?.matched).toBe(1)
     expect(r.text).toContain('86%')
+  })
+
+  test('a broad term delivers at most the line-filter cap, not the whole page cut', () => {
+    const r = fitDocumentText(paper(), ['section'], TEXT_CAP)
+    expect(r.filter?.matched).toBe(400)
+    expect(r.text.length).toBeLessThanOrEqual(LINE_FILTER_MAX_CHARS)
+    expect(r.text).toContain('further matching paragraphs did not fit')
   })
 
   test('says so in one line and keeps the head when nothing matches', () => {
