@@ -170,7 +170,8 @@ the model was actually handed for that URL by `fetchPage` (`src/agent/numbers.ts
 per URL in the ledger). One that does not — invented, carried over from another page, or
 computed — caps the citation at `low`, adds an `unverified` entry naming the number, and counts
 in `grounding.citationsNumberUnmatched`; at the worker boundary the finding's text is tagged
-`[unverified number: …]` so synthesis leaves it out. It catches invented figures (the
+`[unverified number: …]` so synthesis leaves it out. Digits in the cited URL itself
+(`…/canyon_4392.html`) and an HTTP status quoted as the response ("returns 404") count as found. It catches invented figures (the
 2026-09-26 Pyke report's "~5,565 matches"), not a real figure read with the wrong meaning —
 that is fixed at the source, e.g. the wrchina.gg reader labelling win rate vs presence.
 
@@ -278,7 +279,10 @@ that would fail on every call.
 
 ## Fetching pages
 
-`fetchPage` walks a chain and stops at the first step that yields real text:
+`fetchPage` walks a chain and stops at the first step that yields real text. For a large CSV/TSV/
+text/JSON-lines file a worker passes `lines` (up to 5 case-insensitive terms) and gets the header plus
+only the matching lines, so a 500 KB table is not cut at the page-text budget; the ledger holds
+exactly that returned text.
 
 | Step | Handles | Notes |
 |-|-|-|
