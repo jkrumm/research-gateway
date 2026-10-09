@@ -5,7 +5,7 @@ import { log } from '../../lib/log.js'
 import { attempt } from './context.js'
 import type { ChainContext } from './context.js'
 import { hostOf } from './net.js'
-import { runRescue } from './rescue.js'
+import { keptSparseResult, runRescue } from './rescue.js'
 import type { FetchChainResult } from './types.js'
 
 // ── Step yt-dlp: the real read for a video URL, tried before the paid fallback ──
@@ -47,6 +47,9 @@ export async function runTavilyStage(ctx: ChainContext): Promise<FetchChainResul
   // chain's story (not Tavily's generic last word — see describeAttempts), then the rescues.
   const tavilyFailed = async (reason: string): Promise<FetchChainResult> => {
     attempt(ctx.attempts, 'tavily-extract', t3, { ok: false, error: reason })
+    // A kept sparse origin read is a success, so no `failed` ledger record precedes it.
+    const sparse = keptSparseResult(ctx)
+    if (sparse) return sparse
     const chain = describeAttempts(ctx.attempts, reason)
     ctx.ledger.recordFailed(ctx.url, chain)
     log('tool.fetchPage', { jobId: ctx.jobId, url: ctx.url, via: 'error', reason: chain, host: hostOf(ctx.dialUrl) })

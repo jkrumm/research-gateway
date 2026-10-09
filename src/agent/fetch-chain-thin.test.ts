@@ -61,6 +61,45 @@ describe('thin Readability on a big shop page', () => {
     expect(result.attempts.some((a) => a.step === 'tavily-extract')).toBe(true)
   })
 
+  it('keeps the origin sliver when render and Tavily both fail, without human solve or Wayback', async () => {
+    serve(shopPage(''))
+    let humanCalls = 0
+    const ledger = createLedger()
+    const result = await runFetchChain(PAGE, {
+      ledger,
+      hostGate: createHostGate(),
+      tavilyExtract: tavilyFails,
+      humanSolve: async () => {
+        humanCalls++
+        return { ok: false, reason: 'not expected' }
+      },
+    })
+
+    expect(result.error).toBeNull()
+    expect(result.via).toBe('readability')
+    expect(result.text).toContain('Comfortable, fast and built')
+    expect(humanCalls).toBe(0)
+    expect(result.attempts.some((a) => a.step === 'wayback')).toBe(false)
+    expect(result.attempts.find((a) => a.step === 'tavily-extract')).toMatchObject({ ok: false })
+    expect(ledger.tierOf(PAGE)).toBe('retrieved')
+    expect(ledger.failureReason(PAGE)).toBeNull()
+  })
+
+  it('prefers a later stage that succeeds over the sparse origin sliver', async () => {
+    serve(shopPage(''))
+    const tavilyReads: NonNullable<FetchChainOptions['tavilyExtract']> = async (urls) => ({
+      results: urls.map((u) => ({ url: u, title: 'Bike', rawContent: `Full page from extract. ${'Specs and price. '.repeat(30)}`, images: [], favicon: '' })),
+      failedResults: [],
+      responseTime: 0,
+      requestId: 'test',
+    })
+    const result = await runFetchChain(PAGE, { ledger: createLedger(), hostGate: createHostGate(), tavilyExtract: tavilyReads })
+
+    expect(result.via).toBe('tavily-extract')
+    expect(result.text).toContain('Full page from extract.')
+    expect(result.text).not.toContain('Comfortable, fast and built')
+  })
+
   it('still accepts a small page with short text', async () => {
     serve(`<html><body>${article}</body></html>`)
     const result = await run()

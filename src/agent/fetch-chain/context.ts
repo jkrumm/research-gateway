@@ -70,7 +70,7 @@ export function attempt(
 // `createContext` below, then read by whichever stage runs next. Deliberately a plain object
 // rather than a class: each stage is a free function `(ctx) => Promise<FetchChainResult |
 // null>`, and this is the one thing they all close over. The stage flags below
-// (`sawBlock`/`originDecisiveBlock`/`isPdfBody`/`rdReason`/`rdChars`/`dialUrl`) are `readonly`
+// (`sawBlock`/`originDecisiveBlock`/`isPdfBody`/`rdReason`/`rdChars`/`dialUrl`/`sparseOrigin`) are `readonly`
 // on this interface — every write goes through one of the named `mark*`/`note*`/`useFallbackUrl`
 // methods instead of a bare field assignment, so `grep -rn 'ctx\.\(sawBlock\|originDecisiveBlock\|
 // isPdfBody\|rdReason\|rdChars\|dialUrl\) =' src/agent/fetch-chain/` finds nothing outside this
@@ -129,6 +129,15 @@ export interface ChainContext {
   /** Chars step 1's reading produced, meaningless when it never ran (`extract.ts`'s header
    * comment). Write via `noteReadabilityMiss(reason, chars)`. */
   readonly rdChars: number
+  /** The live origin read `readOriginHtml` rejected as sparse (a Readability sliver of a big
+   * page with no JSON-LD) so render/Tavily could try for the real page. Kept as the last resort:
+   * when every later stage fails, the chain returns this instead of escalating to human solve,
+   * Wayback or a failure — a sparse page is not a block, and a fresh sliver beats an archived
+   * copy or nothing. Write via `keepSparseOrigin()`. */
+  readonly sparseOrigin: { step: FetchStep; text: string; dialledUrl: string } | null
+  /** Sets `sparseOrigin`. Origin-only. Keeps the longer of two reads — the origin pipeline can
+   * run twice (plain, then impersonate). */
+  keepSparseOrigin: (step: FetchStep, text: string, dialledUrl: string) => void
   /** Sets `sawBlock`. The one flag written from more than one module (origin.ts's block
    * verdicts, render.ts's 200-challenge check, and origin.ts's `runOriginStage` for a skipped
    * or two-independent-marker-less-blocks chain) — so it stays a context method rather than
@@ -238,6 +247,7 @@ export function createContext(url: string, opts: FetchChainOptions): ChainContex
   let rdReason: 'thin' | 'threw' = 'thin'
   let rdChars = 0
   let dialUrl = fetchUrl
+  let sparseOrigin: { step: FetchStep; text: string; dialledUrl: string } | null = null
 
   const markBlocked = (): void => {
     sawBlock = true
@@ -250,6 +260,10 @@ export function createContext(url: string, opts: FetchChainOptions): ChainContex
   // corroborating-only impersonated one must NOT keep render skipped.
   const markDecisiveOriginBlock = (decisive: boolean): void => {
     originDecisiveBlock = decisive
+  }
+  const keepSparseOrigin = (step: FetchStep, text: string, dialledUrl: string): void => {
+    if (sparseOrigin && sparseOrigin.text.length >= text.length) return
+    sparseOrigin = { step, text, dialledUrl }
   }
   const markPdfBody = (): void => {
     isPdfBody = true
@@ -328,6 +342,9 @@ export function createContext(url: string, opts: FetchChainOptions): ChainContex
     get isPdfBody() {
       return isPdfBody
     },
+    get sparseOrigin() {
+      return sparseOrigin
+    },
     get rdReason() {
       return rdReason
     },
@@ -337,6 +354,7 @@ export function createContext(url: string, opts: FetchChainOptions): ChainContex
     markBlocked,
     markDecisiveOriginBlock,
     markPdfBody,
+    keepSparseOrigin,
     useFallbackUrl,
     noteReadabilityMiss,
     stageSkipReason,

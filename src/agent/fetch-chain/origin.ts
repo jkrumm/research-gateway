@@ -141,6 +141,9 @@ async function readOriginHtml(
     return { terminal: ctx.done(step, text, dialledUrl) }
   }
   const chars = text?.length ?? 0
+  // Held back as the last resort: if render and Tavily also fail, this sliver is still better
+  // than an archived copy or a failure (rescue.ts's `keptSparseResult`).
+  if (sparse && text && text.length >= MIN_USABLE_CHARS && !looksBinary(text)) ctx.keepSparseOrigin(step, text, dialledUrl)
   let error = `thin (${chars} chars)`
   if (text && looksBinary(text)) error = 'binary content'
   else if (sparse) error = `thin for page size (${chars} chars of ${body.length})`
