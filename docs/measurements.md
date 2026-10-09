@@ -843,3 +843,21 @@ Big raw files and long documents. Logs by jobId in `~/Library/Logs/research-gate
 - `owid-public.owid.io/.../owid-co2-data.csv` (33 MB) is served with **no `Content-Type`**: the first deploy fell through the whole chain (`body exceeds 8388608 byte cap`, then lightpanda, Tavily, Wayback oversized). `isLineOrientedResource` now takes a missing or octet-stream type plus a `.csv/.tsv/.ndjson/.jsonl/.txt` path as line-oriented; covered by a fetch-chain test, not yet exercised live (the worker did not request that host in the re-run).
 - Wide rows (79 columns, ~1 KB) mean ~70 rows per 80k: a worker filtering on a country alone gets the early years first. The codebook-reading workers used `Country,year` style terms and fit; a hint in the tool description was not added (single clause budget).
 - Not measured: the paragraph filter on a PDF (the Llama run read HTML), the streamed-line memory profile on the mini (`memory.ratio` 0.037 idle), the 128 MB ceiling (largest real file 33 MB).
+
+## Post-Wave-11 fixes, live (2026-10-09, deploy 0890dcf)
+
+Fixes since Wave 11:
+- line-filter output capped at 24k chars, keeping the first and last matches;
+- the `100` in a percent formula is exempt from the number check;
+- a trailing source link (". — <url>") is read with the sentence before it.
+
+| Job | Case | Wall | Cost | Status | Notes |
+|-|-|-|-|-|-|
+| b75e70ac | OWID CSV (19 MB), standard | 326s | $0.12 | ok | Germany 1054.796/572.319 and China 2483.534/12289.037 Mt match a local parse of the CSV. 10 line-filter reads, 3 budget refusals (earlier runs: partial on a spent budget). 2 number-check caps, both legitimate (one derived percentage, one tonne-to-Mt conversion). |
+| ac526766 | DE road bikes under 1,500 € (Rose/Canyon/Radon), standard | 370s | $0.10 | ok | 25 citations, 0 number-check caps. |
+| 59a0f2b8 | Attention paper Table 3 + training times, standard | 137s | $0.08 | ok | Every value correct (6/1024/4096/16/0.3/300K, 213M; 12 h and 3.5 days). |
+| 702c260d | OWID CSV, before the scrub fix | 231s | $0.15 | partial | False `scrubbed`: "… not readable. — <url>". Fixed by 67f04d1/2b9567d. |
+
+Open:
+- The b75e70ac report's trailing "Sources" list numbers 11 URLs, but the prose cites up to [19]. A synthesis prose artifact; the citations array is unaffected.
+- A derived percentage can pass the number check by coincidence when the same digits occur anywhere in a large filtered read (`+394.8%` held `high`).
