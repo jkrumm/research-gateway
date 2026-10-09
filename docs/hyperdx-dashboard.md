@@ -335,9 +335,12 @@ GROUP BY d, depth, gate ORDER BY d DESC, jobs DESC
 The rollup attributes exist from the deploy of 2026-10-09 onward; older jobs read as empty in
 tiles 18-20.
 
+**21. Crash-loop guard (number)** — `Body = 'job.crash_loop_guard'` on logs. A job was given up on
+after `MAX_JOB_ATTEMPTS` restarts; empty is healthy. Backs the alert below.
+
 ## Alerts
 
-Seven, all tile-backed on this dashboard, all firing into the Slack `#alerts` webhook. The
+Eight, all tile-backed on this dashboard, all firing into the Slack `#alerts` webhook. The
 config is exported to `vps/observability/alerts/` — Mongo is not backed up, the repo is.
 
 | Alert | Tile | Fires at | What it means |
@@ -349,6 +352,7 @@ config is exported to `vps/observability/alerts/` — Mongo is not backed up, th
 | `partial rate too high (>30% over 24h, n>=5)` | 15 | ≥1 | A raw-SQL number tile with its own hardcoded rolling 24h window (`TimestampTime > now() - INTERVAL 24 HOUR`, independent of the alert's own hourly check cadence): counts `research.done` rows by `LogAttributes['status']`, and emits the partial count only when `partial/total > 0.3` **and** `total >= 5` (else 0) — the volume gate keeps one partial out of two jobs quiet. Catches the class of regression that produced 66-92% partial for two days (2026-09-23/24, fixed in 07b3a36) same-day instead of unnoticed |
 | `synthesis/consistency failures >= 3 (1h)` | 16 | ≥3 | `consistency.failed` + `synthesis.rejected` + `synthesis.failed` in an hour: reports are shipping degraded (assembled fallback, or a provider erroring on the lead model). Three, so one transient 5xx stays quiet |
 | `cost spike >= 1 (1h)` | 17 | ≥1 | A job over $2, or 24h spend over $15 — see tile 17 for where the thresholds come from. The 24h half re-fires hourly until the window rolls past |
+| `crash-loop guard >= 1 (15m)` | 21 | ≥1 | `job.crash_loop_guard` (error level) — a job was given up on after `MAX_JOB_ATTEMPTS` restarts without finishing, so it may itself be what keeps crashing the process. Empty is healthy; see the event table under tile 10 |
 
 ### Where an alert goes — the route into warden
 
