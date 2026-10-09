@@ -71,6 +71,11 @@ const VERSION_BEFORE = /(?:\bpatch|\bversion|\bv|\bseason|\bs|\bgen|\bsection|§
 export function claimNumbers(claim: string): ClaimNumber[] {
   // A URL inside the claim carries its own digits (ids, dates) that are not claims.
   const text = claim.replace(/https?:\/\/\S+/g, ' ')
+  // An HTTP status quoted as the response itself ("returns 404", "HTTP 410") is a fact about
+  // the request, not a figure the page text states.
+  const statusAt = (start: number, end: number): boolean =>
+    /\b(?:http|status|returns?|returned|responded|response|error|code)\s*(?:code\s*)?$/i.test(text.slice(Math.max(0, start - 16), start)) ||
+    /^\s*(?:\(?not found|error|response|status)/i.test(text.slice(end, end + 14))
   const out: ClaimNumber[] = []
   for (const match of text.matchAll(/\d+(?:,\d{3})*(?:\.\d+)?/g)) {
     const token = match[0]
@@ -85,6 +90,7 @@ export function claimNumbers(claim: string): ClaimNumber[] {
     if (/[-/:.]/.test(prev) && /\d/.test(text[start - 2] ?? '')) continue
     if (/^[-/:.]\d/.test(next2)) continue
     if (VERSION_BEFORE.test(before)) continue
+    if (/^[45]\d\d$/.test(token) && statusAt(start, end)) continue
 
     const percent = /^\s?%/.test(text.slice(end, end + 2))
     const decimals = token.includes('.') ? (token.split('.')[1]?.length ?? 0) : 0
@@ -110,8 +116,11 @@ function matches(n: ClaimNumber, page: readonly number[]): boolean {
 }
 
 /** Claim numbers that occur nowhere in the cited page's text, as written in the claim. */
-export function unmatchedNumbers(claim: string, pageNumbers: readonly number[]): string[] {
+export function unmatchedNumbers(claim: string, pageNumbers: readonly number[], citedUrl = ''): string[] {
+  // Digits in the cited URL (`…/canyon_4392.html`) were read there: they count as found.
+  const urlNumbers = citedUrl ? extractNumbers(citedUrl) : []
+  const known = urlNumbers.length > 0 ? [...pageNumbers, ...urlNumbers] : pageNumbers
   return claimNumbers(claim)
-    .filter((n) => !matches(n, pageNumbers))
+    .filter((n) => !matches(n, known))
     .map((n) => n.raw)
 }

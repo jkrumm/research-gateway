@@ -80,3 +80,21 @@ describe('unmatchedNumbers — the 2026-09-26 Pyke report', () => {
     expect(unmatchedNumbers('48% WR', page)).toEqual(['48%'])
   })
 })
+
+describe('unmatchedNumbers — 2026-10-09 false positives', () => {
+  it('treats digits in the cited URL as found (Canyon-ID)', () => {
+    const claim = 'Canyon-ID 4392 is the Endurace CF 7'
+    expect(unmatchedNumbers(claim, [1], 'https://www.canyon.com/de-de/endurace/canyon_4392.html')).toEqual([])
+    expect(unmatchedNumbers(claim, [1])).toEqual(['4392'])
+  })
+
+  it('exempts an HTTP status quoted as the response itself', () => {
+    expect(unmatchedNumbers('The URL returns 404 and no CSV exists', [1])).toEqual([])
+    expect(unmatchedNumbers('HTTP 410 for the old endpoint', [1])).toEqual([])
+    expect(unmatchedNumbers('The server answered with 404 (not found)', [1])).toEqual([])
+  })
+
+  it('still checks a 4xx-looking figure that is a measurement', () => {
+    expect(unmatchedNumbers('The bike weighs 404 grams', [1])).toEqual(['404'])
+  })
+})
