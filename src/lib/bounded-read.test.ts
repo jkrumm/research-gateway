@@ -3,6 +3,7 @@ import {
   readBoundedBytes,
   readBoundedBytesByCap,
   readBoundedText,
+  readBoundedLines,
   readCappedText,
   type OversizedInfo,
 } from './bounded-read.js'
@@ -146,5 +147,71 @@ describe('readCappedText', () => {
   it('returns an empty string for a null stream', async () => {
     const text = await readCappedText(null, 100)
     expect(text).toBe('')
+  })
+})
+
+// A synthetic CSV stream that is never held whole: 'country,year,co2' then one row per call to pull().
+function csvStream(rows: number, rowFor: (i: number) => string, chunkRows = 500): ReadableStream<Uint8Array> {
+  const encoder = new TextEncoder()
+  let i = -1
+  return new ReadableStream({
+    pull(controller) {
+      const lines: string[] = []
+      for (let n = 0; n < chunkRows && i < rows; n++, i++) lines.push(i < 0 ? 'country,year,co2' : rowFor(i))
+      if (lines.length === 0) return controller.close()
+      controller.enqueue(encoder.encode(`${lines.join('\n')}\n`))
+    },
+  })
+}
+
+describe('readBoundedLines', () => {
+  it('keeps the header and matching lines of a 20 MB stream without buffering it', async () => {
+    const pad = 'x'.repeat(80)
+    const rows = 200_000 // ~20 MB
+    const r = await readBoundedLines(csvStream(rows, (i) => `${i % 100 === 7 ? 'Germany' : 'Other'},${1800 + (i % 220)},${pad}`), {
+      isMatch: (l) => l.startsWith('Germany'),
+      keepChars: 80_000,
+    })
+    expect(r.header).toBe('country,year,co2')
+    expect(r.searched).toBe(rows)
+    expect(r.matched).toBe(2000)
+    expect(r.matches.every((l) => l.startsWith('Germany'))).toBe(true)
+    expect(r.matches.join('\n').length).toBeLessThanOrEqual(80_000)
+    expect(r.matches.length).toBeLessThan(r.matched) // the rest were counted, not stored
+    expect(r.stoppedAtBytes).toBeUndefined()
+  })
+
+  it('stops at the ceiling and reports it', async () => {
+    const r = await readBoundedLines(csvStream(100_000, (i) => `Germany,${i},${'y'.repeat(100)}`), {
+      isMatch: () => true,
+      keepChars: 1_000,
+      ceilingBytes: 1_000_000,
+    })
+    expect(r.stoppedAtBytes).toBeGreaterThanOrEqual(1_000_000)
+    expect(r.searched).toBeLessThan(100_000)
+  })
+
+  it('handles lines split across chunks, CRLF, and a last line without a newline', async () => {
+    const r = await readBoundedLines(textStream(['a,b\r\nGer', 'many,1\r\nFrance,2\r\nGermany,', '3']), {
+      isMatch: (l) => l.startsWith('Germany'),
+      keepChars: 1_000,
+    })
+    expect(r.header).toBe('a,b')
+    expect(r.matches).toEqual(['Germany,1', 'Germany,3'])
+    expect(r.searched).toBe(3)
+  })
+
+  it('does not buffer a body with no newline at all', async () => {
+    const r = await readBoundedLines(textStream(['h\n', 'z'.repeat(1_500_000), 'z'.repeat(1_500_000), '\nGermany\n']), {
+      isMatch: (l) => l === 'Germany',
+      keepChars: 100,
+    })
+    expect(r.matches).toEqual(['Germany'])
+    expect(r.searched).toBe(2)
+  })
+
+  it('returns an empty result for a null body', async () => {
+    const r = await readBoundedLines(null, { isMatch: () => true, keepChars: 10 })
+    expect(r).toEqual({ header: '', matches: [], matched: 0, searched: 0 })
   })
 })

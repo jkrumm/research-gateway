@@ -193,3 +193,101 @@ export async function readBoundedText(
   if (truncated) onOversized?.({ capBytes, readBytes: bytes.length })
   return { text: new TextDecoder().decode(bytes), truncated }
 }
+
+// The download ceiling for the streaming line filter ONLY (readBoundedLines). Every other reader
+// here buffers what it keeps, so it stays at MAX_BODY_BYTES; the filter keeps just the header and
+// the matching lines, so its memory is bounded by the OUTPUT and the ceiling only bounds how long
+// a single fetch may run. 128 MB covers OWID's 19 MB CO2 file and the next order of magnitude of
+// honest open-data CSVs.
+const MAX_STREAMED_LINES_BYTES = 128 * 1024 * 1024
+
+// One physical line longer than this is cut (its tail dropped): a "line-oriented" body with no
+// newlines at all must not make the carry-over buffer grow without bound.
+const MAX_LINE_CHARS = 1_000_000
+
+export interface StreamedLines {
+  /** First line of the body (no line terminator). */
+  header: string
+  /** Matching lines after the header, in order, kept only while they fit `keepChars`. */
+  matches: string[]
+  /** Every matching line after the header, kept or not. */
+  matched: number
+  /** Every line after the header that was tested. */
+  searched: number
+  /** Set when the ceiling stopped the read before the end: bytes read until then. */
+  stoppedAtBytes?: number
+}
+
+export interface ReadLinesOptions {
+  isMatch: (line: string) => boolean
+  /** Characters of matching lines to keep; later matches are counted, not stored. */
+  keepChars: number
+  ceilingBytes?: number
+}
+
+/**
+ * Streams a body line by line and keeps only its header plus the lines `isMatch` accepts — memory
+ * is bounded by `keepChars` (plus one in-flight line), never by the file size. Stops, cancelling
+ * the download, once `ceilingBytes` have been read and reports where. Env- and log-free.
+ */
+export async function readBoundedLines(body: ReadableStream<Uint8Array> | null, opts: ReadLinesOptions): Promise<StreamedLines> {
+  const ceiling = opts.ceilingBytes ?? MAX_STREAMED_LINES_BYTES
+  const out: StreamedLines = { header: '', matches: [], matched: 0, searched: 0 }
+  if (!body) return out
+
+  let sawHeader = false
+  let keptChars = 0
+  const onLine = (raw: string): void => {
+    const line = raw.endsWith('\r') ? raw.slice(0, -1) : raw
+    if (!sawHeader) {
+      out.header = line
+      sawHeader = true
+      return
+    }
+    out.searched++
+    if (!opts.isMatch(line)) return
+    out.matched++
+    if (keptChars + line.length + 1 > opts.keepChars) return
+    out.matches.push(line)
+    keptChars += line.length + 1
+  }
+
+  const decoder = new TextDecoder()
+  const reader = body.getReader()
+  let carry = ''
+  let skippingOverlong = false
+  let bytes = 0
+  try {
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      bytes += value.length
+      let chunk = carry + decoder.decode(value, { stream: true })
+      carry = ''
+      let from = 0
+      for (let nl = chunk.indexOf('\n', from); nl !== -1; nl = chunk.indexOf('\n', from)) {
+        if (skippingOverlong) skippingOverlong = false
+        else onLine(chunk.slice(from, nl))
+        from = nl + 1
+      }
+      chunk = chunk.slice(from)
+      if (skippingOverlong) chunk = ''
+      else if (chunk.length > MAX_LINE_CHARS) {
+        onLine(chunk.slice(0, MAX_LINE_CHARS))
+        chunk = ''
+        skippingOverlong = true
+      }
+      carry = chunk
+      if (bytes >= ceiling) {
+        out.stoppedAtBytes = bytes
+        await reader.cancel().catch(() => {})
+        return out
+      }
+    }
+    carry += decoder.decode()
+    if (carry !== '' && !skippingOverlong) onLine(carry)
+  } finally {
+    reader.releaseLock()
+  }
+  return out
+}

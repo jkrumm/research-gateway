@@ -1,10 +1,11 @@
 import { normalizeText, TEXT_CAP } from '../extract.js'
-import { filterLines, isLineOrientedContentType } from '../line-filter.js'
+import { fitDocumentText } from '../paragraph-filter.js'
+import { formatLineScan, isLineOrientedContentType, lineMatcher, oversizedPrefix } from '../line-filter.js'
 import { extractText } from '../html-parse.js'
 import { isRawContentType, isDefinitivelyMissing, isPdf, looksBinary } from '../response-kind.js'
 import { extractPdfText } from '../pdf.js'
 import { MAX_PDF_BYTES, finalizePdfText } from '../pdf-extract.js'
-import { readBoundedBytesByCap, readCappedText, MAX_BODY_BYTES } from '../../lib/bounded-read.js'
+import { readBoundedBytesByCap, readBoundedLines, readCappedText, MAX_BODY_BYTES } from '../../lib/bounded-read.js'
 import { classifyBlock, describeBlock, isJavaScriptShell, type BlockVerdict } from '../challenge.js'
 import { parseRetryAfter } from '../host-gate.js'
 import { log } from '../../lib/log.js'
@@ -151,6 +152,60 @@ async function readOriginHtml(
   return { terminal: null, block: null }
 }
 
+// The bookkeeping every raw success shares — the attempt record, the host-gate success, the
+// `tool.fetchPage` line, the terminal result — so the buffered, streamed and oversized-prefix
+// paths cannot drift. `fitted` text already went through the `lines` filter; `done` must not
+// select from it again.
+function succeedRaw(
+  ctx: ChainContext,
+  args: { text: string; t1: number; startedAt: number; dialledUrl: string; fitted?: true; logFields?: Record<string, unknown> },
+): { terminal: FetchChainResult } {
+  const { text, t1, startedAt, dialledUrl, fitted, logFields } = args
+  attempt(ctx.attempts, 'raw', t1, { ok: true, chars: text.length })
+  ctx.hostGate.noteOk(ctx.host, { startedAt })
+  log('tool.fetchPage', { jobId: ctx.jobId, url: ctx.url, via: 'raw', chars: text.length, ...logFields })
+  return { terminal: ctx.done('raw', text, dialledUrl, fitted) }
+}
+
+// The streaming `lines` read of a line-oriented file (see readOriginBody). Never fails for size: a
+// download past the ceiling stops, and the text says so. The ledger gets exactly what is returned.
+async function readStreamedLines(
+  ctx: ChainContext,
+  res: Response,
+  terms: readonly string[],
+  at: { t1: number; startedAt: number; dialledUrl: string },
+): Promise<{ terminal: FetchChainResult } | { terminal: null; block: BlockOutcome }> {
+  const scan = await readBoundedLines(res.body, { isMatch: lineMatcher(terms), keepChars: TEXT_CAP })
+  const result = formatLineScan(scan, terms, TEXT_CAP)
+  const text = normalizeText(result.text)
+  if (scan.header.trim() === '' && scan.searched === 0) {
+    attempt(ctx.attempts, 'raw', at.t1, { ok: false, chars: 0, error: 'empty body' })
+    return { terminal: null, block: null }
+  }
+  // `text/plain` is a declared type, not proof: a PDF mislabeled as it still announces itself.
+  if (scan.header.startsWith('%PDF-')) {
+    ctx.markPdfBody()
+    attempt(ctx.attempts, 'raw', at.t1, { ok: false, error: 'PDF served as text' })
+    return { terminal: null, block: null }
+  }
+  if (looksBinary(text)) {
+    attempt(ctx.attempts, 'raw', at.t1, { ok: false, chars: text.length, error: 'binary content' })
+    return { terminal: null, block: null }
+  }
+  return succeedRaw(ctx, {
+    ...at,
+    text,
+    fitted: true,
+    logFields: {
+      contentType: res.headers.get('content-type'),
+      lineFilter: terms.length,
+      lines: result.searched,
+      matched: result.matched,
+      ...(scan.stoppedAtBytes === undefined ? {} : { stoppedAtBytes: scan.stoppedAtBytes }),
+    },
+  })
+}
+
 // The step-1 body cap plus the PDF verdict it was decided from: a PDF needs the whole document
 // for poppler (MAX_PDF_BYTES), every non-PDF body is bounded at MAX_BODY_BYTES. A PDF served
 // under a wrong or absent Content-Type is recognised by the `%PDF-` magic in the bytes handed
@@ -189,6 +244,16 @@ async function readOriginBody(
   // final bytes, so there is exactly one place that decides it. A truncated read is treated as
   // a miss, same as any other step-1 failure, and falls through to rendering/Tavily.
   const contentType = res.headers.get('content-type')
+
+  // A line-oriented file with `lines` set is filtered as a STREAM: only the header and the
+  // matching lines are ever held, so a 19 MB CSV costs output-sized memory and the download
+  // ceiling (MAX_STREAMED_LINES_BYTES) is far above the buffered one. Decided on the declared
+  // type alone — a CSV is never a PDF.
+  const terms = ctx.opts.lineFilter
+  if (terms?.length && isRawContentType(contentType) && isLineOrientedContentType(contentType)) {
+    return await readStreamedLines(ctx, res, terms, { t1, startedAt: attemptStartedAt, dialledUrl })
+  }
+
   let isPdfBody = false
   const { bytes, truncated, cap: capBytes } = await readBoundedBytesByCap(res.body, (prefix) => {
     const decision = bodyCapFor(contentType, prefix)
@@ -204,6 +269,20 @@ async function readOriginBody(
     // so it is a miss like any other — never a partial answer passed to a parser or a
     // citation.
     if (isPdfBody) ctx.markPdfBody()
+    // An oversized line-oriented file read without `lines` is still an answer: its header plus a
+    // prefix, with the way to read the rest. Render, Tavily and Wayback cannot do better for a
+    // raw text file, so the chain ends here rather than falling through.
+    if (!isPdfBody && isRawContentType(contentType) && isLineOrientedContentType(contentType)) {
+      const text = oversizedPrefix(new TextDecoder().decode(bytes), bytes.length, TEXT_CAP)
+      return succeedRaw(ctx, {
+        text,
+        t1,
+        startedAt: attemptStartedAt,
+        dialledUrl,
+        fitted: true,
+        logFields: { contentType, oversized: true, readBytes: bytes.length },
+      })
+    }
     attempt(ctx.attempts, label, t1, { ok: false, error: `body exceeds ${capBytes} byte cap` })
     return { terminal: null, block: null }
   }
@@ -218,11 +297,12 @@ async function readOriginBody(
       // `finalizePdfText` caps BEFORE appending the notice — see its header comment for why
       // appending first and letting `ctx.done`'s own capText(TEXT_CAP) run over the combined
       // string buried the notice entirely.
-      const text = finalizePdfText(pdf.text, pdf.truncated)
+      // `lines` selects passages BEFORE the cut — the paper's late sections are the point.
+      const text = finalizePdfText(fitDocumentText(pdf.text, ctx.opts.lineFilter, TEXT_CAP).text, pdf.truncated)
       attempt(ctx.attempts, 'pdf', t1, { ok: true, chars: text.length })
       ctx.hostGate.noteOk(ctx.host, { startedAt: attemptStartedAt })
       log('tool.fetchPage', { jobId: ctx.jobId, url: ctx.url, via: 'pdf', chars: text.length, truncated: pdf.truncated })
-      return { terminal: ctx.done('pdf', text, dialledUrl) }
+      return { terminal: ctx.done('pdf', text, dialledUrl, true) }
     }
     // pdftotext missing, failed, or below the text floor (a scanned PDF with no text layer)
     // — falls through to Tavily Extract, which OCRs PDFs server-side. Never a reason to pass
@@ -239,22 +319,7 @@ async function readOriginBody(
   if (isRawContentType(contentType)) {
     const raw = normalizeText(body)
     if (raw.length > 0 && !looksBinary(raw)) {
-      // fetchPage's `lines` filter runs here, on the whole body and before `ctx.done`'s
-      // capText(TEXT_CAP) — a filter placed after the chain would only ever see the first 80k.
-      const terms = ctx.opts.lineFilter
-      const filtered = terms?.length && isLineOrientedContentType(contentType) ? filterLines(raw, terms, TEXT_CAP) : null
-      const text = filtered?.text ?? raw
-      attempt(ctx.attempts, 'raw', t1, { ok: true, chars: text.length })
-      ctx.hostGate.noteOk(ctx.host, { startedAt: attemptStartedAt })
-      log('tool.fetchPage', {
-        jobId: ctx.jobId,
-        url: ctx.url,
-        via: 'raw',
-        chars: text.length,
-        contentType,
-        ...(filtered ? { lineFilter: terms?.length, lines: filtered.searched, matched: filtered.matched } : {}),
-      })
-      return { terminal: ctx.done('raw', text, dialledUrl) }
+      return succeedRaw(ctx, { text: raw, t1, startedAt: attemptStartedAt, dialledUrl, logFields: { contentType } })
     }
     // An empty or binary body is a miss like any other — fall through to the rendering
     // steps, which is the right answer for a URL that serves an empty JSON body to a bot and

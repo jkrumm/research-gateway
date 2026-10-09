@@ -286,8 +286,12 @@ that would fail on every call.
 
 `fetchPage` walks a chain and stops at the first step that yields real text. For a large CSV/TSV/
 text/JSON-lines file a worker passes `lines` (up to 5 case-insensitive terms) and gets the header plus
-only the matching lines, so a 500 KB table is not cut at the page-text budget; the ledger holds
-exactly that returned text.
+only the matching lines, so a 500 KB table is not cut at the page-text budget. The file is filtered as
+a stream (`readBoundedLines`, ceiling 128 MB), so a 19 MB CSV is read for its rows without being held.
+For a long document (HTML or PDF text past the page cut) `lines` returns the opening line plus each
+matching paragraph with one paragraph of context, chosen before the cut; no match returns the head
+with a one-line note. Either way the ledger holds exactly the returned text. An oversized line-oriented
+file read without `lines` returns its header plus a prefix and a note to call again with `lines`.
 
 | Step | Handles | Notes |
 |-|-|-|
@@ -302,7 +306,9 @@ exactly that returned text.
 
 No remote body is ever read unbounded: every network response goes through one bounded reader
 (`lib/bounded-read.ts`) — non-PDF bodies are capped at 8 MB, a PDF at 40 MB, and a body cut at
-its cap is a miss, never a partial answer.
+its cap is a miss, never a partial answer. The two exceptions are line-oriented files (csv/tsv/
+ndjson/plain): streamed for `lines`, header-plus-prefix without it — size is never a failure, and
+an oversized one never goes on to render, Tavily or Wayback, which cannot help a raw text file.
 
 Every renderer reports failure by not failing — a PDF decoded as UTF-8 (1.98M chars of binary recorded as a `readability` success until 2026-09-23; `looksBinary` now fails any such body), Reddit's 200 + JS shell, lightpanda's `exit 0`
 on a dead domain, a Medium paywall that returns the lede above the 200-char floor — and each

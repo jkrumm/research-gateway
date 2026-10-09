@@ -1,6 +1,7 @@
 import { tavily } from '@tavily/core'
 import { env } from '../../env.js'
 import { capText, TEXT_CAP } from '../extract.js'
+import { fitDocumentText } from '../paragraph-filter.js'
 import { resolveSite } from '../site-adapters.js'
 import { log } from '../../lib/log.js'
 import { getActiveSpan } from '../../lib/otel.js'
@@ -169,8 +170,9 @@ export interface ChainContext {
    * `fetchUrl` until origin.ts's `useFallbackUrl()` has switched it, and `site.fallbackUrl`
    * after. origin.ts is the one stage that can dial a SECOND address within a single call and
    * passes that address explicitly, so a success recorded there names the address genuinely
-   * read, never the rewritten one that 404'd. */
-  done: (via: FetchStep, text: string, dialledUrl?: string) => FetchChainResult
+   * read, never the rewritten one that 404'd. `fitted` marks text a stage already ran through the
+   * `lines` filter, so `done` must not select passages from it a second time. */
+  done: (via: FetchStep, text: string, dialledUrl?: string, fitted?: true) => FetchChainResult
 }
 
 export function createContext(url: string, opts: FetchChainOptions): ChainContext {
@@ -283,7 +285,7 @@ export function createContext(url: string, opts: FetchChainOptions): ChainContex
     // this chain never got as far as the fallback it actually failed against.
     return { url, fetchUrl: dialUrl, via: null, text: null, error, attempts }
   }
-  const done = (via: FetchStep, text: string, dialledUrl: string = dialUrl): FetchChainResult => {
+  const done = (via: FetchStep, text: string, dialledUrl: string = dialUrl, fitted?: true): FetchChainResult => {
     emitAttempts()
     ledger.recordRetrieved(url)
     // When an adapter rewrote the address, BOTH forms name the page that was genuinely read,
@@ -307,7 +309,7 @@ export function createContext(url: string, opts: FetchChainOptions): ChainContex
     // and probe.ts/fetch-bench.ts/tools.ts all read this field as "the URL actually dialled".
     // Reporting the planned address there would name the one that 404'd, not the one that
     // answered.
-    return { url, fetchUrl: dialledUrl, via, text: capText(text, TEXT_CAP), error: null, attempts }
+    return { url, fetchUrl: dialledUrl, via, text: capText(fitted ? text : fitDocumentText(text, opts.lineFilter, TEXT_CAP).text, TEXT_CAP), error: null, attempts }
   }
 
   return {

@@ -13,6 +13,8 @@
 // the absence of a row from a filtered read is never mistaken for evidence the row does not exist
 // (the same rule as the page-budget cut notice in fetch-guard.ts).
 
+import type { StreamedLines } from '../lib/bounded-read.js'
+
 export const MAX_LINE_TERMS = 5
 export const MAX_TERM_CHARS = 100
 
@@ -64,31 +66,37 @@ export interface LineFilterResult {
   omitted: number
 }
 
-/**
- * Header line + every later line containing any of `terms` (case-insensitive substring), in
- * original order, within `maxChars` in total. `terms` should come from normalizeTerms and be
- * non-empty.
- */
-export function filterLines(text: string, rawTerms: readonly string[], maxChars: number): LineFilterResult {
-  const terms = rawTerms.map((t) => t.toLowerCase())
-  const lines = text.split(/\r?\n/)
-  const header = lines[0] ?? ''
-  const body = lines.slice(1)
-  const quoted = terms.map((t) => `"${t}"`).join(', ')
+/** What a streaming scan of a body found (bounded-read.ts's `readBoundedLines`). `matches` may hold fewer than `matched`: a stream keeps only what fits. */
+export type LineScan = StreamedLines
 
-  const matches: string[] = []
-  for (const line of body) {
+/** The case-insensitive substring test `terms` (from normalizeTerms) describe. */
+export function lineMatcher(rawTerms: readonly string[]): (line: string) => boolean {
+  const terms = rawTerms.map((t) => t.toLowerCase())
+  return (line) => {
     const lower = line.toLowerCase()
-    if (terms.some((t) => lower.includes(t))) matches.push(line)
+    return terms.some((t) => lower.includes(t))
   }
+}
+
+/**
+ * Header line + the scanned matching lines within `maxChars` in total, closed by a note that the
+ * rest of the document was NOT returned.
+ */
+export function formatLineScan(scan: LineScan, rawTerms: readonly string[], maxChars: number): LineFilterResult {
+  const { header, matches, matched, searched } = scan
+  const quoted = rawTerms.map((t) => `"${t.toLowerCase()}"`).join(', ')
+  const stopped =
+    scan.stoppedAtBytes === undefined
+      ? ''
+      : ` The download was stopped after ${Math.round(scan.stoppedAtBytes / 1_048_576)} MB, so later lines were NOT searched at all.`
 
   const noteFor = (kept: number): string => {
-    if (matches.length === 0) {
-      return `[no lines matched ${quoted}: ${body.length} lines below the header were searched and none contain any of these terms. Only the header line is shown; the rest of the document was NOT returned.]`
+    if (matched === 0) {
+      return `[no lines matched ${quoted}: ${searched} lines below the header were searched and none contain any of these terms.${stopped} Only the header line is shown; the rest of the document was NOT returned.]`
     }
-    const omitted = matches.length - kept
+    const omitted = matched - kept
     const cut = omitted > 0 ? ` ${omitted} further matching lines did not fit and are NOT shown: use narrower terms.` : ''
-    return `[line filter ${quoted}: ${matches.length} of ${body.length} lines below the header match; showing ${kept}.${cut} All other lines of the document were NOT returned, so a row missing here is not evidence it is absent.]`
+    return `[line filter ${quoted}: ${matched} of ${searched} lines below the header match; showing ${kept}.${cut}${stopped} All other lines of the document were NOT returned, so a row missing here is not evidence it is absent.]`
   }
 
   // The note's size depends on how many lines fit, so reserve for the longest form up front.
@@ -106,8 +114,26 @@ export function filterLines(text: string, rawTerms: readonly string[], maxChars:
   const out = [head, ...kept].join('\n')
   return {
     text: `${out}\n\n${noteFor(kept.length)}`,
-    matched: matches.length,
-    searched: body.length,
-    omitted: matches.length - kept.length,
+    matched,
+    searched,
+    omitted: matched - kept.length,
   }
+}
+
+/**
+ * An oversized line-oriented body read WITHOUT `lines`: its header plus as many whole leading
+ * lines as fit `maxChars`, and a note that says it is cut and how to read the rest. `decoded` is
+ * the text of the bytes that were read (the last line may be partial and is dropped).
+ */
+export function oversizedPrefix(decoded: string, readBytes: number, maxChars: number): string {
+  const note = `[this file is larger than ${Math.round(readBytes / 1_048_576)} MB; only its first lines are shown. The rest was NOT returned. To read specific rows call fetchPage again on this URL with \`lines\` set to terms the rows contain (e.g. a country or a year).]`
+  const room = Math.max(0, maxChars - note.length - 2)
+  const lastNewline = decoded.lastIndexOf('\n')
+  const whole = lastNewline >= 0 ? decoded.slice(0, lastNewline + 1) : decoded
+  let end = Math.min(whole.length, room)
+  if (end < whole.length) {
+    const cutAt = whole.lastIndexOf('\n', end)
+    if (cutAt > 0) end = cutAt
+  }
+  return `${whole.slice(0, end).trimEnd()}\n\n${note}`
 }

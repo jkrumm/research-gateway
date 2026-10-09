@@ -229,7 +229,9 @@ bun test           # pure-function tests only — needs no secrets
   `groundClaims` applies at the job boundary.
 - `src/lib/bounded-read.ts` — the one place every network response body is read, so nothing
   unbounded is ever downloaded, decoded or allocated in one piece; env- and log-free, the
-  logger is injected per call site
+  logger is injected per call site. `readBoundedLines` is the streaming `lines` filter for a
+  line-oriented file (128 MB ceiling, memory bounded by the output); `line-filter.ts` (rows,
+  oversized prefix) and `paragraph-filter.ts` (long HTML/PDF documents) format what it returns
 - `src/lib/job-store.ts` + `job-db.ts` — sqlite job durability + heartbeat reaping; also owns
   the drain (`beginDraining` / `waitForDrain`) and the admission state
 - `src/lib/admission.ts` — the pure "may a new job start" decision (draining > memory pressure

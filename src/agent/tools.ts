@@ -540,10 +540,10 @@ function buildFetchPageTool(ledger: RetrievalLedger, pageBudget: PageBudget, job
 
   return tool({
     description:
-      'Fetch the main text content of a URL. Uses Mozilla Readability for clean article extraction; falls back to a JavaScript renderer and then Tavily Extract if readability fails or returns thin content. For a YouTube video URL this returns the full spoken transcript of the video. For a large CSV/TSV/text/JSON-lines file pass `lines` (case-insensitive terms) to get its header plus only the matching lines.',
+      'Fetch the main text content of a URL. Uses Mozilla Readability for clean article extraction; falls back to a JavaScript renderer and then Tavily Extract if readability fails or returns thin content. For a YouTube video URL this returns the full spoken transcript of the video. For a large CSV/TSV/text/JSON-lines file or a long document pass `lines` (case-insensitive terms) to get its header plus only the matching lines or paragraphs.',
     inputSchema: z.object({
       url: z.string().describe('The URL to fetch'),
-      lines: z.array(z.string().max(MAX_TERM_CHARS)).max(MAX_LINE_TERMS).optional().describe('Terms to match in a line-oriented file'),
+      lines: z.array(z.string().max(MAX_TERM_CHARS)).max(MAX_LINE_TERMS).optional().describe('Terms to match in a large file or long document'),
     }),
     // Takes the AI SDK's 2nd `options` argument (previously ignored) so the job/tool
     // abortSignal reaches the chain — `instrument()` above already forwards it unchanged;
@@ -890,8 +890,11 @@ export function buildTools(args: {
     fetchPage: buildFetchPageTool(ledger, pageBudget, jid),
     // Deterministic source-of-truth lookups (registries, GitHub). Registered before the
     // optional libraryDocs tool so tools/list order stays stable across configurations.
-    ...buildDirectSourceTools(ledger, jid, (r) =>
-      meterYtdlp.add(jid, { calls: 1, failures: r.ok ? 0 : 1, totalMs: r.ms }),
+    ...buildDirectSourceTools(
+      ledger,
+      jid,
+      (r) => meterYtdlp.add(jid, { calls: 1, failures: r.ok ? 0 : 1, totalMs: r.ms }),
+      pageBudget,
     ),
   }
 

@@ -3,8 +3,9 @@ import type { Tool } from 'ai'
 import { z } from 'zod'
 import { env } from '../env.js'
 import { log } from '../lib/log.js'
-import { readBoundedText, MAX_BODY_BYTES } from '../lib/bounded-read.js'
+import { readBoundedText, MAX_BODY_BYTES, type BoundedText } from '../lib/bounded-read.js'
 import { capText, TEXT_CAP } from './extract.js'
+import { PAGE_BUDGET_SPENT, type PageBudget } from './fetch-guard.js'
 import { createRateGate } from './rate-gate.js'
 import { fetchArxivFeed, type ArxivFeedResult } from './arxiv-feed.js'
 import {
@@ -497,19 +498,21 @@ interface GhRelease {
 }
 
 // Reads a fetched repo file bounded (bounded-read.ts). The download itself stays bounded at
-// MAX_BODY_BYTES, but a body cut at the cap is not treated as a failed read — the caller's own
-// `capText(text, TEXT_CAP)` already caps what a worker receives at a much smaller size, so a
-// file between TEXT_CAP and MAX_BODY_BYTES gets a real head of the file rather than nothing.
-// Only the oversized event still logs, so an operator can see the download itself was cut.
+// MAX_BODY_BYTES, but a body cut at the cap is not treated as a failed read — the caller still
+// hands the worker a real head of the file rather than nothing, and says it is only a head.
+// Only the oversized event logs, so an operator can see the download itself was cut.
 async function readGithubFileBody(
   res: Response,
   fields: { jobId: string; owner: string; repo: string; path: string; ref: string },
-): Promise<string> {
-  const { text } = await readBoundedText(res, MAX_BODY_BYTES, (info) => log('tool.githubFile', { ...fields, via: 'oversized', ...info }))
-  return text
+): Promise<BoundedText> {
+  return readBoundedText(res, MAX_BODY_BYTES, (info) => log('tool.githubFile', { ...fields, via: 'oversized', ...info }))
 }
 
-function buildGithubFileTool(ledger: RetrievalLedger, jobId: string): AnyTool {
+// Appended to a githubFile result whose file is longer than the worker was given.
+const LARGE_FILE_NOTE =
+  ' The file is LARGER than the content shown, which is only its head. To read specific rows or passages call fetchPage on `rawUrl` with `lines` set to terms they contain; do not treat anything absent from the head as absent from the file.'
+
+function buildGithubFileTool(ledger: RetrievalLedger, jobId: string, pageBudget?: PageBudget): AnyTool {
   return tool({
     description:
       'Read a file from a GitHub repository VERBATIM (raw bytes, no rendering, no summarising). Use this whenever the answer lives in a repo file — docker-compose.yml, package.json, a config example, a README, a source file, a CHANGELOG. This is exact where a docs page is a paraphrase: prefer it over fetchPage for anything that exists in a repository.',
@@ -527,6 +530,11 @@ function buildGithubFileTool(ledger: RetrievalLedger, jobId: string): AnyTool {
       if (argError) return { error: argError }
 
       // `HEAD` resolves to the repo's default branch without spending an API call on it.
+      if (pageBudget && !pageBudget.hasRoom()) {
+        log('tool.githubFile', { jobId, owner, repo, path, via: 'budget-spent' })
+        return { error: PAGE_BUDGET_SPENT }
+      }
+
       const effectiveRef = ref ?? 'HEAD'
       const encodedPath = path.split('/').map(encodeURIComponent).join('/')
       const rawUrl = `https://raw.githubusercontent.com/${owner}/${repo}/${effectiveRef}/${encodedPath}`
@@ -556,19 +564,26 @@ function buildGithubFileTool(ledger: RetrievalLedger, jobId: string): AnyTool {
           return { error: `githubFile failed: ${reason}`, url: blobUrl }
         }
 
-        // Bounded like every other network body — a file over MAX_BODY_BYTES still hands back
-        // the head that was read rather than failing outright (readGithubFileBody), and
-        // capText below caps what the worker actually receives at the much smaller TEXT_CAP.
-        const text = await readGithubFileBody(res, { jobId, owner, repo, path, ref: effectiveRef })
+        // Bounded like every other network body, and charged to the worker's page-text budget
+        // like fetchPage: a file over MAX_BODY_BYTES hands back the head that was read, and
+        // capText caps what the worker receives at the much smaller TEXT_CAP.
+        const { text, truncated } = await readGithubFileBody(res, { jobId, owner, repo, path, ref: effectiveRef })
+        const shown = capText(text, TEXT_CAP)
+        const content = pageBudget ? pageBudget.take(shown) : shown
+        if (content === null) {
+          log('tool.githubFile', { jobId, owner, repo, path, via: 'budget-spent' })
+          return { error: PAGE_BUDGET_SPENT }
+        }
         ledger.recordRetrieved(blobUrl)
         ledger.recordRetrieved(rawUrl)
-        log('tool.githubFile', { jobId, owner, repo, path, ref: effectiveRef, ok: true, chars: text.length })
+        const large = truncated || text.length > TEXT_CAP
+        log('tool.githubFile', { jobId, owner, repo, path, ref: effectiveRef, ok: true, chars: text.length, delivered: content.length, large })
         return {
           url: blobUrl,
           rawUrl,
           ref: effectiveRef,
-          content: capText(text, TEXT_CAP),
-          note: 'Verbatim file content. Quote it exactly — do not normalise names, versions or values. Cite `url`.',
+          content,
+          note: `Verbatim file content. Quote it exactly — do not normalise names, versions or values. Cite \`url\`.${large ? LARGE_FILE_NOTE : ''}`,
         }
       } catch (err) {
         ledger.recordFailed(blobUrl, String(err))
@@ -1192,10 +1207,11 @@ export function buildDirectSourceTools(
   ledger: RetrievalLedger,
   jobId: string,
   onYtdlp?: (r: { ok: boolean; ms: number }) => void,
+  pageBudget?: PageBudget,
 ): Record<string, AnyTool> {
   return {
     packageInfo: buildPackageInfoTool(ledger, jobId),
-    githubFile: buildGithubFileTool(ledger, jobId),
+    githubFile: buildGithubFileTool(ledger, jobId, pageBudget),
     githubRepo: buildGithubRepoTool(ledger, jobId),
     findPackages: buildFindPackagesTool(ledger, jobId),
     // Tool definitions are re-sent in EVERY step's context, for EVERY worker, on EVERY job

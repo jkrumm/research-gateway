@@ -1267,12 +1267,86 @@ describe('fetchPage line filter (origin raw branch)', () => {
     expect((r.text ?? '').length).toBeLessThanOrEqual(80_000)
   })
 
-  it('records the URL as retrieved and ignores the filter for a non-line-oriented body', async () => {
+  it('applies the paragraph filter, not the row filter, to a long non-line-oriented body', async () => {
     const ledger = createLedger()
     serve('application/json')
     const r = await runFetchChain(CSV_URL, { ...opts(), ledger, lineFilter: ['germany'] })
     expect(r.via).toBe('raw')
-    expect(r.text).toContain('[truncated:')
+    expect(r.text).toContain('[paragraph filter "germany"')
+    expect(r.text).not.toContain('[line filter')
+    expect((r.text ?? '').length).toBeLessThanOrEqual(80_000)
     expect(ledger.tierOf(CSV_URL)).toBe('retrieved')
+  })
+})
+
+// A body larger than the buffered 8 MB cap (the OWID CO2 file is ~19 MB), served as a stream that
+// is never held whole by the test either.
+describe('fetchPage oversized line-oriented file', () => {
+  const URL = 'https://203.0.113.22/owid-co2-data.csv'
+  const ROWS = 150_000 // ~13 MB at ~90 bytes
+  function oversizedCsv(): ReadableStream<Uint8Array> {
+    const encoder = new TextEncoder()
+    let i = -1
+    return new ReadableStream({
+      pull(controller) {
+        const lines: string[] = []
+        for (let n = 0; n < 1_000 && i < ROWS; n++, i++) {
+          lines.push(i < 0 ? 'country,year,co2' : `${i % 150 === 3 ? 'Germany' : 'Elsewhere'},${1750 + (i % 270)},${'1'.repeat(70)}`)
+        }
+        if (lines.length === 0) return controller.close()
+        controller.enqueue(encoder.encode(`${lines.join('\n')}\n`))
+      },
+    })
+  }
+  function setup(): { tavilyCalls: string[][]; fetched: string[]; opts: FetchChainOptions } {
+    const tavilyCalls: string[][] = []
+    const fetched: string[] = []
+    stubFetch((u) => {
+      fetched.push(u)
+      return new Response(oversizedCsv(), { status: 200, headers: { 'content-type': 'text/csv' } })
+    })
+    const tavily = stubTavilyFail()
+    return {
+      tavilyCalls,
+      fetched,
+      opts: {
+        ledger: createLedger(),
+        hostGate: createHostGate(),
+        tavilyExtract: (urls, o) => {
+          tavilyCalls.push(urls)
+          return tavily(urls, o)
+        },
+        impersonatedFetch: stubImpersonateUnavailable(),
+        impersonationMemory: createImpersonationMemory(),
+        assertPublicUrl: stubAssertPublicUrlOk(),
+      },
+    }
+  }
+
+  it('with `lines` streams past the 8 MB cap and returns the header plus matching rows', async () => {
+    const { opts, tavilyCalls, fetched } = setup()
+    const r = await runFetchChain(URL, { ...opts, lineFilter: ['germany'] })
+    expect(r.via).toBe('raw')
+    expect(r.text?.startsWith('country,year,co2\nGermany,')).toBe(true)
+    expect(r.text).toContain('[line filter "germany"')
+    expect(r.text).not.toContain('Elsewhere,')
+    expect((r.text ?? '').length).toBeLessThanOrEqual(80_000)
+    expect(opts.ledger?.tierOf(URL)).toBe('retrieved')
+    expect(tavilyCalls).toEqual([])
+    expect(fetched).toEqual([URL]) // no render, no wayback
+  })
+
+  it('without `lines` returns the header plus a prefix and a note naming `lines`, not a failure', async () => {
+    const { opts, tavilyCalls, fetched } = setup()
+    const r = await runFetchChain(URL, opts)
+    expect(r.via).toBe('raw')
+    expect(r.error).toBeNull()
+    expect(r.text?.startsWith('country,year,co2\n')).toBe(true)
+    expect(r.text).toContain('`lines`')
+    expect(r.text).toContain('larger than 8 MB')
+    expect(r.text?.length).toBeLessThanOrEqual(80_000 + 200)
+    expect(opts.ledger?.tierOf(URL)).toBe('retrieved')
+    expect(tavilyCalls).toEqual([])
+    expect(fetched).toEqual([URL])
   })
 })

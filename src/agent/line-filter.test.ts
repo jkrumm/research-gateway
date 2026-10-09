@@ -1,6 +1,21 @@
 import { describe, expect, test } from 'bun:test'
 import { TEXT_CAP } from './extract.js'
-import { filterLines, filterVariant, isLineOrientedContentType, MAX_LINE_TERMS, normalizeTerms } from './line-filter.js'
+import {
+  filterVariant,
+  formatLineScan,
+  lineMatcher,
+  isLineOrientedContentType,
+  MAX_LINE_TERMS,
+  normalizeTerms,
+  oversizedPrefix,
+} from './line-filter.js'
+
+// The buffered scan the production path no longer needs (it streams): header + matching lines of a string.
+function filterLines(text: string, terms: readonly string[], maxChars: number) {
+  const lines = text.split(/\r?\n/)
+  const matches = lines.slice(1).filter(lineMatcher(terms))
+  return formatLineScan({ header: lines[0] ?? '', matches, matched: matches.length, searched: lines.length - 1 }, terms, maxChars)
+}
 
 // A population.csv shaped like the live case (the real one was 557 KB): countries alphabetically, Germany deep
 // inside it, far past the 80k-char cut.
@@ -109,5 +124,41 @@ describe('isLineOrientedContentType', () => {
   test('rejects documents', () => {
     for (const t of ['text/html', 'application/json', 'application/xml', 'application/pdf', '', null, undefined])
       expect(isLineOrientedContentType(t)).toBe(false)
+  })
+})
+
+describe('formatLineScan', () => {
+  test('says when a download ceiling stopped the scan', () => {
+    const r = formatLineScan(
+      { header: 'a,b', matches: ['Germany,1'], matched: 1, searched: 10, stoppedAtBytes: 128 * 1_048_576 },
+      ['germany'],
+      TEXT_CAP,
+    )
+    expect(r.text).toContain('stopped after 128 MB')
+    expect(r.text).toContain('later lines were NOT searched')
+  })
+
+  test('counts matches beyond what the stream kept as omitted', () => {
+    const r = formatLineScan({ header: 'h', matches: ['Germany,1'], matched: 5, searched: 9 }, ['germany'], TEXT_CAP)
+    expect(r.omitted).toBe(4)
+  })
+})
+
+describe('oversizedPrefix', () => {
+  const body = populationCsv()
+
+  test('returns the header and whole leading lines within the cap, plus a note naming `lines`', () => {
+    const text = oversizedPrefix(body.slice(0, 500_000), 8 * 1_048_576, TEXT_CAP)
+    expect(text.length).toBeLessThanOrEqual(TEXT_CAP)
+    expect(text.startsWith('country,year,population\nAfghanistan,1800,')).toBe(true)
+    expect(text).toContain('larger than 8 MB')
+    expect(text).toContain('`lines`')
+    const rows = text.split('\n\n[this file')[0]!.split('\n')
+    expect(rows.every((l) => l.split(',').length === 3)).toBe(true) // no half line
+  })
+
+  test('drops a trailing partial line from a byte-cut read', () => {
+    const text = oversizedPrefix('h\nr1\nr2\nr3-par', 100, TEXT_CAP)
+    expect(text.split('\n\n[')[0]).toBe('h\nr1\nr2\nr3-par'.slice(0, 'h\nr1\nr2'.length))
   })
 })
