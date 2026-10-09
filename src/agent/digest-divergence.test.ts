@@ -108,4 +108,12 @@ describe('detectDigestDivergence', () => {
     ])
     expect(same.count).toBe(0)
   })
+
+  it('ignores bare years and unit-less numbers (release years, ids, model numbers)', () => {
+    const result = detectDigestDivergence([
+      digest('A', 'x', [['The Acme Frobnicator release shipped in 2025 as model 4427 on the stable channel.', 'https://a.example/x']]),
+      digest('B', 'y', [['Acme Frobnicator release shipped in 2026 as model 105 on the stable channel.', 'https://b.example/y']]),
+    ])
+    expect(result.count).toBe(0)
+  })
 })

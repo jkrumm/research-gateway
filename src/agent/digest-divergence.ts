@@ -8,7 +8,7 @@ import type { WorkerDigest } from './schema.js'
 //
 // Heuristic: split every digest into statements (each finding claim, each summary sentence),
 // pull the numeric facts out of each (typed by KIND: iso date, currency, percent, version,
-// year, or a plain number keyed by its unit word), and treat two statements from DIFFERENT
+// or a plain number keyed by its unit word; bare years and unit-less numbers are ignored), and treat two statements from DIFFERENT
 // digests as the same subject when they share >= MIN_SHARED salient words (a shared source
 // host counts as one). A divergence is a kind both statements carry where the two value sets
 // are disjoint. Biased towards running — a false positive costs one pass, a false negative
@@ -39,6 +39,8 @@ const STOPWORDS = new Set(
     'report page source sources found shows show shown states stated listed lists reports reported'
   ).split(' '),
 )
+
+const FUNCTION_WORDS = new Set(['a', 'an', 'as', 'at', 'by', 'in', 'is', 'of', 'on', 'or', 'to', 'up', 'vs', 'it', 'if', 'be'])
 
 // Alternation order is priority order: a date is not a year plus noise, "$12.99" is not a
 // dotted version. Each group yields one typed value.
@@ -90,12 +92,15 @@ function toStatement(digest: number, text: string, host: string | null): Stateme
     else if (g['currency']) addFact(facts, 'currency', currencyValue(raw))
     else if (g['percent']) addFact(facts, 'percent', normalizeAmount(raw))
     else if (g['version']) addFact(facts, 'version', raw.replace(/^v/, ''))
-    else if (g['year']) addFact(facts, 'year', raw)
+    // A bare year is not a fact about a subject: release and retrieval years differ in every report.
+    else if (g['year']) continue
     else if (g['plain']) {
       const value = Number(raw.replace(/,/g, ''))
       if (value < MIN_PLAIN_NUMBER) continue
       // "200 ms" and "5 users" are different measures — the unit word is part of the kind.
       const unit = /^\s*([a-z]+)/.exec(clean.slice((m.index ?? 0) + raw.length))?.[1] ?? ''
+      // Without a unit word the number is an id, a rank or a model number, not a measure.
+      if (unit === '' || STOPWORDS.has(unit) || FUNCTION_WORDS.has(unit)) continue
       addFact(facts, `number:${unit}`, String(value))
     }
   }

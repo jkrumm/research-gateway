@@ -175,7 +175,7 @@ bun test           # pure-function tests only — needs no secrets
   consistency pass (one lead call, find/replace spans only) and the gate in front of it. The pass
   runs only at `standard`/`deep`, with >= 2 digests, a report >= 6k chars **and** a concrete
   divergence signal: two different digests giving the same subject (>= 3 shared salient words, a
-  shared source host counts one) a different date, currency, percent, version, year or unit-typed
+  shared source host counts one) a different date, currency, percent, version or unit-typed
   number. No signal logs `consistency.skipped` with `skip: "no-divergence"` (plus
   `divergence` / `divergenceSignals`; the gate span carries `consistency.divergence`). 7 of 8 passes
   after Wave 8 changed nothing at 14-40k reasoning tokens each — the gate is the lever, not effort.
