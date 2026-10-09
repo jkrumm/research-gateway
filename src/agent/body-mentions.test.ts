@@ -169,3 +169,30 @@ describe('scrubBody — mentions that are not claims', () => {
     expect(flags('See https://nunu.gg/patch-notes here.', 'https://nunu.gg/patch-notes')).toBe(true)
   })
 })
+
+describe('scrub false alarms (2026-10-09)', () => {
+  it('does not count a version that is part of the entry’s own topic as a figure', () => {
+    const entries: ReadonlyArray<UnverifiedEntry> = [
+      { topic: 'Elysia 1.3 blog release note', url: 'https://elysiajs.com/blog/elysia-13', reason: 'fetch failed' },
+    ]
+    const body = 'The Elysia 1.3 blog release note (https://elysiajs.com/blog/elysia-13) could not be read.'
+    expect(scrubBody(body, entries).annotated).toBe(0)
+  })
+
+  it('still flags a sentence that says unreadable but states a foreign figure', () => {
+    const entries: ReadonlyArray<UnverifiedEntry> = [
+      { topic: 'Elysia 1.3 blog release note', url: 'https://elysiajs.com/blog/elysia-13', reason: 'fetch failed' },
+    ]
+    const body = 'The release note (https://elysiajs.com/blog/elysia-13) could not be read, but reportedly cut latency by 40%.'
+    expect(scrubBody(body, entries).annotated).toBe(1)
+  })
+
+  it('never annotates a source the origin answered 404/410 for', () => {
+    const entries: ReadonlyArray<UnverifiedEntry> = [
+      { topic: 'population csv', url: 'https://example.com/data/old.csv', reason: 'HTTP 404' },
+    ]
+    const body = 'The file https://example.com/data/old.csv returns 404, so it does not exist.'
+    expect(scrubBody(body, entries).annotated).toBe(1)
+    expect(scrubBody(body, entries, (u) => u.endsWith('old.csv')).annotated).toBe(0)
+  })
+})

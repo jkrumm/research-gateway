@@ -320,7 +320,8 @@ function patternFor(url: string): RegExp | null {
 //     blocked `münchen.de` holds a composed `ü`; a body carrying the canonically-equivalent
 //     DECOMPOSED form (`u` + U+0308) is the same hostname to every reader and every resolver,
 //     but matched nothing. Both sides are NFC-normalized.
-function referencesBody(body: string, url: string): boolean {
+function referencesBody(body: string, entry: UnverifiedEntry & { url: string }): boolean {
+  const url = entry.url
   const pattern = patternFor(url)
   if (pattern === null) return false
   const text = normalizeForMatch(body)
@@ -332,7 +333,7 @@ function referencesBody(body: string, url: string): boolean {
     // The URL itself is removed first: `example.com/blocked` must not exempt itself. A
     // sentence that says the source was unreadable but still states a figure is an assertion.
     const around = sentence.replace(match[0], ' ')
-    if (SAYS_UNVERIFIED.test(around) && !/\d/.test(around)) continue
+    if (SAYS_UNVERIFIED.test(around) && !hasForeignFigure(around, entry)) continue
     if (bareHost && !makesClaim(around)) continue
     return true
   }
@@ -347,6 +348,13 @@ function sentenceAround(text: string, at: number, length: number): string {
   const after = text.slice(at + length)
   const end = after.search(/[.!?](?=\s|$)|\n/)
   return text.slice(start + 1, end === -1 ? text.length : at + length + end)
+}
+
+// A figure the entry itself carries (the "1.3" in "Elysia 1.3 blog release note", a year in its
+// URL) names the subject — it is not a claim made about it. Any other figure is an assertion.
+function hasForeignFigure(sentence: string, entry: UnverifiedEntry): boolean {
+  const own = `${entry.topic} ${entry.url ?? ''}`
+  return (sentence.match(/\d+(?:[.,]\d+)*/g) ?? []).some((figure) => !own.includes(figure))
 }
 
 const SAYS_UNVERIFIED =
@@ -405,17 +413,20 @@ function dedupKey(url: string): string {
 export function scrubBody(
   body: string,
   unverified: ReadonlyArray<UnverifiedEntry>,
+  // A source the origin answered 404/410 for is evidence of absence, not an unverifiable
+  // source: prose saying so is the report working, so it is never annotated.
+  isMissing: (url: string) => boolean = () => false,
 ): { body: string; annotated: number; flaggedUrls: ReadonlySet<string> } {
   let notes = ''
   let annotated = 0
   const flaggedUrls = new Set<string>()
   const seen = new Set<string>()
   for (const entry of unverified) {
-    if (!entry.url) continue
+    if (!entry.url || isMissing(entry.url)) continue
     const key = dedupKey(entry.url)
     if (seen.has(key)) continue
     seen.add(key)
-    if (!referencesBody(body, entry.url)) continue
+    if (!referencesBody(body, { ...entry, url: entry.url })) continue
     annotated++
     flaggedUrls.add(entry.url)
     // `renderUrl`/`renderProse`: model-controlled, and this is markdown (see markdown.ts).
