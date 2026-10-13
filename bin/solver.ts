@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 // Runs LOCALLY ON THE MINI, spawned directly by src/agent/human-solve.ts
-// (`Bun.spawn([process.execPath, <abs path to this file>], ...)` — no ssh, this process IS
+// (`Bun.spawn([<PATH bun>, <abs path to this file>], ...)` — no ssh, this process IS
 // the browser automation). The two repo imports below are deliberate and both env-free: it runs
 // from the repo checkout, so there is no reason to keep a second, weaker copy of the SSRF guard
 // (`../src/lib/ssrf.js`) or of the block markers (`../src/agent/challenge.js`, pure, no

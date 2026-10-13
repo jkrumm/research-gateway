@@ -340,9 +340,13 @@ tiles 18-20.
 **21. Crash-loop guard (number)** — `Body = 'job.crash_loop_guard'` on logs. A job was given up on
 after `MAX_JOB_ATTEMPTS` restarts; empty is healthy. Backs the alert below.
 
+**22. Solver spawn errors (number)** — `Body = 'human_solve.spawn_error'` on logs. The human-solve
+browser could not be started, so every captcha escalation fails until it is fixed (2026-10-12: a
+`brew upgrade bun` removed the binary path the gateway had booted from). Empty is healthy. Backs the alert below.
+
 ## Alerts
 
-Eight, all tile-backed on this dashboard, all firing into the Slack `#alerts` webhook. The
+Nine, all tile-backed on this dashboard, all firing into the Slack `#alerts` webhook. The
 config is exported to `vps/observability/alerts/` — Mongo is not backed up, the repo is.
 
 | Alert | Tile | Fires at | What it means |
@@ -355,6 +359,7 @@ config is exported to `vps/observability/alerts/` — Mongo is not backed up, th
 | `synthesis/consistency failures >= 3 (1h)` | 16 | ≥3 | `consistency.failed` + `synthesis.rejected` + `synthesis.failed` in an hour: reports are shipping degraded (assembled fallback, or a provider erroring on the lead model). Three, so one transient 5xx stays quiet |
 | `cost spike >= 1 (1h)` | 17 | ≥1 | A job over $2, or 24h spend over $15 — see tile 17 for where the thresholds come from. The 24h half re-fires hourly until the window rolls past |
 | `crash-loop guard >= 1 (15m)` | 21 | ≥1 | `job.crash_loop_guard` (error level) — a job was given up on after `MAX_JOB_ATTEMPTS` restarts without finishing, so it may itself be what keeps crashing the process. Empty is healthy; see the event table under tile 10 |
+| `solver spawn errors >= 1 (1h)` | 22 | ≥1 | `human_solve.spawn_error` (error level): the solver browser did not start, so human solve is down for every host |
 
 ### Where an alert goes — the route into warden
 
