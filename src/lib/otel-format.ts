@@ -68,7 +68,9 @@ export type LogSeverity = 'info' | 'warn' | 'error'
  *   job it thought it owned was fenced, because another replica already adopted it; see
  *   job-store.ts), and the crash-loop guard (job.crash_loop_guard — a job that has now failed
  *   to complete `MAX_JOB_ATTEMPTS` times in a row is given up on rather than resurrected
- *   again). Neither `job.reaped` nor `job.reaped_on_read` exist any more: `getJob` is
+ *   again), and a solver that cannot be spawned (human_solve.spawn_error — every captcha escalation
+ *   fails until it is fixed; on 2026-10-12 a `brew upgrade bun` did it silently).
+ *   Neither `job.reaped` nor `job.reaped_on_read` exist any more: `getJob` is
  *   read-only and a stale lease is CLAIMED and resumed (job.resumed) by the adoption loop,
  *   never reaped on a caller's poll or at boot — see job-store.ts/job-db.ts. NOT process.exit /
  *   process.beforeExit: those handlers run after the OTel flush has already happened (see
@@ -96,6 +98,7 @@ const ERROR_EVENTS = new Set([
   'process.loop_lag',
   'job.lease_lost',
   'job.crash_loop_guard',
+  'human_solve.spawn_error',
 ])
 
 export function severityFor(event: string, fields: Record<string, unknown> = {}): LogSeverity {

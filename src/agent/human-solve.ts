@@ -250,7 +250,9 @@ const runSolver: HumanSolverPorts['runSolver'] = async (mode, req, timeoutMs) =>
   const requestBody = JSON.stringify({ v: 1, mode, url: req.url, timeoutMs, proxyPort: env.HUMAN_SOLVE_PROXY_PORT })
   try {
     const spawned = await runSpawned({
-      cmd: [process.execPath, SOLVER_SCRIPT_PATH],
+      // Not process.execPath alone: that is the versioned Cellar path this process booted from, and a
+      // `brew upgrade bun` deletes it under a long-running gateway (2026-10-12: every solve ENOENT).
+      cmd: [Bun.which('bun') ?? process.execPath, SOLVER_SCRIPT_PATH],
       stdin: requestBody,
       // A hard outer safety net past bin/solver.ts's own internal deadline (it is handed the
       // same `timeoutMs` and is expected to return its own `{ok:false, reason:'timeout'}` well

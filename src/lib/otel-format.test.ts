@@ -70,6 +70,10 @@ describe('severityFor', () => {
     expect(severityFor('process.memory_pressure', { currentBytes: 1, limitBytes: 2 })).toBe('error')
   })
 
+  it('is error for a solver that cannot be spawned', () => {
+    expect(severityFor('human_solve.spawn_error', { error: 'ENOENT' })).toBe('error')
+  })
+
   it('is error for the loop-watch', () => {
     expect(severityFor('process.loop_lag', { lagMs: 4_812, intervalMs: 5_000 })).toBe('error')
   })
