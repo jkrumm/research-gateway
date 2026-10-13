@@ -869,7 +869,7 @@ Owner and agent traffic, not test runs: every `research.done` line in the mini's
 
 | Depth | Window | Jobs | ok | partial (cause) | p50 / p90 wall | avg cost |
 |-|-|-|-|-|-|-|
-| standard | A | 70 | 50 (71%) | 20 (7 dropped-or-unset, 6 dropped, 7 scrubbed) | 270s / 829s | $0.126 |
+| standard | A | 70 | 50 (71%) | 20 (6 dropped, 7 scrubbed, 7 without a recorded cause) | 270s / 829s | $0.126 |
 | standard | B | 15 | 12 (80%) | 3 (2 dropped, 1 scrubbed) | 267s / 359s | $0.102 |
 | quick | A | 60 | 59 | 1 | 12s / 204s | $0.012 |
 | quick | B | 23 | 22 | 1 (dropped) | 58s / 86s | $0.013 |
