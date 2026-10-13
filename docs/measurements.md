@@ -861,3 +861,34 @@ Fixes since Wave 11:
 Open:
 - The b75e70ac report's trailing "Sources" list numbers 11 URLs, but the prose cites up to [19]. A synthesis prose artifact; the citations array is unaffected.
 - A derived percentage can pass the number check by coincidence when the same digits occur anywhere in a large filtered read (`+394.8%` held `high`).
+
+## Real traffic after the Wave 8-11 fixes (2026-10-09 16:33 → 2026-10-13)
+
+Owner and agent traffic, not test runs: every `research.done` line in the mini's log. Window A is
+2026-10-01 up to the 0890dcf deploy, window B is after it.
+
+| Depth | Window | Jobs | ok | partial (cause) | p50 / p90 wall | avg cost |
+|-|-|-|-|-|-|-|
+| standard | A | 70 | 50 (71%) | 20 (7 dropped-or-unset, 6 dropped, 7 scrubbed) | 270s / 829s | $0.126 |
+| standard | B | 15 | 12 (80%) | 3 (2 dropped, 1 scrubbed) | 267s / 359s | $0.102 |
+| quick | A | 60 | 59 | 1 | 12s / 204s | $0.012 |
+| quick | B | 23 | 22 | 1 (dropped) | 58s / 86s | $0.013 |
+
+No deep job ran in window B. The quick p50 rose because window A's quick jobs were mostly single
+package lookups; B's were multi-part questions.
+
+- **Partials:** all four in window B are genuine: one unretrieved citation dropped out of 8-59, or
+  one blocked source named in prose. None was a false scrub or a number-check cap. Number-check caps
+  across B: 3, compared with 40 in A's standard jobs.
+- **Consistency gate:** it skipped 1 of 15 standard jobs (`no-divergence`). 7 of the 14 passes
+  edited the report, against 1 of 8 before Wave 8. The two passes with only one divergence signal
+  both made 0 edits, but n=2 is too few to raise the threshold on. Passes cost 31-186s each.
+- **Sparse-origin fallback:** fired once (npmjs, 755 chars kept); no sliver was lost. The JSON-LD
+  rescue on `resend.com/pricing` appended only FAQ data (4,364 chars, against 1,450 before): the
+  price table is client-rendered. The workers read `resend.com/pricing.md` instead.
+- **Sources-list numbering** (open item above): 1 of 146 stored reports, the b75e70ac test run. Not
+  worth a code path.
+- **Human solve was broken from 2026-10-11 to the fix:** `brew upgrade bun` removed the Cellar path
+  that `process.execPath` pointed at, so every solver spawn hit ENOENT (stackoverflow.com and
+  www.npmjs.com, 2026-10-12). The spawn now resolves `bun` from PATH, and `human_solve.spawn_error`
+  logs at ERROR.
