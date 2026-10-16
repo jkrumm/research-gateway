@@ -7,11 +7,28 @@
        (a webhook + OIDC receiver), this box has none, so a StartInterval
        timer takes its place. Runs scripts/mini-deploy.sh from the app clone
        every 2 minutes. RunAtLoad is false so a login/reboot never races the
-       very first `make mini-setup` before the clone exists. -->
+       very first `make mini-setup` before the clone exists.
+       Wrapped in `jobrun` (dotfiles): each tick is recorded in ~/.local/state/jobs
+       and graded by `jobs-grade`; `--lock` replaces the script's old mkdir lock (a
+       held lock skips the tick) and `--timeout 7200` is its 2h stale-lock floor,
+       now a kill. The health poll inside the script is at most 1860s. -->
   <key>ProgramArguments</key>
   <array>
+    <string>__HOME__/.local/bin/jobrun</string>
+    <string>com.jkrumm.research-gateway-deploy</string>
+    <string>--owner</string><string>research-gateway</string>
+    <string>--every</string><string>120</string>
+    <string>--timeout</string><string>7200</string>
+    <string>--lock</string><string>research-gateway-deploy</string>
+    <string>--</string>
     <string>__HOME__/.research-gateway/app/scripts/mini-deploy.sh</string>
   </array>
+  <!-- launchd has no PATH: jobrun's shebang is `env bun`. -->
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key><string>__HOME__/.local/bin:/opt/homebrew/bin:/usr/bin:/bin</string>
+    <key>HOME</key><string>__HOME__</string>
+  </dict>
   <key>StartInterval</key><integer>120</integer>
   <key>RunAtLoad</key><false/>
   <key>WorkingDirectory</key><string>__HOME__/.research-gateway/app</string>

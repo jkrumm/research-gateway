@@ -14,11 +14,16 @@
 # already-parsed body still running inside it. Do not move logic outside
 # `main`, and do not `source` this file.
 
+# Locking and the deadline live outside this script: com.jkrumm.research-gateway-deploy runs it
+# as `jobrun ... --lock research-gateway-deploy --timeout 7200 -- mini-deploy.sh` (dotfiles
+# jobrun), which also records every tick for `jobs-grade`. A held lock skips the tick (rc 0);
+# the 2h deadline is the old stale-lock floor, now a kill. `make deploy` goes through the same
+# wrapper, so a manual run and the poller can never overlap.
+
 set -u
 
 APP_DIR="$HOME/.research-gateway/app"
 DATA_DIR="$HOME/.research-gateway/data"
-LOCK_DIR="$DATA_DIR/mini-deploy.lock"
 DEPLOYED_SHA_FILE="$DATA_DIR/deployed-sha"
 HEALTH_URL="http://127.0.0.1:7780/health"
 LABEL_GATEWAY="com.jkrumm.research-gateway"
@@ -33,12 +38,6 @@ CI_REPO="jkrumm/research-gateway"
 # git's well-known hash of the empty tree — diffing against it lists every path in the target
 # commit, which is the fallback used when there is no trustworthy deployed-sha to diff from.
 EMPTY_TREE_SHA="4b825dc642cb6eb9a060e54bf8d69288fbee4904"
-
-# A lock older than this is reclaimed regardless of whether its holder pid looks alive — a
-# hang-guard floor, not a tuning default. The slowest real tick is the post-restart health
-# poll below (up to 1860s); 2h clears that with room for a genuinely wedged process to still
-# be caught rather than wedging every future tick forever.
-STALE_LOCK_SECS=$((2 * 60 * 60))
 
 # Matches the post-restart health-poll window: keep retrying past a `draining: true` /
 # unreachable response for up to this long before declaring the deploy failed. Same value as
@@ -105,52 +104,10 @@ ci_gate_status() {
   ' 2>/dev/null || print "unreachable"
 }
 
-# mkdir is atomic — the lock a concurrent tick (a slow deploy overrunning the next 2-minute
-# StartInterval fire) cannot also acquire. On contention, a stale lock (holder pid no longer
-# alive, or the lock has simply outlived STALE_LOCK_SECS) is reclaimed instead of wedging
-# every future tick behind a process that crashed or was killed without cleaning up after
-# itself — nothing else ever removes $LOCK_DIR.
-acquire_lock() {
-  if mkdir "$LOCK_DIR" 2>/dev/null; then
-    print $$ > "$LOCK_DIR/pid"
-    return 0
-  fi
-
-  local holder_pid mtime now age
-  holder_pid=$(cat "$LOCK_DIR/pid" 2>/dev/null)
-  mtime=$(stat -f %m "$LOCK_DIR" 2>/dev/null || print 0)
-  now=$(date +%s)
-  age=$((now - mtime))
-
-  if [[ -n "$holder_pid" ]] && kill -0 "$holder_pid" 2>/dev/null && (( age < STALE_LOCK_SECS )); then
-    return 1  # genuinely held by a live process, and not stale yet
-  fi
-
-  # Either the holder pid is dead, or the lock has simply outlived STALE_LOCK_SECS — reclaim
-  # it. `rm -rf` (not `rmdir`) because the lock dir holds the pid file; the subsequent `mkdir`
-  # is still the atomicity boundary — only one concurrent reclaimer wins it, the other just
-  # returns 1 and retries next tick.
-  rm -rf "$LOCK_DIR" 2>/dev/null
-  if mkdir "$LOCK_DIR" 2>/dev/null; then
-    log "reclaimed stale lock at $LOCK_DIR (holder pid ${holder_pid:-unknown}, age ${age}s)"
-    print $$ > "$LOCK_DIR/pid"
-    return 0
-  fi
-  return 1
-}
-
 main() {
-  # `make mini-setup` already creates DATA_DIR, but make it idempotently here
-  # too — otherwise a missing parent directory makes the lock mkdir below
-  # fail exactly like "another tick is running", which is the wrong error to
-  # surface for a setup problem.
+  # `make mini-setup` already creates DATA_DIR; make it idempotently here too so a missing
+  # parent directory surfaces as a setup problem rather than a failed deployed-sha write.
   mkdir -p "$DATA_DIR"
-
-  if ! acquire_lock; then
-    log "another mini-deploy tick is still holding $LOCK_DIR — skipping this tick"
-    return 0
-  fi
-  trap 'rm -rf "$LOCK_DIR" 2>/dev/null' EXIT INT TERM
 
   if [[ ! -d "$APP_DIR/.git" ]]; then
     log "ERROR: $APP_DIR is not a git clone yet — run 'make mini-setup' first"

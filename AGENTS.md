@@ -122,8 +122,10 @@ the error-level line that says so. **Size this off `docs/measurements.md` § Job
 off one run** — the first value was 600s, taken from a single fast deep run, and the span record
 says it missed 39% of deep jobs.
 
-`make deploy` runs that same `scripts/mini-deploy.sh` once, by hand — it is the poller's one
-tick, not a separate path. Rollback is a revert commit on `master`: the poller sees the
+The poller runs under `jobrun` (dotfiles; `--lock research-gateway-deploy --timeout 7200`): the
+lock and the 2h deadline are jobrun's, each tick is graded by `jobs-grade`, and a held lock skips
+the tick. `make deploy` runs that same `scripts/mini-deploy.sh` once, by hand through the same
+wrapper — it is the poller's one tick, not a separate path. Rollback is a revert commit on `master`: the poller sees the
 reverted SHA green in CI and deploys it like any other push.
 
 ## Verify & Monitor

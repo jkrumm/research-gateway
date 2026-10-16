@@ -61,6 +61,7 @@ launchd-uninstall: ## Unload and remove all three LaunchAgents
 	@launchctl bootout "gui/$$(id -u)/$(LABEL_DEPLOY)" 2>/dev/null || true
 	@launchctl bootout "gui/$$(id -u)/$(LABEL_GATEWAY)" 2>/dev/null || true
 	@launchctl bootout "gui/$$(id -u)/$(LABEL_LIGHTPANDA)" 2>/dev/null || true
+	@rm -f "$(HOME)/.local/state/jobs/$(LABEL_DEPLOY).json"
 	@rm -f "$(LAUNCHAGENTS)/$(LABEL_DEPLOY).plist" "$(LAUNCHAGENTS)/$(LABEL_GATEWAY).plist" "$(LAUNCHAGENTS)/$(LABEL_LIGHTPANDA).plist"
 	@echo "removed $(LABEL_GATEWAY), $(LABEL_LIGHTPANDA), $(LABEL_DEPLOY)"
 
@@ -100,8 +101,8 @@ launchd-logs: ## Tail all research-gateway LaunchAgent logs on this machine
 	  "$(HOME)/Library/Logs/research-gateway-deploy.log"
 
 .PHONY: deploy
-deploy: ## Run the app clone's mini-deploy.sh once, now (same script the poller runs every 2 minutes)
-	@"$(APP_DIR)/scripts/mini-deploy.sh"
+deploy: ## Run the app clone's mini-deploy.sh once, now (the poller's tick: same jobrun lock, same record)
+	@"$(HOME)/.local/bin/jobrun" $(LABEL_DEPLOY) --owner research-gateway --every 120 --timeout 7200 --lock research-gateway-deploy -- "$(APP_DIR)/scripts/mini-deploy.sh"
 
 # ==============================================================================
 # Repo contract (dotfiles/docs/agent-platform.md §Repo contract) — probe
