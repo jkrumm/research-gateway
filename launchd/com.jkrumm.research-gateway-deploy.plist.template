@@ -9,9 +9,10 @@
        every 2 minutes. RunAtLoad is false so a login/reboot never races the
        very first `make mini-setup` before the clone exists.
        Wrapped in `jobrun` (dotfiles): each tick is recorded in ~/.local/state/jobs
-       and graded by `jobs-grade`; `--lock` replaces the script's old mkdir lock (a
-       held lock skips the tick) and `--timeout 7200` is its 2h stale-lock floor,
-       now a kill. The health poll inside the script is at most 1860s. -->
+       and graded by `jobs-grade`; the lock flag replaces the script's old mkdir lock (a
+       held lock skips the tick) and the 7200 s timeout is its 2h stale-lock floor,
+       now a kill. The flags here, the Makefile `deploy` target and StartInterval
+       (the cadence) must stay in step. The health poll inside the script is at most 1860s. -->
   <key>ProgramArguments</key>
   <array>
     <string>__HOME__/.local/bin/jobrun</string>

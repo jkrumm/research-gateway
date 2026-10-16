@@ -105,8 +105,6 @@ ci_gate_status() {
 }
 
 main() {
-  # `make mini-setup` already creates DATA_DIR; make it idempotently here too so a missing
-  # parent directory surfaces as a setup problem rather than a failed deployed-sha write.
   mkdir -p "$DATA_DIR"
 
   if [[ ! -d "$APP_DIR/.git" ]]; then
