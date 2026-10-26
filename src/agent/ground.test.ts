@@ -731,14 +731,25 @@ describe('groundReport — the job boundary', () => {
     })
 
     it('records why a run is partial, first cause wins', () => {
-      const base = { pagesRetrieved: 3, pagesMissing: 0, pagesFailed: 0, citationsDropped: 0 }
+      const base = { pagesRetrieved: 3, pagesMissing: 0, pagesFailed: 0, citationsKept: 9, citationsDropped: 0 }
       expect(partialCauseOf(base, 0)).toBeNull()
       expect(partialCauseOf({ ...base, citationsDropped: 1 }, 2)).toBe('dropped')
+      expect(partialCauseOf({ ...base, citationsKept: 0, citationsDropped: 1 }, 0)).toBe('dropped')
       expect(partialCauseOf(base, 1)).toBe('scrubbed')
       expect(partialCauseOf({ ...base, pagesRetrieved: 0 }, 0)).toBe('no-pages')
       expect(partialCauseOf({ ...base, pagesFailed: 4 }, 0)).toBe('failures')
       expect(partialCauseOf({ ...base, pagesRetrieved: 0, pagesMissing: 2, pagesFailed: 3 }, 0)).toBe('no-pages')
       expect(partialCauseOf({ ...base, pagesRetrieved: 0, pagesMissing: 2 }, 0)).toBeNull()
+    })
+
+    it('does not mark a run partial for an immaterial share of dropped citations', () => {
+      const base = { pagesRetrieved: 120, pagesMissing: 0, pagesFailed: 2, citationsKept: 208, citationsDropped: 2 }
+      expect(partialCauseOf(base, 0)).toBeNull()
+      // A scrub note still degrades on its own.
+      expect(partialCauseOf(base, 1)).toBe('scrubbed')
+      // 10% is the line: 1 of 10 is material, 1 of 11 is not.
+      expect(partialCauseOf({ ...base, citationsKept: 9, citationsDropped: 1 }, 0)).toBe('dropped')
+      expect(partialCauseOf({ ...base, citationsKept: 10, citationsDropped: 1 }, 0)).toBeNull()
     })
 
     it('does NOT degrade a claim about a document the ledger says was retrieved anyway (issue #1 direction)', () => {

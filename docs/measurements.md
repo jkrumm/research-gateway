@@ -892,3 +892,23 @@ package lookups; B's were multi-part questions.
   that `process.execPath` pointed at, so every solver spawn hit ENOENT (stackoverflow.com and
   www.npmjs.com, 2026-10-12). The spawn now resolves `bun` from PATH, and `human_solve.spawn_error`
   logs at ERROR.
+
+## Partial rate and the material-drop threshold (2026-10-26)
+
+The `partial rate too high` alert was in ALERT for 18 of its last 20 hourly checks. Jobs over
+2026-10-19..26: 208 done, 56 partial (27%); 2026-10-26 alone 16 of 47. Causes over 7 days: `dropped`
+47, `scrubbed` 9, nothing else.
+
+| | value |
+|-|-|
+| dropped share per `dropped` partial (n=47, 14 days) | median 1.8%, max 14.3% |
+| at or above 5% / 10% / 15% | 5 / 2 / 0 |
+| deep `dropped` partials | 25, citing 59-239 claims, dropping 1-6 |
+
+Most drops were the issue-#1 rule working: the report cited a URL it had also listed in
+`unverified` (for example EFSA PDFs and PMC articles that the run only saw as search snippets).
+The drop is correct. Flipping the whole report to `partial` was not: a deep run citing about 200
+claims nearly always loses one or two, so `partial` had become the deep default and carried no
+signal. Drops now count toward `partial` only at 10% or more of the cited claims
+(`MATERIAL_DROP_SHARE`, `ground.ts`). Every drop still removes the citation, lists it in
+`unverified` and adds a warning line.

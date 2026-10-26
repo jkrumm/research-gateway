@@ -156,7 +156,9 @@ A URL in `unverified` is structurally ineligible as a `citations[].url`, so the 
 contradict each other. When evidence was lost the report comes back `status: "partial"` with a
 banner prepended to the markdown — text-only MCP clients read the prose and nothing else.
 `grounding.partialCause` (`dropped` | `scrubbed` | `no-pages` | `failures`, first match wins)
-says why, and `research.done` logs it. A prose mention only counts as `scrubbed` when it
+says why, and `research.done` logs it. `dropped` needs a material share — at least 10% of the
+cited claims (`MATERIAL_DROP_SHARE`); a smaller drop still removes the citation, lists it in
+`unverified` and adds a warning, but leaves `status: "ok"`. A prose mention only counts as `scrubbed` when it
 leans on the source: a bare homepage named without a claim, or a sentence that already says
 the source could not be read or verified, is not flagged. A citation is capped by the
 subject-match rule only when it cites a copy of the unverified document or no page the run

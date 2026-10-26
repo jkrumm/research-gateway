@@ -426,13 +426,22 @@ function banner(grounding: Grounding, annotated: number): string {
   return `> **Partial result — evidence was lost during this run.** ${parts.join('; ')}. Anything below that is not backed by an entry in \`citations\` is unconfirmed; see \`unverified\` for what could not be checked.\n\n`
 }
 
+// Share of a report's citations that must be dropped before the drops alone make it `partial`.
+// Every dropped citation still leaves the list, lands in `unverified` and gets a warning line;
+// this only decides the status. Measured 2026-10-26 (47 `dropped` partials over 14 days): the
+// median run lost 1.8% of its citations, and a deep run citing ~200 pages virtually always loses
+// one or two, so "any drop" made `partial` the deep default (35% of all jobs) and fired the
+// partial-rate alert every hour. 2 of the 47 cross 10%.
+export const MATERIAL_DROP_SHARE = 0.1
+
 // Why a run is `partial`, first match wins. Recorded on `grounding.partialCause` and in
 // `research.done` so an audit reads the cause instead of re-deriving it from counters.
 export function partialCauseOf(
-  grounding: Pick<Grounding, 'pagesRetrieved' | 'pagesMissing' | 'pagesFailed' | 'citationsDropped'>,
+  grounding: Pick<Grounding, 'pagesRetrieved' | 'pagesMissing' | 'pagesFailed' | 'citationsKept' | 'citationsDropped'>,
   annotated: number,
 ): NonNullable<Grounding['partialCause']> | null {
-  if (grounding.citationsDropped > 0) return 'dropped'
+  const cited = grounding.citationsKept + grounding.citationsDropped
+  if (grounding.citationsDropped > 0 && grounding.citationsDropped / cited >= MATERIAL_DROP_SHARE) return 'dropped'
   if (annotated > 0) return 'scrubbed'
   // Nothing was read: no page at all, or only 404s alongside failures. The failures are then a
   // symptom of the same thing — a run with 404s and no failures still holds absence evidence.
@@ -544,8 +553,8 @@ export function groundReport(
     protectedUrls: new Set(dropped.flatMap((d) => (d.url ? [d.url] : []))),
   })
 
-  // A `partial` report is one where evidence was demonstrably LOST — a citation dropped for
-  // lack of a retrieved source, nothing retrievable at all, or failures outnumbering the
+  // A `partial` report is one where evidence was demonstrably LOST — a material share of
+  // citations dropped for lack of a retrieved source (MATERIAL_DROP_SHARE), nothing retrievable at all, or failures outnumbering the
   // pages that were read. A subject-degraded citation is a confidence cap, not lost evidence:
   // it keeps its citation, its `low` cap and its warning line and still counts in
   // `confidenceCapped` / `citationsDegraded`, but it must not flip `status` or banner a run
