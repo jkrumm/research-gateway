@@ -52,8 +52,14 @@ export async function runTavilyStage(ctx: ChainContext): Promise<FetchChainResul
     if (sparse) return sparse
     const chain = describeAttempts(ctx.attempts, reason)
     ctx.ledger.recordFailed(ctx.url, chain)
-    log('tool.fetchPage', { jobId: ctx.jobId, url: ctx.url, via: 'error', reason: chain, host: hostOf(ctx.dialUrl) })
-    return await runRescue(ctx, chain)
+    const rescued = await runRescue(ctx, chain)
+    // Logged after the rescues, so `via: 'error'` means the URL is lost. Logged before them, it
+    // also fired for every page the solver browser then read: 223 of 251 block-related 'error'
+    // lines over 2026-10-12..26 were followed by a `via: 'browser'` success for the same URL.
+    if (rescued.via === null) {
+      log('tool.fetchPage', { jobId: ctx.jobId, url: ctx.url, via: 'error', reason: rescued.error ?? chain, host: hostOf(ctx.dialUrl) })
+    }
+    return rescued
   }
 
   const t3 = performance.now()
