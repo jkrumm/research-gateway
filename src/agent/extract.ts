@@ -51,6 +51,23 @@ export function stripInlineConfidenceTags(report: string): { report: string; rem
   return { report: out, removed }
 }
 
+// DeepSeek's own tool-call syntax leaking into the report text — measured 2026-10-26 (job
+// 94df77aa, 1 of 211 stored reports): the 34k-char report ended in "<tool calls to submit>" and
+// "</｜｜DSML｜｜ calls>", the model's native markup the endpoint should have parsed. Everything from
+// the first marker's line (or the "<tool calls" line right above it) to the end is cut.
+const DSML_MARKER = '｜DSML｜'
+const TOOL_CALLS_LINE_RE = /\n[ \t]*<\/?tool[ _]calls\b[^\n]*\n\s*$/i
+
+export function stripLeakedToolMarkup(report: string): { report: string; stripped: boolean } {
+  const marker = report.indexOf(DSML_MARKER)
+  if (marker === -1) return { report, stripped: false }
+  let cut = report.lastIndexOf('\n', marker) + 1
+  const before = report.slice(0, cut)
+  const toolLine = TOOL_CALLS_LINE_RE.exec(before)
+  if (toolLine) cut = toolLine.index + 1
+  return { report: report.slice(0, cut).trimEnd() + '\n', stripped: true }
+}
+
 // ── Synthesis output guard ────────────────────────────────────────────────────
 //
 // Lives here (not in synthesize.ts) so it is unit-testable without booting the env/LLM

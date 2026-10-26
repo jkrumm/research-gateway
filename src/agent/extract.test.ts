@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'bun:test'
 import {
   stripInlineConfidenceTags,
+  stripLeakedToolMarkup,
   normalizeText,
   capText,
   isValidReport,
@@ -273,3 +274,15 @@ describe('stripInlineConfidenceTags', () => {
   })
 })
 
+
+describe('stripLeakedToolMarkup', () => {
+  it('cuts the DeepSeek tool-call markup a report ended with (job 94df77aa)', () => {
+    const report = 'Body.\n\n**Disagreements.** Last paragraph.\n\n<tool calls to submit>\n\n</｜｜DSML｜｜ calls>\n'
+    expect(stripLeakedToolMarkup(report)).toEqual({ report: 'Body.\n\n**Disagreements.** Last paragraph.\n', stripped: true })
+  })
+
+  it('leaves a report without the marker untouched, including a prose mention of tool calls', () => {
+    const report = 'The worker made 12 tool calls.\n<tool calls> is not markup here.\n'
+    expect(stripLeakedToolMarkup(report)).toEqual({ report, stripped: false })
+  })
+})

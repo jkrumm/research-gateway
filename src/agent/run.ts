@@ -5,7 +5,7 @@ import { synthesize } from './synthesize.js'
 import { reviewConsistency } from './consistency.js'
 import { consistencySkipReason, noopConsistencyReview } from './consistency-gate.js'
 import { detectDigestDivergence, divergenceSummary } from './digest-divergence.js'
-import { applyConsistencyGate, CONSISTENCY_WARNING, stripInlineConfidenceTags } from './extract.js'
+import { applyConsistencyGate, CONSISTENCY_WARNING, stripInlineConfidenceTags, stripLeakedToolMarkup } from './extract.js'
 import { assembleReport, nextRoundQuestions } from './assemble.js'
 import { mergeLedgers, type LedgerSnapshot } from './ledger.js'
 import { groundReport } from './ground.js'
@@ -460,6 +460,11 @@ export async function runResearch(
       if (stripped.removed > 0) {
         log('report.inline_confidence_stripped', { jobId, count: stripped.removed })
         submitted = { ...submitted, report: stripped.report }
+      }
+      const unleaked = stripLeakedToolMarkup(submitted.report)
+      if (unleaked.stripped) {
+        log('report.tool_markup_stripped', { jobId })
+        submitted = { ...submitted, report: unleaked.report }
       }
 
       // The job-level gate. Every citation the synthesis model asserted is checked against the
