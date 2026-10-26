@@ -44,20 +44,17 @@ export interface HumanSolverPorts {
   notifyUnsolved?: (req: HumanSolveRequest, reason: string) => void
 }
 
-// Measured 2026-10-12..26: of 10 escalations, 3 were solved and the rest died in a dialog nobody
-// saw (MacBook unreachable or asleep, dialog unanswered) with no trace outside the logs. The 6h
+// Measured 2026-10-12..26: of 6 escalations to the dialog, 3 were solved and 3 reached no human
+// (unanswered once, MacBook unreachable twice), with no trace outside the logs. The 6h
 // spacing matches the per-host suppression an unanswered dialog sets, so one nudge covers it.
 export const UNSOLVED_NOTIFY_INTERVAL_MS = 6 * 60 * 60 * 1000
-// Dialog reasons that mean no human saw the request. 'declined' is a human answer, and a
-// host-level suppression already had its own nudge.
-const UNSEEN_DIALOG_REASONS: ReadonlySet<string> = new Set([
-  'unanswered',
-  'unreachable',
-  'timeout',
-  'dialog_error',
-  'macbook unreachable',
-  'dialog rate limit',
-])
+// Global ceiling on top of the per-host spacing: hosts are chosen by the model from fetched
+// pages, so one job can walk many challenged hosts.
+export const MAX_NUDGES_PER_HOUR = 3
+// Dialog reasons that mean no human saw the request. 'declined' is a human answer, a host-level
+// suppression already had its own nudge, and 'dialog rate limit' means the owner is already
+// being asked a lot — nudging on it would only add to the flood.
+const UNSEEN_DIALOG_REASONS: ReadonlySet<string> = new Set(['unanswered', 'unreachable', 'timeout', 'dialog_error', 'macbook unreachable'])
 
 // A hard outer safety net past bin/solver.ts's own internal deadline (it is handed the same
 // budget and is expected to return its own `{ok:false, reason:'timeout'}` well before this
@@ -131,6 +128,8 @@ export function createHumanSolver(ports: HumanSolverPorts): HumanSolve {
     const now = ports.now()
     for (const [host, at] of notifiedAt) if (now - at >= UNSOLVED_NOTIFY_INTERVAL_MS) notifiedAt.delete(host)
     if (notifiedAt.has(req.host)) return
+    const lastHour = [...notifiedAt.values()].filter((at) => now - at < 60 * 60 * 1000).length
+    if (lastHour >= MAX_NUDGES_PER_HOUR) return
     notifiedAt.set(req.host, now)
     ports.log('human_solve.notified', { host: req.host, reason })
     ports.notifyUnsolved(req, reason)

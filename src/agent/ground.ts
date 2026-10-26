@@ -430,7 +430,7 @@ function banner(grounding: Grounding, annotated: number): string {
 // Every dropped citation still leaves the list, lands in `unverified` and gets a warning line;
 // this only decides the status. Measured 2026-10-26 (47 `dropped` partials over 14 days): the
 // median run lost 1.8% of its citations, and a deep run citing ~200 pages virtually always loses
-// one or two, so "any drop" made `partial` the deep default (35% of all jobs) and fired the
+// one or two, so "any drop" made `partial` the deep default (27% of all jobs that week) and fired the
 // partial-rate alert every hour. 2 of the 47 cross 10%.
 export const MATERIAL_DROP_SHARE = 0.1
 

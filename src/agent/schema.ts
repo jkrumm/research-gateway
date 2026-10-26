@@ -122,7 +122,7 @@ export const Grounding = z.object({
     .nullable()
     .optional()
     .describe(
-      "Why `status` is 'partial' (null when it is 'ok'): `dropped` citations were removed, `scrubbed` the prose names an unverifiable source, `no-pages` nothing was retrieved, `failures` fetch failures outnumber successes. First match wins, in that order.",
+      "Why `status` is 'partial' (null when it is 'ok'): `dropped` at least 10% of the cited claims were removed (fewer is reported in `warnings` and `unverified`, status stays 'ok'), `scrubbed` the prose names an unverifiable source, `no-pages` nothing was retrieved, `failures` fetch failures outnumber successes. First match wins, in that order.",
     ),
 })
 export type Grounding = z.infer<typeof Grounding>
@@ -133,7 +133,7 @@ export const ResearchReport = SubmittedReport.extend({
     .enum(['ok', 'partial'])
     .default('ok')
     .describe(
-      "'partial' means evidence was lost this run — citations were dropped for lack of a retrieved source, or nothing could be retrieved at all. Treat prose in a 'partial' report as unconfirmed unless a citation backs it.",
+      "'partial' means evidence was lost this run — at least 10% of the cited claims were dropped for lack of a retrieved source, the prose names an unverifiable source, or nothing could be retrieved at all. Treat prose in a 'partial' report as unconfirmed unless a citation backs it. An 'ok' report can still have lost a few citations: they are listed in `unverified` and counted in `warnings`.",
     ),
   warnings: z
     .array(z.string())

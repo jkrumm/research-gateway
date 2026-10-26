@@ -742,6 +742,29 @@ describe('groundReport — the job boundary', () => {
       expect(partialCauseOf({ ...base, pagesRetrieved: 0, pagesMissing: 2 }, 0)).toBeNull()
     })
 
+    it('groundReport keeps status ok for one unretrieved citation out of twenty, and still removes it', () => {
+      const ledger = createLedger()
+      const read = Array.from({ length: 19 }, (_, i) => `https://read.example/${i}`)
+      for (const url of read) ledger.recordRetrieved(url)
+      const report = groundReport(
+        submitted({
+          report: 'Body without a banner.',
+          citations: [
+            ...read.map((url) => ({ claim: `fact from ${url}`, url, confidence: 'high' as const })),
+            { claim: 'invented fact', url: 'https://never-fetched.example/x', confidence: 'high' },
+          ],
+        }),
+        ledger,
+      )
+      expect(report.status).toBe('ok')
+      expect(report.grounding.partialCause).toBeNull()
+      expect(report.grounding.citationsDropped).toBe(1)
+      expect(report.citations.some((c) => c.url === 'https://never-fetched.example/x')).toBe(false)
+      expect(report.unverified.some((u) => u.url === 'https://never-fetched.example/x')).toBe(true)
+      expect(report.warnings.some((w) => w.includes('1 citation(s) were removed'))).toBe(true)
+      expect(report.report.startsWith('> **Partial result')).toBe(false)
+    })
+
     it('does not mark a run partial for an immaterial share of dropped citations', () => {
       const base = { pagesRetrieved: 120, pagesMissing: 0, pagesFailed: 2, citationsKept: 208, citationsDropped: 2 }
       expect(partialCauseOf(base, 0)).toBeNull()

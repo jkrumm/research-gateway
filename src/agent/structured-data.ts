@@ -103,15 +103,16 @@ function rootsOf(parsed: unknown): Record<string, unknown>[] {
   return Array.isArray(parsed['@graph']) ? rootsOf(parsed['@graph']) : [parsed]
 }
 
-/**
- * Every JSON-LD block in `html` as readable `key: value` lines, one `[Type]` group per node,
- * capped at STRUCTURED_DATA_CAP. `pricedOnly` keeps only the groups that state a price. Invalid JSON blocks are skipped, never thrown. `''` when the
- * page carries nothing usable.
- */
 // A flattened group that states a price: `offers.price: 184.99`, `offers.lowPrice: …`,
 // `offers.offers[3].price: …`.
 const PRICE_LINE = /^(?:[\w[\].]*\.)?(?:price|lowPrice|highPrice): /m
 
+/**
+ * Every JSON-LD block in `html` as readable `key: value` lines, one `[Type]` group per node,
+ * capped at STRUCTURED_DATA_CAP. `pricedOnly` keeps only the groups that state a price, without
+ * their review and rating lines. Invalid JSON blocks are skipped, never thrown. `''` when the page
+ * carries nothing usable.
+ */
 export function extractStructuredData(html: string, opts: { pricedOnly?: boolean } = {}): string {
   const groups: string[] = []
   const seen = new Set<string>()
@@ -162,7 +163,7 @@ export interface EnrichedText {
  *
  * Why priced offers ride along on a full reading too — measured 2026-10-26 on billiger.de's
  * AirPods Pro 2 page: Readability kept 5,194 chars of test reviews and not one price, while the
- * page's JSON-LD held an AggregateOffer with all 11 offers (seller, price, currency). The text was
+ * page's JSON-LD held an AggregateOffer listing 7 offers with seller, price and currency. The text was
  * long enough that the thin rescue never ran. Shops publish the same schema.org Product/Offer
  * block for Google Shopping, so this reaches shop pages generally, not one portal.
  */

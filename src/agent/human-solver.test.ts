@@ -1,5 +1,5 @@
 import { describe, it, expect, spyOn } from 'bun:test'
-import { createHumanSolver, solverBudgetMs, UNSOLVED_NOTIFY_INTERVAL_MS, type HumanSolverPorts } from './human-solver.js'
+import { createHumanSolver, solverBudgetMs, MAX_NUDGES_PER_HOUR, UNSOLVED_NOTIFY_INTERVAL_MS, type HumanSolverPorts } from './human-solver.js'
 import { createHumanSolveState } from './human-solve-state.js'
 import type { HumanSolveRequest } from './fetch-chain.js'
 
@@ -398,6 +398,12 @@ describe('createHumanSolver — unsolved-challenge nudge', () => {
     const declined = challengedHarness(async () => ({ ok: false, reason: 'declined' }))
     await declined.solver(makeRequest())
     expect(declined.notified).toEqual([])
+  })
+
+  it('caps nudges globally per hour across distinct hosts', async () => {
+    const { notified, solver } = challengedHarness(async () => ({ ok: false, reason: 'unreachable' }))
+    for (let i = 0; i < MAX_NUDGES_PER_HOUR + 2; i++) await solver(makeRequest({ host: `h${i}.example`, url: `https://h${i}.example/` }))
+    expect(notified.length).toBe(MAX_NUDGES_PER_HOUR)
   })
 
   it('never nudges for a page the browser read on its own', async () => {

@@ -156,6 +156,10 @@ describe('unmatchedNumbers — German decimal prices (2026-10-26)', () => {
     expect(unmatchedNumbers('SmartDeals verlangt 209,99 €.', page)).toEqual(['209,99'])
   })
 
+  it('checks nothing in an English comma list: every item is under 100', () => {
+    expect(claimNumbers('versions 1,2,3 and items 10,11 and 12')).toEqual([])
+  })
+
   it('keeps reading three digits after a comma as a thousands group', () => {
     expect(claimNumbers('5,565 matches')[0]?.value).toBe(5565)
   })
