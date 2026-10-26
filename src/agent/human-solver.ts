@@ -37,7 +37,27 @@ export interface HumanSolverPorts {
    * no slot granted. */
   acquireClearedSlot: () => Promise<boolean>
   releaseClearedSlot: () => void
+  /** Tells the owner, out of band (a Slack line through the human-queue notify hook in
+   * production), that a challenge needed a human and none was reached: the dialog could not be
+   * shown or went unanswered. Fire-and-forget; called at most once per host per
+   * UNSOLVED_NOTIFY_INTERVAL_MS. */
+  notifyUnsolved?: (req: HumanSolveRequest, reason: string) => void
 }
+
+// Measured 2026-10-12..26: of 10 escalations, 3 were solved and the rest died in a dialog nobody
+// saw (MacBook unreachable or asleep, dialog unanswered) with no trace outside the logs. The 6h
+// spacing matches the per-host suppression an unanswered dialog sets, so one nudge covers it.
+export const UNSOLVED_NOTIFY_INTERVAL_MS = 6 * 60 * 60 * 1000
+// Dialog reasons that mean no human saw the request. 'declined' is a human answer, and a
+// host-level suppression already had its own nudge.
+const UNSEEN_DIALOG_REASONS: ReadonlySet<string> = new Set([
+  'unanswered',
+  'unreachable',
+  'timeout',
+  'dialog_error',
+  'macbook unreachable',
+  'dialog rate limit',
+])
 
 // A hard outer safety net past bin/solver.ts's own internal deadline (it is handed the same
 // budget and is expected to return its own `{ok:false, reason:'timeout'}` well before this
@@ -104,6 +124,17 @@ export function createHumanSolver(ports: HumanSolverPorts): HumanSolve {
   // ever holds hosts with a genuinely in-flight chain, which self-bounds on concurrency, never
   // on the total number of distinct hosts ever seen.
   const hostTails = new Map<string, Promise<void>>()
+  const notifiedAt = new Map<string, number>()
+
+  function notifyIfUnseen(req: HumanSolveRequest, reason: string): void {
+    if (!ports.notifyUnsolved || !UNSEEN_DIALOG_REASONS.has(reason)) return
+    const now = ports.now()
+    for (const [host, at] of notifiedAt) if (now - at >= UNSOLVED_NOTIFY_INTERVAL_MS) notifiedAt.delete(host)
+    if (notifiedAt.has(req.host)) return
+    notifiedAt.set(req.host, now)
+    ports.log('human_solve.notified', { host: req.host, reason })
+    ports.notifyUnsolved(req, reason)
+  }
 
   // Resolves to `{ok:false, reason:'aborted'}` the instant `signal` fires, WITHOUT cancelling
   // `promise` — a queued FIFO wait (the solve lock, a host's tail chain) must keep running for
@@ -246,6 +277,7 @@ export function createHumanSolver(ports: HumanSolverPorts): HumanSolve {
       const dialogDecision = ports.state.planDialog(req.host, ports.now())
       if (dialogDecision.action === 'suppressed') {
         ports.log('human_solve.suppressed', { host: req.host, reason: dialogDecision.reason })
+        notifyIfUnseen(req, dialogDecision.reason)
         return { ok: false, reason: dialogDecision.reason, suppressed: true }
       }
       return runSolve(req)
@@ -276,6 +308,7 @@ export function createHumanSolver(ports: HumanSolverPorts): HumanSolve {
         const outcome = outcomeForResult('solve', consent)
         if (outcome) ports.state.record(req.host, outcome, ports.now())
         ports.log('human_solve.done', { host: req.host, mode: 'solve', ms: ports.now() - startedAt, outcome: consent.reason })
+        notifyIfUnseen(req, consent.reason)
         return consent
       }
 

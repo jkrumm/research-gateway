@@ -18,6 +18,8 @@
 //     `osascript -l JavaScript` invocation. The MacBook never touches the target page.
 
 import { join } from 'node:path'
+import { homedir } from 'node:os'
+import { existsSync } from 'node:fs'
 import { env } from '../env.js'
 import { createSemaphore } from '../lib/semaphore.js'
 import { readCappedText } from '../lib/bounded-read.js'
@@ -267,6 +269,31 @@ const runSolver: HumanSolverPorts['runSolver'] = async (mode, req, timeoutMs) =>
   }
 }
 
+// The estate's human queue (dotfiles `ask-human`): `--no-push` enqueues without a dialog and
+// fires its notify hook, the Slack "Human needed" line in #agents. The next MacBook session's
+// `make human-queue` offers the queued `open vnc://…`, and a challenge passed once in the solver
+// Chrome stays cleared for later jobs. Missing on a dev machine: nothing to nudge, skipped.
+const ASK_HUMAN_PATH = join(homedir(), '.local/bin/ask-human')
+
+const notifyUnsolved: HumanSolverPorts['notifyUnsolved'] = (req, reason) => {
+  if (!existsSync(ASK_HUMAN_PATH)) return
+  const host = truncateForDisplay(req.host, DIALOG_HOST_DISPLAY_MAX_LEN)
+  const viewUrl = env.HUMAN_SOLVE_VIEW_URL ?? 'vnc://mini'
+  const text = `research-gateway: ${host} is behind a bot challenge the solver Chrome could not pass, and no human was reached (${reason}). Open Screen Sharing to the mini and pass the challenge for ${host} in the solver Chrome; later jobs reuse the clearance.`
+  try {
+    const proc = Bun.spawn([ASK_HUMAN_PATH, 'ask', text, '--cmd', `open ${shQuote(viewUrl)}`, '--no-push'], {
+      stdin: 'ignore',
+      stdout: 'ignore',
+      stderr: 'ignore',
+    })
+    void proc.exited.then((code) => {
+      if (code !== 0) log('human_solve.notify_failed', { host: req.host, code })
+    })
+  } catch (err) {
+    log('human_solve.notify_failed', { host: req.host, error: String(err) })
+  }
+}
+
 const acquireClearedSlot: HumanSolverPorts['acquireClearedSlot'] = () => clearedSlots.acquire()
 const releaseClearedSlot: HumanSolverPorts['releaseClearedSlot'] = () => clearedSlots.release()
 
@@ -280,5 +307,6 @@ export const humanSolver: HumanSolve | undefined = env.HUMAN_SOLVE_SSH_HOST
       runSolver,
       acquireClearedSlot,
       releaseClearedSlot,
+      notifyUnsolved,
     })
   : undefined

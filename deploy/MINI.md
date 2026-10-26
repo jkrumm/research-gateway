@@ -108,6 +108,13 @@ everything globally for the same 5 min, under its own 'solver unavailable' reaso
 rate limit (6 prompts/hour, global) is charged only on an actual escalation to the dialog — a
 browser-only attempt never consumes it.
 
+**When no human is reached, the owner still hears about it.** A dialog that could not be shown
+(MacBook unreachable, dialog rate limit) or went unanswered enqueues one `ask-human --no-push`
+request (`human_solve.notified`, at most once per host per 6h): the queue's notify hook posts
+the Slack "Human needed" line to #agents, and draining it on the MacBook offers `open vnc://mini`.
+Passing the challenge there once leaves the clearance in the solver Chrome for later jobs. A
+declined dialog never nudges.
+
 **HTTP(S)/WebSocket SSRF filter, plus a separate WebRTC restriction — not one blanket
 "network-level" boundary.** The solver Chrome is LLM-chosen-URL-driven (attacker-influenced by
 construction), so a URL-level check alone (`assertPublicHttpUrl` on the request in and the

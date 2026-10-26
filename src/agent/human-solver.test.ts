@@ -1,5 +1,5 @@
 import { describe, it, expect, spyOn } from 'bun:test'
-import { createHumanSolver, solverBudgetMs, type HumanSolverPorts } from './human-solver.js'
+import { createHumanSolver, solverBudgetMs, UNSOLVED_NOTIFY_INTERVAL_MS, type HumanSolverPorts } from './human-solver.js'
 import { createHumanSolveState } from './human-solve-state.js'
 import type { HumanSolveRequest } from './fetch-chain.js'
 
@@ -366,5 +366,46 @@ describe('createHumanSolver — single-flight per host', () => {
     expect(solveCount).toBe(1) // the dialog only ever ran once
     expect(fetchCount).toBe(2) // both calls tried the browser first
     expect(b.ok).toBe(true)
+  })
+})
+
+describe('createHumanSolver — unsolved-challenge nudge', () => {
+  function challengedHarness(dialog: HumanSolverPorts['promptUser']) {
+    const h = makeHarness()
+    const notified: Array<{ host: string; reason: string }> = []
+    h.ports.notifyUnsolved = (req, reason) => notified.push({ host: req.host, reason })
+    h.setRunSolverResult(async () => ({ ok: false, reason: 'challenge' }))
+    h.setPromptResult(dialog)
+    return { h, notified, solver: createHumanSolver(h.ports) }
+  }
+
+  it('nudges once per host when the dialog goes unanswered, and again after the interval', async () => {
+    const { h, notified, solver } = challengedHarness(async () => ({ ok: false, reason: 'unanswered' }))
+    await solver(makeRequest())
+    // The unanswered dialog suppresses the host for 6h; a second call inside it stays quiet.
+    await solver(makeRequest())
+    expect(notified).toEqual([{ host: 'example.com', reason: 'unanswered' }])
+    h.clock.now += UNSOLVED_NOTIFY_INTERVAL_MS
+    await solver(makeRequest())
+    expect(notified.length).toBe(2)
+  })
+
+  it('nudges when the MacBook is unreachable, never when the human declined', async () => {
+    const unreachable = challengedHarness(async () => ({ ok: false, reason: 'unreachable' }))
+    await unreachable.solver(makeRequest())
+    expect(unreachable.notified).toEqual([{ host: 'example.com', reason: 'unreachable' }])
+
+    const declined = challengedHarness(async () => ({ ok: false, reason: 'declined' }))
+    await declined.solver(makeRequest())
+    expect(declined.notified).toEqual([])
+  })
+
+  it('never nudges for a page the browser read on its own', async () => {
+    const h = makeHarness()
+    const notified: string[] = []
+    h.ports.notifyUnsolved = (req) => notified.push(req.host)
+    h.setRunSolverResult(async () => ({ ok: true, html: '<html>ok</html>', finalUrl: 'https://example.com/page', mode: 'cleared' }))
+    await createHumanSolver(h.ports)(makeRequest())
+    expect(notified).toEqual([])
   })
 })
