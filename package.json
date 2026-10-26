@@ -13,20 +13,20 @@
     "test": "bun test"
   },
   "dependencies": {
-    "@ai-sdk/openai-compatible": "3.0.53",
+    "@ai-sdk/openai-compatible": "3.0.77",
     "@elysiajs/openapi": "1.4.16",
     "@modelcontextprotocol/server": "2.0.0",
     "@mozilla/readability": "0.6.0",
-    "@tavily/core": "0.7.13",
+    "@tavily/core": "0.7.14",
     "@upstash/context7-sdk": "0.4.1",
-    "ai": "7.0.107",
+    "ai": "7.0.150",
     "elysia": "1.4.30",
-    "impit": "0.14.5",
-    "linkedom": "0.18.13",
-    "zod": "4.6.5"
+    "impit": "0.14.7",
+    "linkedom": "0.18.14",
+    "zod": "4.6.7"
   },
   "devDependencies": {
-    "bun-types": "1.4.2",
+    "bun-types": "1.4.3",
     "typescript": "7.0.2"
   }
 }

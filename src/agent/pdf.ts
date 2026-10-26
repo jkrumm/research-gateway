@@ -174,7 +174,8 @@ export async function extractPdfText(bytes: Uint8Array, opts?: { jobId?: string;
       // resolved a specific reason (idle/aborted/error) — `signalCode` alone cannot tell an
       // idle kill apart from a caller abort or a stderr-only cap crossing, since `killChild()`
       // now fires on all three and every one of them leaves the same 'SIGKILL'.
-      signalCode: idleFired ? 'SIGKILL' : proc.signalCode,
+      // bun-types >= 1.4.3 types it `number | Signals | null`; the mapper only reads its presence and name.
+      signalCode: idleFired ? 'SIGKILL' : proc.signalCode === null ? null : String(proc.signalCode),
       code,
       stdout: stdoutResult.text,
       stderr: stderrResult.text,
