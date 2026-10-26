@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'bun:test'
 import {
-  enrichThinText,
+  enrichText,
   extractStructuredData,
   isThinForBody,
   STRUCTURED_DATA_CAP,
@@ -113,11 +113,11 @@ describe('extractStructuredData', () => {
   })
 })
 
-describe('enrichThinText', () => {
+describe('enrichText', () => {
   const text = 'Short Readability text.'
 
   it('appends the structured section to a thin reading of a big body', () => {
-    const r = enrichThinText({ body: bigPage(ld(PRODUCT)), text })
+    const r = enrichText({ body: bigPage(ld(PRODUCT)), text })
     expect(r.thin).toBe(true)
     expect(r.structured).toBe(true)
     expect(r.text).toStartWith(text)
@@ -126,17 +126,41 @@ describe('enrichThinText', () => {
   })
 
   it('reports thin without structured data when the page has none', () => {
-    const r = enrichThinText({ body: bigPage(''), text })
+    const r = enrichText({ body: bigPage(''), text })
     expect(r).toEqual({ text, thin: true, structured: false })
   })
 
-  it('leaves a small page untouched even when it carries JSON-LD', () => {
-    const body = `<html><head>${ld(PRODUCT)}</head><body>${article}</body></html>`
-    expect(enrichThinText({ body, text })).toEqual({ text, thin: false, structured: false })
+  it('leaves a full reading untouched when its JSON-LD states no price', () => {
+    const body = `<html><head>${ld({ '@type': 'Article', headline: 'Endurace review', author: 'A' })}</head><body>${article}</body></html>`
+    expect(enrichText({ body, text })).toEqual({ text, thin: false, structured: false })
+  })
+
+  it('appends only the priced offer groups to a full reading (billiger.de shape)', () => {
+    const offers = {
+      '@type': 'Product',
+      name: 'AirPods Pro USB-C',
+      offers: {
+        '@type': 'AggregateOffer',
+        lowPrice: 184.99,
+        offerCount: 2,
+        offers: [
+          { '@type': 'Offer', price: 184.99, priceCurrency: 'EUR', seller: { '@type': 'Organization', name: 'umr-solutions-gmbh' } },
+          { '@type': 'Offer', price: 219.99, priceCurrency: 'EUR', seller: { '@type': 'Organization', name: 'SmartDeals' } },
+        ],
+      },
+    }
+    const ratingOnly = { '@type': 'Product', name: 'AirPods Pro USB-C', gtin13: '0195949052637' }
+    const body = `<html><head>${ld(ratingOnly)}${ld(offers)}</head><body>${article}</body></html>`
+    const r = enrichText({ body, text })
+    expect(r.thin).toBe(false)
+    expect(r.structured).toBe(true)
+    expect(r.text).toContain('offers.offers[0].price: 184.99')
+    expect(r.text).toContain('offers.offers[1].seller.name: SmartDeals')
+    expect(r.text).not.toContain('gtin13')
   })
 
   it('turns a null reading into the structured section alone', () => {
-    const r = enrichThinText({ body: bigPage(ld(PRODUCT)), text: null })
+    const r = enrichText({ body: bigPage(ld(PRODUCT)), text: null })
     expect(r.text).toStartWith(STRUCTURED_DATA_HEADING)
   })
 })

@@ -16,7 +16,7 @@ import { Readability } from '@mozilla/readability'
 import { stripConsentOverlays } from './consent.js'
 import { resolveSite } from './site-adapters.js'
 import { normalizeText } from './extract.js'
-import { enrichThinText } from './structured-data.js'
+import { enrichText } from './structured-data.js'
 
 type ParseRequest =
   | { kind: 'extract'; url: string; body: string }
@@ -58,11 +58,11 @@ self.onmessage = (e: MessageEvent<ParseRequest>): void => {
       : new Readability(document as unknown as ConstructorParameters<typeof Readability>[0]).parse()
     const raw = adapted ?? article?.textContent?.trim()
     const text = raw ? normalizeText(raw) : raw
-    // A site adapter's text is deliberate; only a Readability reading that lost most of a big
-    // page gets the page's JSON-LD appended (structured-data.ts).
+    // A site adapter's text is deliberate; a Readability reading gets the page's JSON-LD — all of
+    // it when it lost most of a big page, its priced offers otherwise (structured-data.ts).
     const enriched = adapted
       ? { text: text ?? null, thin: false, structured: false }
-      : enrichThinText({ body: req.body, text: text ?? null })
+      : enrichText({ body: req.body, text: text ?? null })
     self.postMessage({
       ok: true,
       via: adapted ? 'site-adapter' : 'readability',

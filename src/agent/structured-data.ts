@@ -105,10 +105,14 @@ function rootsOf(parsed: unknown): Record<string, unknown>[] {
 
 /**
  * Every JSON-LD block in `html` as readable `key: value` lines, one `[Type]` group per node,
- * capped at STRUCTURED_DATA_CAP. Invalid JSON blocks are skipped, never thrown. `''` when the
+ * capped at STRUCTURED_DATA_CAP. `pricedOnly` keeps only the groups that state a price. Invalid JSON blocks are skipped, never thrown. `''` when the
  * page carries nothing usable.
  */
-export function extractStructuredData(html: string): string {
+// A flattened group that states a price: `offers.price: 184.99`, `offers.lowPrice: …`,
+// `offers.offers[3].price: …`.
+const PRICE_LINE = /^(?:[\w[\].]*\.)?(?:price|lowPrice|highPrice): /m
+
+export function extractStructuredData(html: string, opts: { pricedOnly?: boolean } = {}): string {
   const groups: string[] = []
   const seen = new Set<string>()
   let blocks = 0
@@ -127,6 +131,7 @@ export function extractStructuredData(html: string): string {
       flatten(node, '', lines, 0)
       if (!lines.length) continue
       const group = `[${types.join(', ') || 'Thing'}]\n${lines.join('\n')}`
+      if (opts.pricedOnly && !PRICE_LINE.test(group)) continue
       if (seen.has(group)) continue
       seen.add(group)
       groups.push(group)
@@ -148,13 +153,18 @@ export interface EnrichedText {
 }
 
 /**
- * Appends the page's structured data to a thin Readability reading. A page that is not thin is
- * returned untouched — the scan only runs when Readability visibly lost the page.
+ * Appends the page's structured data to what Readability kept: all of it for a thin reading of a
+ * big body, and only the priced Offer groups for any other page that carries them.
+ *
+ * Why priced offers ride along on a full reading too — measured 2026-10-26 on billiger.de's
+ * AirPods Pro 2 page: Readability kept 5,194 chars of test reviews and not one price, while the
+ * page's JSON-LD held an AggregateOffer with all 11 offers (seller, price, currency). The text was
+ * long enough that the thin rescue never ran. Shops publish the same schema.org Product/Offer
+ * block for Google Shopping, so this reaches shop pages generally, not one portal.
  */
-export function enrichThinText({ body, text }: { body: string; text: string | null }): EnrichedText {
+export function enrichText({ body, text }: { body: string; text: string | null }): EnrichedText {
   const thin = isThinForBody({ bodyChars: body.length, textChars: text?.length ?? 0 })
-  if (!thin) return { text, thin, structured: false }
-  const data = extractStructuredData(body)
+  const data = extractStructuredData(body, { pricedOnly: !thin })
   if (!data) return { text, thin, structured: false }
   const section = `${STRUCTURED_DATA_HEADING}\n${data}`
   return { text: text ? `${text}\n\n${section}` : section, thin, structured: true }

@@ -220,10 +220,13 @@ bun test           # pure-function tests only — needs no secrets
   that flow. Readability/site-adapter parsing runs off the event loop in a worker
   pool (`html-parse.ts` + `parse-worker.ts`); the whole chain is bounded by a per-fetch
   budget (`FETCH_CHAIN_BUDGET_MS`).
-- `src/agent/structured-data.ts` — JSON-LD rescue for a thin Readability reading of a big page (body > 50k
-  chars, text < 3k and < 3% of it): flattens Product/Offer/ItemList nodes to `key: value` lines, appended to the
-  delivered text by the parse worker; with none to append, origin.ts falls through instead of accepting the sliver.
-  Pure, env-free.
+- `src/agent/structured-data.ts` — JSON-LD for Readability readings: on a thin reading of a big page (body > 50k
+  chars, text < 3k and < 3% of it) every Product/Offer/ItemList node, flattened to `key: value` lines; on any other
+  reading only the groups that state a price (shop and comparison pages whose offers Readability drops, billiger.de).
+  Appended to the delivered text by the parse worker; a thin page with nothing to append makes origin.ts fall
+  through instead of accepting the sliver. Pure, env-free.
+- `src/agent/extract-geizhals.ts` — the Geizhals site adapter: one `price | merchant (country) | rating |
+  delivery | title` line per offer plus the spec grid; no offer rows falls through to Readability.
 - `src/agent/fetch-flight.ts` — per-job single-flight and memory for `fetchPage` (tools.ts owns
   the registry; run.ts clears a job's entry). Page/404/block outcomes are replayed, transient
   failures are not; every caller still commits the staged ledger into its OWN ledger and charges

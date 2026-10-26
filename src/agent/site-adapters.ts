@@ -54,6 +54,7 @@ import { extractRedditThread, extractRedlibThread, type MinimalDocument } from '
 import { canonicalYoutubeWatchUrl } from './youtube.js'
 import { annotateWrchina } from './extract-wrchina.js'
 import { extractArxivHtml } from './extract-arxiv.js'
+import { extractGeizhalsProduct } from './extract-geizhals.js'
 
 interface SiteAdapter {
   /** Rewrite the address actually dialled. The caller keeps the original for the ledger. */
@@ -169,6 +170,8 @@ const githubAdapter: SiteAdapter = {
   },
 }
 
+const geizhalsAdapter: SiteAdapter = { extract: (document) => extractGeizhalsProduct(document as never) }
+
 // Keyed by lowercase host of the ORIGINAL url.
 const ADAPTERS: Record<string, SiteAdapter> = {
   // All Reddit hosts go to the safereddit.com Redlib mirror since 2026-09-25: old.reddit.com
@@ -193,6 +196,11 @@ const ADAPTERS: Record<string, SiteAdapter> = {
   'www.arxiv.org': arxivAdapter,
   'github.com': githubAdapter,
   'www.github.com': githubAdapter,
+  // Offer rows with merchant, price and shipping, which Readability strips (extract-geizhals.ts).
+  'geizhals.de': geizhalsAdapter,
+  'geizhals.at': geizhalsAdapter,
+  'geizhals.eu': geizhalsAdapter,
+  'geizhals.ch': geizhalsAdapter,
 }
 
 export interface ResolvedSite {
