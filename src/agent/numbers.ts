@@ -98,7 +98,9 @@ export function claimNumbers(claim: string): ClaimNumber[] {
     return /\b(?:returns?|returned|responded|answered)\s*(?:with\s*)?(?:an?\s*)?$/i.test(before) && STATUS_PHRASE_END.test(after)
   }
   const out: ClaimNumber[] = []
-  for (const match of text.matchAll(/\d+(?:,\d{3})*(?:\.\d+)?/g)) {
+  // A comma followed by exactly one or two digits is a German decimal ("184,99 €"); read as 184
+  // it failed against a page stating 184.99, which shop JSON-LD always does.
+  for (const match of text.matchAll(/\d+(?:(?:,\d{3})+(?:\.\d+)?|,\d{1,2}(?!\d)|\.\d+)?/g)) {
     const token = match[0]
     const start = match.index
     const end = start + token.length
@@ -115,8 +117,10 @@ export function claimNumbers(claim: string): ClaimNumber[] {
     if (token === '100' && isPercentFactor(text, start, end)) continue
 
     const percent = /^\s?%/.test(text.slice(end, end + 2))
-    const decimals = token.includes('.') ? (token.split('.')[1]?.length ?? 0) : 0
-    const value = Number(token.replace(/,/g, ''))
+    const decimalComma = /^\d+,\d{1,2}$/.test(token)
+    const normalized = decimalComma ? token.replace(',', '.') : token.replace(/,/g, '')
+    const decimals = normalized.includes('.') ? (normalized.split('.')[1]?.length ?? 0) : 0
+    const value = Number(normalized)
     if (!Number.isFinite(value)) continue
     const isYear = !percent && decimals === 0 && value >= 1900 && value <= 2100 && !token.includes(',')
     if (isYear) continue

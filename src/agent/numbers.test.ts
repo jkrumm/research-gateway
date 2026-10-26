@@ -144,3 +144,19 @@ describe('status exemption boundaries', () => {
     expect(unmatchedNumbers('It responded with a 503 when overloaded', [1])).toEqual([])
   })
 })
+
+describe('unmatchedNumbers — German decimal prices (2026-10-26)', () => {
+  const page = extractNumbers('offers.offers[0].price: 184.99\noffers.offers[1].price: 219.99')
+
+  it('matches a decimal-comma price against the dot form shop JSON-LD uses', () => {
+    expect(unmatchedNumbers('Der günstigste Preis liegt bei 184,99 € (umr-solutions-gmbh).', page)).toEqual([])
+  })
+
+  it('still catches an invented decimal-comma price', () => {
+    expect(unmatchedNumbers('SmartDeals verlangt 209,99 €.', page)).toEqual(['209,99'])
+  })
+
+  it('keeps reading three digits after a comma as a thousands group', () => {
+    expect(claimNumbers('5,565 matches')[0]?.value).toBe(5565)
+  })
+})
