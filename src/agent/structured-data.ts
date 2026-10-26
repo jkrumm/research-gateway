@@ -132,9 +132,13 @@ export function extractStructuredData(html: string, opts: { pricedOnly?: boolean
       if (!lines.length) continue
       const group = `[${types.join(', ') || 'Thing'}]\n${lines.join('\n')}`
       if (opts.pricedOnly && !PRICE_LINE.test(group)) continue
-      if (seen.has(group)) continue
-      seen.add(group)
-      groups.push(group)
+      // Appended next to a full reading, review bodies are the text Readability already kept
+      // (idealo: 6k chars of reviews riding along with a price range).
+      const kept = opts.pricedOnly ? lines.filter((l) => !/^(?:review|aggregateRating)\b/.test(l)) : lines
+      const shown = kept === lines ? group : `[${types.join(', ') || 'Thing'}]\n${kept.join('\n')}`
+      if (seen.has(shown)) continue
+      seen.add(shown)
+      groups.push(shown)
     }
   }
   const joined = groups.join('\n\n')

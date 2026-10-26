@@ -225,8 +225,10 @@ bun test           # pure-function tests only — needs no secrets
   reading only the groups that state a price (shop and comparison pages whose offers Readability drops, billiger.de).
   Appended to the delivered text by the parse worker; a thin page with nothing to append makes origin.ts fall
   through instead of accepting the sliver. Pure, env-free.
-- `src/agent/extract-geizhals.ts` — the Geizhals site adapter: one `price | merchant (country) | rating |
-  delivery | title` line per offer plus the spec grid; no offer rows falls through to Readability.
+- `src/agent/extract-geizhals.ts` + `extract-idealo.ts` — price-portal site adapters: one line per offer
+  (price, merchant, shipping/delivery, rating, the merchant's title), Geizhals also the spec grid. A page with
+  no offer rows (search, category lists) falls through to Readability. billiger.de needs none: its JSON-LD
+  carries the offers (structured-data.ts).
 - `src/agent/fetch-flight.ts` — per-job single-flight and memory for `fetchPage` (tools.ts owns
   the registry; run.ts clears a job's entry). Page/404/block outcomes are replayed, transient
   failures are not; every caller still commits the staged ledger into its OWN ledger and charges

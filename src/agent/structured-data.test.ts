@@ -159,6 +159,20 @@ describe('enrichText', () => {
     expect(r.text).not.toContain('gtin13')
   })
 
+  it('leaves review bodies out of a priced group appended to a full reading (idealo shape)', () => {
+    const product = {
+      '@type': 'Product',
+      name: 'AirPods Pro 2',
+      aggregateRating: { ratingValue: 4.11, ratingCount: 979 },
+      offers: { '@type': 'AggregateOffer', lowPrice: 179.49, highPrice: 291.54, offerCount: 13 },
+      review: [{ '@type': 'Review', reviewBody: 'Die Apple AirPods sind sehr gut.' }],
+    }
+    const r = enrichText({ body: `<html><head>${ld(product)}</head><body>${article}</body></html>`, text })
+    expect(r.text).toContain('offers.lowPrice: 179.49')
+    expect(r.text).not.toContain('reviewBody')
+    expect(r.text).not.toContain('aggregateRating')
+  })
+
   it('turns a null reading into the structured section alone', () => {
     const r = enrichText({ body: bigPage(ld(PRODUCT)), text: null })
     expect(r.text).toStartWith(STRUCTURED_DATA_HEADING)

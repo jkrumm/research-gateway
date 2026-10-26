@@ -55,6 +55,7 @@ import { canonicalYoutubeWatchUrl } from './youtube.js'
 import { annotateWrchina } from './extract-wrchina.js'
 import { extractArxivHtml } from './extract-arxiv.js'
 import { extractGeizhalsProduct } from './extract-geizhals.js'
+import { extractIdealoOffers } from './extract-idealo.js'
 
 interface SiteAdapter {
   /** Rewrite the address actually dialled. The caller keeps the original for the ledger. */
@@ -171,6 +172,7 @@ const githubAdapter: SiteAdapter = {
 }
 
 const geizhalsAdapter: SiteAdapter = { extract: (document) => extractGeizhalsProduct(document as never) }
+const idealoAdapter: SiteAdapter = { extract: (document) => extractIdealoOffers(document as never) }
 
 // Keyed by lowercase host of the ORIGINAL url.
 const ADAPTERS: Record<string, SiteAdapter> = {
@@ -201,6 +203,11 @@ const ADAPTERS: Record<string, SiteAdapter> = {
   'geizhals.at': geizhalsAdapter,
   'geizhals.eu': geizhalsAdapter,
   'geizhals.ch': geizhalsAdapter,
+  // Offer rows Readability drops for the reviews below them (extract-idealo.ts).
+  'www.idealo.de': idealoAdapter,
+  'idealo.de': idealoAdapter,
+  'm.idealo.de': idealoAdapter,
+  'www.idealo.at': idealoAdapter,
 }
 
 export interface ResolvedSite {
