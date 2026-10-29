@@ -56,7 +56,7 @@ export type LogSeverity = 'info' | 'warn' | 'error'
  * the ~34 `log('event.name', …)` call sites in this repo (`grep -rn "log('" src`) rather than
  * invented:
  *
- *   ERROR — the event name ends in `.error` (job.error, mcp.error) or `.failed`
+ *   ERROR — the event name ends in `.error` (job.error) or `.failed`
  *   (synthesis.failed, worker.failed), or contains `uncaughtException` /
  *   `unhandledRejection` (the two process-level handlers in index.ts, already logged as loud
  *   failures there), or is one of ERROR_EVENTS: the memory watchdog (process.memory_pressure

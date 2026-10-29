@@ -1,7 +1,7 @@
 // Markdown-safety helpers for text that a MODEL controls and that gets interpolated into a
 // report the caller reads as markdown.
 //
-// The report body's transparency notes (body-mentions.ts) and the text-only MCP surface
+// The report body's transparency notes (body-mentions.ts) and the text-only report rendering
 // (report-text.ts) both render model-controlled fields — `unverified[].topic`/`url`/`reason`,
 // `citations[].claim`/`url`, `sources[]`. Those are unconstrained strings, so a hostile or
 // merely hallucinating synthesizer can put markdown in them.

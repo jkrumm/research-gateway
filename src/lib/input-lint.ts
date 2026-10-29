@@ -1,5 +1,5 @@
 // Submit-time lint for inputs that are almost certainly a client mistake, not a question: shell
-// syntax an MCP client passed through unexpanded (MCP params are never shell-expanded), or the
+// syntax a client passed through unexpanded (params are never shell-expanded), or the
 // CLI's `--context @file` syntax used on a door that does not read files. Measured once
 // (2026-09-25): a literal `$(cat /tmp/…/context.md)` context ran a full deep job.
 //

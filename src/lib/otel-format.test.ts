@@ -53,7 +53,7 @@ describe('toLogAttributes', () => {
 describe('severityFor', () => {
   it('is error for an event name ending in .error', () => {
     expect(severityFor('job.error', {})).toBe('error')
-    expect(severityFor('mcp.error', {})).toBe('error')
+    expect(severityFor('tool.error', {})).toBe('error')
   })
 
   it('is error for an event name ending in .failed', () => {

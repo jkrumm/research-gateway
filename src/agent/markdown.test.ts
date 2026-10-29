@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'bun:test'
 import { renderProse, renderUrl } from './markdown.js'
 
-// Unit coverage for the two escaping entry points, independent of the ground/mcp fixtures that
+// Unit coverage for the two escaping entry points, independent of the ground fixtures that
 // exercise them indirectly. These are what every model-controlled field in a report passes
 // through, so their behaviour is worth pinning directly — including the pairing rule, since
 // choosing the wrong helper has shipped the same defect twice.

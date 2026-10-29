@@ -389,7 +389,7 @@ function dedupeUnverified(entries: ReadonlyArray<UnverifiedEntry>): UnverifiedEn
 
 // A `partial` report is one where evidence was demonstrably lost. Prepending the banner to
 // the markdown matters as much as the `status` field: a consuming agent that reads only the
-// prose (every text-only MCP client does) must still see that the run degraded.
+// prose (every prose-only client does) must still see that the run degraded.
 // `annotated` is a parameter rather than read off `Grounding` because the scrub count is
 // computed from the FINAL unverified set, after the ledger-vindication detachment — it is not
 // a ledger tally. It must be passed in: a body-scrub-only degradation (one clean citation,

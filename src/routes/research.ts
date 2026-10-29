@@ -9,7 +9,7 @@ import { env } from '../env.js'
 
 // The engine's input schema (agent/schema.ts) plus the submit dedupe key, which is a job-store
 // concern rather than an engine one. Extending it here — rather than in schema.ts — keeps the
-// `/research` body the only place that knows about keys; the MCP tool declares its own input.
+// `/research` body the only place that knows about keys.
 const ResearchSubmit = ResearchInput.extend({
   idempotencyKey: z
     .string()

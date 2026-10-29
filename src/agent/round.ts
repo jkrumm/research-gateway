@@ -1,6 +1,6 @@
 // A round's outcome shape (a worker-outcome reducer) and its retry rule. Pure and `env`-free
 // so it is unit-testable without booting the env/llm import chain — same convention as
-// `src/lib/admission.ts` / `src/lib/wait.ts`.
+// `src/lib/admission.ts`.
 //
 // The motivating evidence (14-day telemetry, 2026-09-11): 9 of 19 `partial` jobs produced ZERO
 // worker digests, and every one traces to an upstream IU-endpoint failure that died in

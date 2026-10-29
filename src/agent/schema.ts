@@ -223,10 +223,10 @@ export const WorkerDigest = z.object({
 })
 export type WorkerDigest = z.infer<typeof WorkerDigest>
 
-// ── Async job contract (REST + MCP share this vocabulary) ────────────────────
+// ── Async job contract (REST and the CLI share this vocabulary) ────────────────────
 
 // `cancelled` is terminal, like `done`/`error`: a caller cancelled the job (DELETE
-// /research/:jobId, MCP `job_cancel`, `research cancel`) before it finished.
+// /research/:jobId, `research cancel`) before it finished.
 export const JobStatus = z.enum(['queued', 'running', 'done', 'error', 'cancelled'])
 export type JobStatus = z.infer<typeof JobStatus>
 
@@ -249,8 +249,8 @@ export const JobProgress = z.object({
 })
 export type JobProgress = z.infer<typeof JobProgress>
 
-// The live-status fields both status doors (REST GET /research/:jobId, MCP job_status /
-// job_wait) add to a job, so a caller with many jobs in flight can tell "queued behind others"
+// The live-status fields `GET /research/:jobId` adds to a job, so a caller with many jobs in
+// flight can tell "queued behind others"
 // from "running, workers 5 of 8" from "stuck".
 export const JobLiveFields = {
   depth: Depth,

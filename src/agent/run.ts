@@ -147,7 +147,7 @@ export async function runResearch(
   const isFenced = opts?.isFenced ?? ((): boolean => false)
 
   // The whole job is one trace, and its id is derived from the jobId — so a job id from the
-  // REST/MCP surface is enough to find the trace, with no lookup table in between.
+  // REST surface is enough to find the trace, with no lookup table in between.
   return withRootSpan(
     {
       traceId: traceIdFromJobId(jobId),
