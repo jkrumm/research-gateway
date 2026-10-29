@@ -1,15 +1,15 @@
-// The text-only rendering of a research report — the string an MCP client that ignores
+// The text-only rendering of a research report — the string a client that ignores
 // `structuredContent` sees, and nothing else.
 //
 // Pure by construction: it depends only on `schema.js` (types) and `markdown.js` (escaping),
-// never on `env.js` or the route layer. It lived in `routes/mcp.ts` until a review pass pointed
+// never on `env.js` or the route layer. It once lived in the route layer until a review pass pointed
 // out that importing it pulled in `env.ts`'s required-var validation, so its own test had to
 // set four placeholder env vars before a dynamic import just to load the function. Same
 // boundary the ledger/extract/archive modules already keep.
 import type { ResearchReport } from './schema.js'
 import { renderProse, renderUrl } from './markdown.js'
 
-// Inline the report + citations + sources so text-only MCP clients get the full picture even if
+// Inline the report + citations + sources so text-only clients get the full picture even if
 // they ignore structuredContent.
 export function reportText(report: ResearchReport): string {
   // Confidence is rendered per citation, and `unverified` is rendered at all, because a

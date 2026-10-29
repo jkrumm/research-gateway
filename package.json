@@ -15,7 +15,6 @@
   "dependencies": {
     "@ai-sdk/openai-compatible": "3.0.77",
     "@elysiajs/openapi": "1.4.16",
-    "@modelcontextprotocol/server": "2.3.1",
     "@mozilla/readability": "0.6.0",
     "@tavily/core": "0.7.14",
     "@upstash/context7-sdk": "0.6.0",

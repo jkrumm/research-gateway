@@ -605,7 +605,7 @@ describe('openJobDb — idempotency key', () => {
 })
 
 // The submit dedupe path (job-store.ts's findActiveJobByIdempotencyKey, surfaced on POST
-// /research and the MCP research tool) resolves a retried submit to the original job. It
+// /research) resolves a retried submit to the original job. It
 // reads sqlite rather than the in-memory map, so these pin the query's freshness rule.
 describe('openJobDb — idempotency key lookup', () => {
   it('finds a queued job by key regardless of the cutoff', () => {

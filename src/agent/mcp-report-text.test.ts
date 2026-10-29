@@ -2,7 +2,7 @@ import { describe, expect, it } from 'bun:test'
 import { reportText } from './report-text.js'
 import type { ResearchReport } from './schema.js'
 
-// The text-only MCP surface: a client that ignores structuredContent sees ONLY this string, so
+// The text-only report surface: a client that ignores structuredContent sees ONLY this string, so
 // every model-controlled field interpolated here has to be markdown-safe. These tests pin the
 // two risks — a field opening its own line/block, and a field rendering as live markdown.
 // A minimal but COMPLETE ResearchReport — `reportText` only reads report/citations/sources/
