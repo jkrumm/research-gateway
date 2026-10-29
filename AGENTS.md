@@ -1,7 +1,6 @@
 # research-gateway — Agent Instructions
 
-Elysia/Bun service, native on the Mac mini: one research brain behind bearer HTTP + an MCP facade at
-`/mcp`. A lead model plans, a fan-out of workers researches in parallel (web search + page
+Elysia/Bun service, native on the Mac mini: one research brain behind bearer HTTP and the `research` CLI. A lead model plans, a fan-out of workers researches in parallel (web search + page
 fetch + source-of-truth lookups), the lead synthesizes one cited report. **README.md is the
 contract** (endpoints, env vars, grounding model, stack) — this file is what a dispatched
 agent needs before touching code; don't restate what README already owns.
@@ -24,32 +23,24 @@ Everything is submit-then-poll — never expect a synchronous result.
   `GET /research/:jobId` — it returns current state at once and never blocks — until
   `status: "done"` — p50 quick ~12s / standard ~150s / deep ~450-700s (re-measured 2026-10-09 after the consistency-pass gate, deep n=2; the 2026-10-08 audit was 100s / 362s / 770s, the 2026-08/09 record 38s / 111s / 366s), full distribution in
   `docs/measurements.md` § Job duration.
-- MCP (`/mcp`, bearer): tools `research`, `job_status`, `job_wait`, `job_cancel` — same submit → poll
-  contract — but `job_wait` blocks for the WHOLE job, not a 50s slice, so one call is normally
-  the entire interaction. `responseMode: 'sse'` is what makes that safe: the SDK writes a
-  keep-alive frame every 15s. `src/lib/wait.ts`'s header is the canonical explanation of why
-  that makes an unbounded wait safe — read it there rather than re-deriving it. A client still
-  needs a generous per-server `timeout`, sized for queue wait PLUS execution. This is the
-  primary client path (Claude Code's
-  `/research` skill, agent-gateway); plain bearer HTTP is for everything else.
 - `result.status` can be `"partial"` — evidence was lost and the report prepends a banner.
-  A text-only MCP client sees only the prose, so **always surface `unverified` and a
+  A prose-only client sees only the report text, so **always surface `unverified` and a
   non-`ok` status to the human**, never just the `report` string.
 - `RESEARCH_MAX_CONCURRENCY` / `RESEARCH_MAX_QUEUE` cap jobs; past it, submit returns 429.
 - Terminal statuses are `done`, `error` and `cancelled` (`isTerminalStatus` in `schema.ts` — use
-  it, never a hand-written `done || error`). Cancel is `DELETE /research/:jobId`, MCP
-  `job_cancel`, `research cancel`; the job's `AbortSignal` reaches every LLM call through its idle
+  it, never a hand-written `done || error`). Cancel is `DELETE /research/:jobId` or
+  `research cancel`; the job's `AbortSignal` reaches every LLM call through its idle
   watchdog, and `run.ts` re-checks it at each phase boundary because plan/worker/synthesis/
   consistency all degrade instead of throwing.
 - A finished job is retained 7 days in sqlite (`JOB_TTL_MINUTES`, default 10080) — the `jobId`
   is the durable handle a client comes back to, not a session token. Memory holds queued/running
-  jobs only (plus a terminal one until the next sweep). `POST /research` and the MCP `research`
-  tool accept an optional `idempotencyKey` (1..200 chars): a retried submit with the same key
+  jobs only (plus a terminal one until the next sweep). `POST /research` accepts an optional
+  `idempotencyKey` (1..200 chars): a retried submit with the same key
   returns the original job, and the dedupe runs before admission so it is never shed.
 - The CLI (`bin/research.ts`, `make install-cli`) talks the same REST door with no session
   state: `research "<query>"` submits and polls, `research wait <jobId>` resumes a known id,
   `research batch <file.jsonl>` / `research wait-all <ids…>` are the fan-out pair. It
-  is the door for Codex/OpenCode/Hermes/cron and the fallback when the MCP tools are missing.
+  is the door for Codex/OpenCode/Hermes/cron and scripts.
 
 ## Models
 
@@ -166,7 +157,7 @@ bun test           # pure-function tests only — needs no secrets
 
 ## File map
 
-- `src/routes/{research,mcp,health,probe}.ts` — the four surfaces, one engine
+- `src/routes/{research,health,probe}.ts` — the three surfaces, one engine
 - `bin/research.ts` — the REST-door CLI (`research` / `research wait|status`); pure argv→request
   and exit-code mapping, only fetch (plus the Keychain read) is I/O — see `bin/research.test.ts`
 - `src/agent/{plan,worker,synthesize,run}.ts` — the fan-out: lead plans → workers dig →

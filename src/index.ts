@@ -5,7 +5,6 @@ import { env } from './env.js'
 import { authGuard } from './lib/auth-guard.js'
 import { healthRoute } from './routes/health.js'
 import { researchRoutes } from './routes/research.js'
-import { mcpRoutes } from './routes/mcp.js'
 import { probeRoutes } from './routes/probe.js'
 import { log } from './lib/log.js'
 import { flushOtel } from './lib/otel.js'
@@ -67,7 +66,7 @@ function flushThenExit(code: number): void {
 // explicitly asking to skip the wait, the same as `docker stop -t 0`.
 let shuttingDown = false
 
-// Long enough for an in-flight MCP response to reach the socket after the job that produced it
+// Long enough for an in-flight response to reach the socket after the job that produced it
 // released its slot, short enough that it is invisible next to the drain itself.
 const RESPONSE_FLUSH_MS = 2_000
 
@@ -113,11 +112,10 @@ async function drainThenExit(code: number): Promise<void> {
   }
 
   // `waitForDrain` watches the job SLOT, which frees the moment the agent loop returns — before
-  // the MCP `job_wait` holding that job's result has written its response back. Exiting on that
-  // instant would sever an open SSE stream at exactly the moment the drain exists to protect,
-  // handing the caller a broken connection for a job that actually succeeded. Not data loss
-  // (the result is in sqlite, `GET /research/:jobId` still has it), but it defeats "one
-  // job_wait call is the whole interaction". A short settle window is enough — this is a flush,
+  // the HTTP response carrying that job's result has been written back. Exiting on that
+  // instant would cut the connection at exactly the moment the drain exists to protect,
+  // handing the caller a broken response for a job that actually succeeded. Not data loss
+  // (the result is in sqlite, `GET /research/:jobId` still has it). A short settle window is enough — this is a flush,
   // not a second drain.
   await new Promise<void>((resolve) => setTimeout(resolve, RESPONSE_FLUSH_MS))
   flushThenExit(code)
@@ -274,11 +272,6 @@ export const app = new Elysia()
         submit: 'POST /research',
         poll: 'GET /research/:jobId',
       },
-      mcp: {
-        endpoint: '/mcp',
-        transport: 'streamable-http',
-        tools: ['research', 'job_wait', 'job_status'],
-      },
     }),
     {
       response: z.object({
@@ -297,11 +290,6 @@ export const app = new Elysia()
           submit: z.string(),
           poll: z.string(),
         }),
-        mcp: z.object({
-          endpoint: z.string(),
-          transport: z.string(),
-          tools: z.array(z.string()),
-        }),
       }),
       detail: {
         tags: ['System'],
@@ -313,7 +301,6 @@ export const app = new Elysia()
   )
   .use(healthRoute)
   .use(authGuard)
-  .use(mcpRoutes)
   .use(researchRoutes)
   .use(probeRoutes)
   .listen({ hostname: env.HOST, port: env.PORT, idleTimeout: 255 })
