@@ -6,9 +6,8 @@ model decomposes the query into independent sub-questions, a fan-out of **parall
 researches them (web search + page fetch + source-of-truth lookups) and returns a compact
 digest each, and the lead synthesizes one cited report from the digests.
 
-It is consumed two ways over the same engine: the **MCP facade at `/mcp`** — the primary path,
-what Claude Code's `/research` skill and the `research-gateway` MCP registration in dotfiles
-talk to — and plain bearer HTTP for everything else (Hermes, scripts, curl).
+It is consumed over bearer HTTP (Hermes, scripts, curl) and the `research` CLI. The MCP endpoint is
+removed; Claude Code's `/research` is served by agent-workflows (`agw research`).
 
 | Doc | What it holds |
 |-|-|
@@ -59,7 +58,7 @@ talk to — and plain bearer HTTP for everything else (Hermes, scripts, curl).
 
 | Endpoint | Auth | Body / Params | Returns |
 |-|-|-|-|
-| `GET /` | public | — | discovery: the public route list, `/openapi`, the MCP tools |
+| `GET /` | public | — | discovery: the public route list, `/openapi` |
 | `GET /health` | public | — | `{ status: "ok", lastRestartAt, resumed, failedAfterRestarts }` — only `status` gates anything (the mini's deploy poller, a keyword monitor); the counts show adoption/crash-loop activity. Also carries `draining`, `jobs`, `pdf`, `degraded`, the memory ratio and `eventLoopLagMs` / `eventLoopLagPeakMs` — `pdf.{active,queued}` mirrors `pdf-semaphore.ts`'s process-wide `pdftotext` concurrency cap (2); `eventLoopLagMs`/`eventLoopLagPeakMs` are the event-loop watchdog's timer-drift samples (`lib/loop-watch.ts`), the one in-process signal that this single-loop process was starved by synchronous work. See [Restarts](#restarts-and-what-they-cost) |
 | `GET /health/render` | public | — | `{ renderer, active, queued, error }` — the sidecar. **Deliberately not part of `/health`**: the renderer is optional, and a broken one must not block deploys of a gateway that is otherwise fine |
 | `GET /health/tavily` | public | — | live account state from `api.tavily.com/usage` incl. `overPlan` — crossing into pay-as-you-go was otherwise silent |
@@ -67,9 +66,8 @@ talk to — and plain bearer HTTP for everything else (Hermes, scripts, curl).
 | `GET /health/pdf` | public | — | `{ pdftotext, version, error }` — `pdftotext -v` inside the container |
 | `GET /openapi`, `/openapi/json` | public | — | Scalar UI, raw spec |
 | `POST /research` | bearer | `{ query, depth?, context?, idempotencyKey? }` (`quick \| standard \| deep`; `context` = free-text background treated as given — not re-searched, never cited; `idempotencyKey` = optional 1..200-char key — a retried submit with the same key returns the original job) | `{ jobId, status, warnings? }` (async). `warnings` flags an input that is unexpanded shell syntax (`$(…)`, `$VAR`, backticks) or the CLI's `@file` syntax — the job still runs; cancel it if the warning is right (`lib/input-lint.ts`) |
-| `GET /research/:jobId` | bearer | — | `{ status, result?, error?, depth, submittedAt, startedAt, finishedAt, queuePosition, progress, typicalDurationMs }` — a **poll**: returns current state at once, never blocks. `queuePosition` (1 = next) while queued, `progress: { phase, round, workers: { done, total } }` while running, `typicalDurationMs: { p50, p90 }` for the depth — a range to judge "stuck" against, not an ETA. MCP `job_status`/`job_wait` carry the same fields |
+| `GET /research/:jobId` | bearer | — | `{ status, result?, error?, depth, submittedAt, startedAt, finishedAt, queuePosition, progress, typicalDurationMs }` — a **poll**: returns current state at once, never blocks. `queuePosition` (1 = next) while queued, `progress: { phase, round, workers: { done, total } }` while running, `typicalDurationMs: { p50, p90 }` for the depth — a range to judge "stuck" against, not an ETA. |
 | `DELETE /research/:jobId` | bearer | — | `{ jobId, status }` — **cancel**: a queued job never starts, a running one is aborted and its slot freed; `status: "cancelled"` (terminal). Idempotent — an already-terminal job comes back unchanged. A cancelled job's `idempotencyKey` is released for a corrected resubmit |
-| `POST /mcp` | bearer | streamable-http (stateless, 2026-07-28) | tools `research`, `job_wait`, `job_status`, `job_cancel` — same engine. `job_wait` blocks for the whole job, so one call is normally the whole interaction |
 | `POST /probe/fetch` | bearer | `{ url }` | one URL through the real fetch chain, no LLM — which step terminated it, chars and ms per step. Drives `scripts/fetch-bench.ts` |
 
 `result` shape: `{ report, citations: [{ claim, url, confidence }], sources, unverified,
@@ -103,11 +101,7 @@ only, so the long window costs no memory.
 | Door | Consumer | How to wait |
 |-|-|-|
 | REST `GET /research/:jobId` | Hermes, agent-gateway, anything on the tailnet | **Poll it.** Each call returns the current state immediately. There is no blocking variant — a client that calls it once and stops has only read `queued` |
-| MCP `job_wait` | Claude Code | **One call.** It blocks until the job is terminal over a kept-alive stream; call it again only if it returns `stillRunning` |
 
-Do not port the MCP shape onto the REST door. They are different endpoints on purpose: the
-REST poll is a cheap read any HTTP client can drive, while the blocking wait needs a stream the
-client keeps open.
 
 Submission is admission-controlled (`lib/admission.ts`, one pure decision function), and the
 refusal says which of three reasons it was, with a `Retry-After`:
@@ -154,7 +148,7 @@ a 404/410 or a classified block is remembered for the job (`fetch-flight.ts`); a
 
 A URL in `unverified` is structurally ineligible as a `citations[].url`, so the two can never
 contradict each other. When evidence was lost the report comes back `status: "partial"` with a
-banner prepended to the markdown — text-only MCP clients read the prose and nothing else.
+banner prepended to the markdown — a client that reads only the prose sees nothing else.
 `grounding.partialCause` (`dropped` | `scrubbed` | `no-pages` | `failures`, first match wins)
 says why, and `research.done` logs it. `dropped` needs a material share — at least 10% of the
 cited claims (`MATERIAL_DROP_SHARE`); a smaller drop still removes the citation, lists it in
@@ -481,17 +475,14 @@ a strict superset (human solve, brain search, higher concurrency); see
 
 | Client | Path |
 |-|-|
-| Claude Code `/research` (every session, both Macs) | the `research-gateway` MCP at `/mcp`, registered at user scope by dotfiles `make setup` |
-| Codex, OpenCode, Hermes, cron, scripts | the `research` CLI (`bin/research.ts`, `make install-cli`) — submits over REST and polls; no MCP client and no session state |
-| Hermes | direct bearer HTTP — `POST /research` then poll `GET /research/{jobId}`; not an MCP client |
-| anything else on the tailnet | bearer HTTP, or the MCP endpoint |
+| Claude Code `/research` | agent-workflows (`agw research`); this service has no MCP endpoint |
+| Codex, OpenCode, Hermes, cron, scripts | the `research` CLI (`bin/research.ts`, `make install-cli`) — submits over REST and polls; no session state |
+| Hermes | direct bearer HTTP — `POST /research` then poll `GET /research/{jobId}` |
+| anything else on the tailnet | bearer HTTP |
 
-This service replaced the agent-gateway `research` tool; the MCP facade that was once "deferred, only
-if an MCP-only client needs it" became the main door the moment Claude Code was the main client.
 
-The CLI is also the fallback when the MCP tools are missing: a session whose MCP connection
-failed at **startup** has no `research`/`job_wait` for its whole lifetime, while
-`research "<query>"` reaches the same REST door with no session state to lose. It reads
+The CLI needs no session state: `research "<query>"` submits over the REST door, and a lost
+session loses nothing. It reads
 `RESEARCH_GATEWAY_URL` (default `https://research.mini.jkrumm.com`) and `RESEARCH_GATEWAY_TOKEN` (falling
 back to the macOS Keychain generic password `research-gateway-token`). `research wait <jobId>`
 resumes a job submitted earlier — the id is a durable handle, not a session token. The report
@@ -505,33 +496,3 @@ re-running the same file never double-submits), and `research wait-all
 <ids…>` prints one line per job the moment each finishes — `batch … --json | jq -r .jobId |
 xargs research wait-all`.
 
-### What an MCP client has to configure
-
-`job_wait` blocks for the entire job, which is only useful if the client is willing to wait that
-long. The server holds its side up: `createMcpHandler` runs with `responseMode: 'sse'`, so the
-SDK upgrades every response to a stream before the tool body runs and writes a keep-alive frame
-every 15s. Nothing in the path — Bun's `idleTimeout` (255s, its maximum), Traefik, a client idle
-timer — ever sees an idle connection.
-
-The client side is one setting. In Claude Code, the per-server `timeout` in its MCP entry is a
-hard wall-clock cap **and** the floor on its own idle timeout (5 minutes for HTTP by default);
-progress notifications do **not** raise that floor, only the `timeout` does. Size it against
-**queue wait plus execution**, not execution alone: with `RESEARCH_MAX_CONCURRENCY=3` a fourth
-deep job waits for a slot before it starts running. There is no server-side execution ceiling
-to size against any more — depth (`src/agent/depth.ts`) controls breadth (workers, sources,
-rounds), not a time budget, and the only per-call bound left is an idle watchdog
-(`RESEARCH_IDLE_TIMEOUT_MS`) that aborts a single LLM call gone silent, not the job. Size the
-client `timeout` generously against the measured distribution
-([job duration](./docs/measurements.md#job-duration-by-depth--the-30-day-span-record)) plus
-queue wait, not a promised maximum.
-
-```jsonc
-"research-gateway": { "type": "http", "url": "https://research.mini.jkrumm.com/mcp", "timeout": 7200000 }
-```
-
-A call still running after two minutes moves to a Claude Code background task
-(`CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS`, default 120 000) and its result arrives as a notification,
-so a long wait costs no model turns. That is the same benefit the MCP **Tasks** extension is
-designed to give, which is why Tasks is not adopted here: the installed SDK marks its task
-vocabulary `@deprecated … with no SDK runtime`, never emits `resultType: "task"`, and its 2026
-codec strips `execution.taskSupport` / `capabilities.tasks` as deleted fields.
